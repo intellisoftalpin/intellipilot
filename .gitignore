@@ -1,0 +1,111 @@
+# ============================================================================
+# Build artifacts
+# ============================================================================
+/target/
+**/target/
+**/*.rs.bk
+**/*.rs.orig
+*.pdb
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# cargo-mutants
+**/mutants.out*/
+
+# cargo-llvm-cov / coverage
+*.profraw
+*.profdata
+lcov.info
+coverage/
+target/coverage/
+target/llvm-cov*/
+
+# cargo-nextest archives
+target/nextest/
+
+# ============================================================================
+# Secrets & local env
+# ============================================================================
+.env
+.env.*
+!.env.example
+.envrc.local
+.direnv/
+
+# Local overrides not meant for VCS
+.local/
+local.toml
+config.local.toml
+*.local
+
+# Private keys / certs
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+
+# ============================================================================
+# Editor / IDE
+# ============================================================================
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+.zed/
+.helix/
+.fleet/
+
+# JetBrains
+out/
+.idea_modules/
+
+# ============================================================================
+# OS
+# ============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ============================================================================
+# Logs / dumps
+# ============================================================================
+*.log
+*.dump
+core.*
+**/perf.data*
+flamegraph*.svg
+
+# ============================================================================
+# Release artifacts (built ad-hoc; release pipeline uploads them)
+# ============================================================================
+sbom*.json
+sbom*.xml
+dist/
+release/
+*.tar.gz
+*.tar.xz
+*.zip
+
+# ============================================================================
+# Snapshot tests pending review
+# ============================================================================
+**/*.snap.new
+
+# ============================================================================
+# Notes / scratch — never push
+# ============================================================================
+TODO.local.md
+NOTES.local.md
+scratch/
+.scratch/

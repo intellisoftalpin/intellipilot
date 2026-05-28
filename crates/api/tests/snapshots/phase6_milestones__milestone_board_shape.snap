@@ -1,0 +1,39 @@
+---
+source: crates/api/tests/phase6_milestones.rs
+expression: shape
+---
+[
+  {
+    "status": "new",
+    "user_stories": [
+      {
+        "subject": "Card",
+        "tasks": 1
+      }
+    ]
+  },
+  {
+    "status": "ready",
+    "user_stories": []
+  },
+  {
+    "status": "in-progress",
+    "user_stories": []
+  },
+  {
+    "status": "ready-for-test",
+    "user_stories": []
+  },
+  {
+    "status": "done",
+    "user_stories": []
+  },
+  {
+    "status": "archived",
+    "user_stories": []
+  },
+  {
+    "status": null,
+    "user_stories": []
+  }
+]

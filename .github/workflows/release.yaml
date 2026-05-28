@@ -1,0 +1,351 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  verify-tag:
+    name: verify tag matches Cargo.toml
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      is_prerelease: ${{ steps.extract.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          cargo_version="$(
+            awk '
+              /^\[workspace\.package\]/ { in_section = 1; next }
+              /^\[/                     { in_section = 0 }
+              in_section && /^version[[:space:]]*=/ {
+                gsub(/"/, "", $3); print $3; exit
+              }
+            ' Cargo.toml
+          )"
+          if [[ -z "$cargo_version" ]]; then
+            echo "::error::Could not read workspace.package.version from Cargo.toml"
+            exit 1
+          fi
+          openapi_file="crates/api/src/openapi.rs"
+          openapi_version="$(
+            grep -E '^[[:space:]]*version[[:space:]]*=[[:space:]]*"[^"]+"' "$openapi_file" \
+              | head -n1 \
+              | sed -E 's/.*"([^"]+)".*/\1/'
+          )"
+          if [[ -z "$openapi_version" ]]; then
+            echo "::error::Could not read OpenAPI info.version from $openapi_file"
+            exit 1
+          fi
+          fail=0
+          if [[ "$version" != "$cargo_version" ]]; then
+            echo "::error::Tag version ($version) != workspace.package.version ($cargo_version) in Cargo.toml"
+            fail=1
+          fi
+          if [[ "$version" != "$openapi_version" ]]; then
+            echo "::error::Tag version ($version) != OpenAPI info.version ($openapi_version) in $openapi_file"
+            fail=1
+          fi
+          if [[ "$cargo_version" != "$openapi_version" ]]; then
+            echo "::error::Cargo.toml version ($cargo_version) != OpenAPI info.version ($openapi_version)"
+            fail=1
+          fi
+          if [[ "$fail" -ne 0 ]]; then
+            exit 1
+          fi
+          echo "All three versions match: tag=$version, cargo=$cargo_version, openapi=$openapi_version"
+          is_prerelease=false
+          if [[ "$version" == *-* ]]; then
+            is_prerelease=true
+          fi
+          echo "version=$version"               >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$is_prerelease"   >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version (prerelease=$is_prerelease)"
+
+  build-binary:
+    name: build binary (${{ matrix.arch }})
+    needs: verify-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.arch }}
+
+      - name: cargo build --release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --bin intellipilot --target ${{ matrix.target }}
+          strip target/${{ matrix.target }}/release/intellipilot
+
+      - name: package tarball + sha256
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.verify-tag.outputs.version }}"
+          arch="${{ matrix.arch }}"
+          target="${{ matrix.target }}"
+          stage="dist/intellipilot-${version}-linux-${arch}"
+          mkdir -p "$stage"
+          cp "target/${target}/release/intellipilot" "$stage/intellipilot"
+          cp LICENSE "$stage/LICENSE"
+          cat > "$stage/README" <<EOF
+          IntelliPilot ${version} — linux/${arch}
+          Repository: https://github.com/${{ github.repository }}
+          Built from tag: ${{ github.ref_name }}
+          Commit:        ${{ github.sha }}
+          EOF
+          tarball="intellipilot-${version}-linux-${arch}.tar.gz"
+          tar -C dist -czf "dist/${tarball}" "intellipilot-${version}-linux-${arch}"
+          ( cd dist && sha256sum "${tarball}" > "${tarball}.sha256" )
+          echo "tarball=dist/${tarball}"           >> "$GITHUB_OUTPUT"
+          echo "checksum=dist/${tarball}.sha256"   >> "$GITHUB_OUTPUT"
+
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.pkg.outputs.tarball }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.arch }}
+          path: |
+            ${{ steps.pkg.outputs.tarball }}
+            ${{ steps.pkg.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 7
+
+  build-image:
+    name: build image (${{ matrix.arch }})
+    needs: verify-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      digest-amd64: ${{ steps.export.outputs.digest-amd64 }}
+      digest-arm64: ${{ steps.export.outputs.digest-arm64 }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build & push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: true
+          sbom: false
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.verify-tag.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: export digest
+        id: export
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest='${{ steps.build.outputs.digest }}'
+          mkdir -p /tmp/digests
+          echo -n "$digest" > "/tmp/digests/${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: /tmp/digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  image-manifest:
+    name: assemble multi-arch manifest
+    needs: [verify-tag, build-image]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: image-digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ needs.verify-tag.outputs.is_prerelease == 'false' }}
+
+      - name: create & push manifest list
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${REGISTRY}/${IMAGE_NAME}"
+          repo_lc="$(echo "$repo" | tr '[:upper:]' '[:lower:]')"
+          amd64_digest="$(cat /tmp/digests/amd64)"
+          arm64_digest="$(cat /tmp/digests/arm64)"
+          tag_args=()
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            tag_args+=( --tag "$tag" )
+          done <<< "${{ steps.meta.outputs.tags }}"
+          docker buildx imagetools create "${tag_args[@]}" \
+            "${repo_lc}@${amd64_digest}" \
+            "${repo_lc}@${arm64_digest}"
+          first_tag="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)"
+          manifest_digest="$(docker buildx imagetools inspect "$first_tag" --format '{{.Manifest.Digest}}')"
+          echo "Multi-arch manifest digest: $manifest_digest"
+          echo "digest=$manifest_digest" >> "$GITHUB_OUTPUT"
+          echo "image=$repo_lc"          >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "$first_tag"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+
+      - name: attest image provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.manifest.outputs.image }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true
+
+  sbom:
+    name: generate CycloneDX SBOM
+    needs: verify-tag
+    runs-on: ubuntu-24.04
+    outputs:
+      file: ${{ steps.gen.outputs.file }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sbom
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx
+      - id: gen
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.verify-tag.outputs.version }}"
+          cargo cyclonedx --format json --all --override-filename "bom"
+          out="intellipilot-${version}-sbom.cdx.json"
+          # cargo-cyclonedx emits per-crate boms; pick the workspace root one
+          # (api binary crate is the deployable; fall back to first bom found).
+          root_bom="$(find . -maxdepth 4 -name 'bom.json' | head -n1)"
+          cp "$root_bom" "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: ${{ steps.gen.outputs.file }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: create GitHub Release
+    needs: [verify-tag, build-binary, image-manifest, sbom]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binary-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: sbom
+
+      - name: list assets
+        shell: bash
+        run: ls -la dist
+
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ needs.verify-tag.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          prerelease: ${{ needs.verify-tag.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*-sbom.cdx.json

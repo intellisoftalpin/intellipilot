@@ -1,0 +1,27 @@
+[package]
+name = "intellipilot-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+intellipilot-core = { path = "../core" }
+tokio-postgres = { workspace = true }
+deadpool-postgres = { workspace = true }
+tokio = { workspace = true }
+refinery = { workspace = true }
+refinery-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+url = { workspace = true }

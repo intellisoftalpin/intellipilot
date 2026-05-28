@@ -1,0 +1,46 @@
+# Local dev stack — Postgres 18 + IntelliPilot API.
+# Usage:
+#   cd intellipilot
+#   docker compose -f docker/compose.yaml up --build
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: intellipilot
+      POSTGRES_PASSWORD: intellipilot_dev
+      POSTGRES_DB: intellipilot
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intellipilot -d intellipilot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - intellipilot_pg_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      INTELLIPILOT_ENV: development
+      INTELLIPILOT_BIND: 0.0.0.0:8080
+      INTELLIPILOT_DATABASE_URL: postgres://intellipilot:intellipilot_dev@postgres:5432/intellipilot?sslmode=disable
+      RUST_LOG: info,intellipilot=debug
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+
+volumes:
+  intellipilot_pg_data:

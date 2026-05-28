@@ -1,0 +1,167 @@
+[workspace]
+# resolver = "2" — broadly tool-compatible. We don't need "3" (MSRV-aware
+# resolver); cargo respects `rust-version` for resolution under "2" too.
+resolver = "2"
+members = [
+    "crates/api",
+    "crates/core",
+    "crates/db",
+    "crates/auth",
+    "crates/storage",
+    "crates/mailer",
+    "crates/testkit",
+]
+
+[workspace.package]
+version = "0.1.10"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+authors = ["IntelliSoftAlpin eG"]
+repository = "https://github.com/IntelliSoftAlpin/intellipilot"
+publish = false
+
+[workspace.dependencies]
+# HTTP + async
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "tokio", "macros", "query", "tracing", "matched-path", "multipart"] }
+axum-extra = { version = "0.10", default-features = false, features = ["cookie"] }
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "fs", "net"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tower = { version = "0.5", features = ["util", "limit", "timeout"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "compression-br", "compression-gzip", "decompression-br", "decompression-gzip", "request-id", "sensitive-headers", "set-header", "timeout", "limit"] }
+hyper = { version = "1.5", features = ["server", "http1", "http2"] }
+
+# Serde + JSON
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_with = { version = "3", features = ["base64", "time_0_3"] }
+
+# Errors + validation
+thiserror = "2"
+garde = { version = "0.20", features = ["derive", "serde", "email", "url", "regex"] }
+
+# OpenAPI
+utoipa = { version = "5", features = ["axum_extras", "uuid", "time", "preserve_order", "non_strict_integers"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+utoipa-scalar = { version = "0.3", features = ["axum"] }
+
+# DB — tokio-postgres + deadpool-postgres.
+#
+# We do NOT use sqlx. sqlx-core unconditionally pulls in `paste` (unmaintained,
+# RUSTSEC-2024-0436) and the wrapper crate transitively pulls in sqlx-mysql →
+# `rsa` (RUSTSEC-2023-0071, Marvin Attack). tokio-postgres is the canonical
+# Postgres-only async client with a small, clean dep tree — no unmaintained
+# transitives. Migrations in Phase 1 will use `refinery` (also clean tree).
+tokio-postgres = { version = "0.7", default-features = false, features = ["with-uuid-1", "with-time-0_3", "with-chrono-0_4", "with-serde_json-1", "runtime"] }
+deadpool-postgres = "0.14"
+tokio-postgres-rustls = { version = "0.13", default-features = false, features = ["ring"] }
+postgres-types = { version = "0.2", features = ["derive", "with-uuid-1", "with-time-0_3", "with-serde_json-1"] }
+refinery = { version = "0.8", default-features = false, features = ["tokio-postgres"] }
+refinery-core = { version = "0.8", default-features = false }
+
+# IDs + time
+uuid = { version = "1", features = ["v7", "serde"] }
+time = { version = "0.3", features = ["serde", "macros", "formatting", "parsing"] }
+
+# Logging + tracing
+tracing = { version = "0.1", features = ["attributes"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "tracing-log"] }
+tracing-opentelemetry = "0.27"
+opentelemetry = "0.26"
+opentelemetry_sdk = { version = "0.26", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.26", features = ["grpc-tonic", "tonic"] }
+
+# Crypto + auth
+argon2 = { version = "0.5", features = ["std", "alloc", "password-hash"] }
+pasetors = { version = "0.7", default-features = false, features = ["std", "v4"] }
+rand = { version = "0.8", features = ["std", "std_rng"] }
+subtle = "2"
+sha2 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+zeroize = { version = "1", features = ["derive"] }
+zxcvbn = "3"
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+totp-rs = { version = "5", features = ["qr", "otpauth", "gen_secret"] }
+base32 = "0.5"
+chacha20poly1305 = { version = "0.10", features = ["std"] }
+
+# Markdown + sanitization
+comrak = { version = "0.31", default-features = false }
+ammonia = "4"
+similar = "2"
+
+# Misc
+config = { version = "0.14", default-features = false, features = ["toml", "yaml"] }
+dotenvy = "0.15"
+async-trait = "0.1"
+bytes = "1"
+mime = "0.3"
+infer = "0.16"
+url = { version = "2", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+percent-encoding = "2"
+regex = "1"
+
+# Dev / test
+nextest-runner = "0.74"
+insta = { version = "1", features = ["json", "yaml", "filters"] }
+proptest = "1"
+assert-json-diff = "2"
+tower-test = "0.4"
+serial_test = "3"
+mime_guess = "2"
+similar-asserts = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+nonstandard_style = { level = "warn", priority = -1 }
+future_incompatible = { level = "warn", priority = -1 }
+let_underscore = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Allow a few overly-noisy lints
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
+doc_markdown = "allow"
+# Tighten correctness
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+string_slice = "warn"
+arithmetic_side_effects = "warn"
+integer_division = "warn"
+indexing_slicing = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+debug = false
+incremental = false
+
+[profile.dev]
+opt-level = 0
+debug = "limited"
+incremental = true
+
+[profile.test]
+opt-level = 1
+debug = "limited"

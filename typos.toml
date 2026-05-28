@@ -1,0 +1,22 @@
+[default]
+extend-ignore-identifiers-re = [
+    "^[A-Za-z0-9+/=]{40,}$",   # base64-ish strings
+    "^[A-Fa-f0-9]{32,}$",      # hex hashes
+]
+
+[files]
+extend-exclude = [
+    "target/**",
+    "**/*.snap",
+    "**/*.lock",
+    "**/migrations/*.sql",
+    # Integration tests are full of synthetic fixtures (fake usernames,
+    # emails, sample data) that aren't real words — spell-checking them is
+    # pure noise. Production source (where API strings/docs live, and a typo
+    # is an actual bug) is still checked.
+    "crates/*/tests/**",
+]
+
+[default.extend-words]
+# Add project-specific allowed terms here.
+crate = "crate"

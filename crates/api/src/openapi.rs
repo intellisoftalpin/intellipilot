@@ -1,0 +1,140 @@
+//! OpenAPI 3.1 document.
+
+use utoipa::OpenApi;
+
+use crate::dto::{
+    AcceptInviteRequest, ChangeMemberRoleRequest, CreateProjectRequest, CreateRoleRequest,
+    CreateTaxonomyItemRequest, InviteRequest, InviteResponse, LoginRequest,
+    MoveTaxonomyItemRequest, PasskeyAuthStartRequest, PasskeyFinishRequest,
+    PasswordResetConfirmBody, PasswordResetRequestBody, PasswordResetRequestResponse,
+    ProfileUpdateRequest, RecoveryCodesResponse, RegisterRequest, TokenResponse,
+    TotpConfirmRequest, TotpStartResponse, TwoFactorVerifyRequest, UpdateProjectRequest,
+    UpdateRoleRequest, UpdateTaxonomyItemRequest,
+};
+use crate::health::{LiveResponse, ReadyResponse};
+use crate::problem::{FieldErrorView, Problem};
+
+#[derive(Debug, OpenApi)]
+#[openapi(
+    info(
+        title = "IntelliPilot API",
+        version = "0.1.10",
+        description = "Lightweight project management API.",
+        contact(
+            name = "IntelliSoftAlpin eG",
+            url = "https://github.com/IntelliSoftAlpin/intellipilot"
+        ),
+        license(name = "MIT")
+    ),
+    paths(
+        crate::health::live,
+        crate::health::ready,
+        crate::auth::handlers::register,
+        crate::auth::handlers::login,
+        crate::auth::handlers::refresh,
+        crate::auth::handlers::logout,
+        crate::auth::handlers::password_reset_request,
+        crate::auth::handlers::password_reset_confirm,
+        crate::me::get_me,
+        crate::me::patch_me,
+        crate::me::delete_me,
+        crate::me::export_me,
+        crate::mfa::two_factor_verify,
+        crate::mfa::totp_start,
+        crate::mfa::totp_confirm,
+        crate::mfa::totp_disable,
+        crate::mfa::recovery_regenerate,
+        crate::passkeys::register_start,
+        crate::passkeys::register_finish,
+        crate::passkeys::list,
+        crate::passkeys::delete,
+        crate::passkeys::authenticate_start,
+        crate::passkeys::authenticate_finish,
+        crate::projects::create_project,
+        crate::projects::list_projects,
+        crate::projects::get_project,
+        crate::projects::update_project,
+        crate::projects::delete_project,
+        crate::projects::accept_invitation,
+    ),
+    components(schemas(
+        LiveResponse,
+        ReadyResponse,
+        Problem,
+        FieldErrorView,
+        RegisterRequest,
+        LoginRequest,
+        TokenResponse,
+        ProfileUpdateRequest,
+        PasswordResetRequestBody,
+        PasswordResetRequestResponse,
+        PasswordResetConfirmBody,
+        TotpStartResponse,
+        TotpConfirmRequest,
+        RecoveryCodesResponse,
+        TwoFactorVerifyRequest,
+        PasskeyFinishRequest,
+        PasskeyAuthStartRequest,
+        CreateProjectRequest,
+        UpdateProjectRequest,
+        CreateRoleRequest,
+        UpdateRoleRequest,
+        InviteRequest,
+        InviteResponse,
+        AcceptInviteRequest,
+        ChangeMemberRoleRequest,
+        intellipilot_core::user::User,
+        intellipilot_core::project::Project,
+        intellipilot_core::project::Role,
+        intellipilot_core::project::Membership,
+        intellipilot_core::project::Invitation,
+        intellipilot_core::project::Visibility,
+        intellipilot_core::perms::Permission,
+        CreateTaxonomyItemRequest,
+        UpdateTaxonomyItemRequest,
+        MoveTaxonomyItemRequest,
+        intellipilot_core::taxonomy::TaxonomyItem,
+        intellipilot_core::taxonomy::TaxonomyKind,
+        crate::dto::CreateEpicRequest,
+        crate::dto::UpdateEpicRequest,
+        crate::dto::CreateUserStoryRequest,
+        crate::dto::UpdateUserStoryRequest,
+        crate::dto::CreateTaskRequest,
+        crate::dto::UpdateTaskRequest,
+        crate::dto::CreateIssueRequest,
+        crate::dto::UpdateIssueRequest,
+        crate::dto::BulkCreateUserStoriesRequest,
+        crate::dto::ReorderRequest,
+        crate::dto::CommentRequest,
+        intellipilot_core::backlog::Epic,
+        intellipilot_core::backlog::UserStory,
+        intellipilot_core::backlog::Task,
+        intellipilot_core::backlog::Issue,
+        intellipilot_core::backlog::Comment,
+        intellipilot_core::backlog::EntityKind,
+        crate::dto::CreateLabelRequest,
+        crate::dto::UpdateLabelRequest,
+        crate::dto::CreateComponentRequest,
+        crate::dto::UpdateComponentRequest,
+        intellipilot_core::catalog::Label,
+        intellipilot_core::catalog::Component,
+        crate::dto::CreateMilestoneRequest,
+        crate::dto::UpdateMilestoneRequest,
+        intellipilot_core::milestone::Milestone,
+        intellipilot_core::milestone::MilestoneStats,
+        intellipilot_core::attachment::Attachment,
+        crate::dto::CreateWikiPageRequest,
+        crate::dto::UpdateWikiPageRequest,
+        intellipilot_core::wiki::WikiPage,
+        intellipilot_core::wiki::WikiRevision,
+        intellipilot_core::search::SearchHit,
+    ))
+)]
+pub struct ApiDoc;
+
+/// Builds the OpenAPI document and pins the spec version to 3.1.0 explicitly.
+pub fn document() -> utoipa::openapi::OpenApi {
+    let mut doc = ApiDoc::openapi();
+    doc.openapi = utoipa::openapi::OpenApiVersion::Version31;
+    doc
+}

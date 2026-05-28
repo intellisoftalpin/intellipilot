@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned via Renovate; do not edit manually.
+# Must be >= 1.85 (Rust 2024 edition stabilization).
+channel = "1.94"
+components = ["rustfmt", "clippy", "rust-src", "rust-analyzer"]
+profile = "minimal"

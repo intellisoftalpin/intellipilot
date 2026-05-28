@@ -1,0 +1,77 @@
+[package]
+name = "intellipilot-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "intellipilot"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+intellipilot-core = { path = "../core" }
+intellipilot-db = { path = "../db" }
+intellipilot-auth = { path = "../auth" }
+intellipilot-storage = { path = "../storage" }
+intellipilot-mailer = { path = "../mailer" }
+
+webauthn-rs = { workspace = true }
+deadpool-postgres = { workspace = true }
+
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+
+thiserror = { workspace = true }
+garde = { workspace = true }
+
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+utoipa-scalar = { workspace = true }
+
+uuid = { workspace = true }
+time = { workspace = true }
+
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+config = { workspace = true }
+dotenvy = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+url = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+infer = { workspace = true }
+comrak = { workspace = true }
+ammonia = { workspace = true }
+similar = { workspace = true }
+
+[dev-dependencies]
+intellipilot-testkit = { path = "../testkit" }
+tower = { workspace = true }
+http-body-util = "0.1"
+serde_json = { workspace = true }
+insta = { workspace = true }
+proptest = { workspace = true }
+assert-json-diff = { workspace = true }
+serial_test = { workspace = true }
+similar-asserts = { workspace = true }
+futures = "0.3"

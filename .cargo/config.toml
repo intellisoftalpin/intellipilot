@@ -1,0 +1,17 @@
+# Workspace-level cargo configuration.
+#
+# We deliberately do NOT force `-fuse-ld=lld` here. The hint speeds up local
+# Linux dev builds, but it breaks any environment (Docker, CI runners, fresh
+# VMs) that doesn't have lld installed. Developers who want lld can opt in:
+#
+#   export RUSTFLAGS='-C link-arg=-fuse-ld=lld'
+#
+# or add a per-host `.cargo/config.local.toml` (gitignored) with their own
+# target-specific rustflags.
+
+[net]
+git-fetch-with-cli = true
+
+[term]
+verbose = false
+color = "auto"

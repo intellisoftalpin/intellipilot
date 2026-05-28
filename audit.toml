@@ -1,0 +1,9 @@
+# cargo-audit configuration
+# https://github.com/rustsec/rustsec/tree/main/cargo-audit
+#
+# Policy: zero ignores. If a new advisory hits the dep tree, we fix the dep,
+# not the policy. Any future ignore MUST include a written justification and
+# an upstream fix tracker, and be reviewed at every dependency bump.
+
+[advisories]
+ignore = []

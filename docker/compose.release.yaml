@@ -1,0 +1,65 @@
+# Run IntelliPilot from the published GHCR image — no local build.
+# Usage:
+#   cd intellipilot
+#   cp docker/.env.example docker/.env   # then fill in secrets
+#   docker compose -f docker/compose.release.yaml --env-file docker/.env pull
+#   docker compose -f docker/compose.release.yaml --env-file docker/.env up -d
+#
+# Pin a version by setting INTELLIPILOT_VERSION in .env (defaults to "latest").
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-intellipilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-intellipilot}
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-intellipilot} -d ${POSTGRES_DB:-intellipilot}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - intellipilot_pg_data:/var/lib/postgresql/data
+
+  api:
+    image: ghcr.io/intellisoftalpin/intellipilot:${INTELLIPILOT_VERSION:-latest}
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      INTELLIPILOT_ENV: ${INTELLIPILOT_ENV:-production}
+      INTELLIPILOT_BIND: 0.0.0.0:8080
+      INTELLIPILOT_DATABASE_URL: postgres://${POSTGRES_USER:-intellipilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-intellipilot}?sslmode=disable
+      INTELLIPILOT_PASETO_SECRET: ${INTELLIPILOT_PASETO_SECRET:?set INTELLIPILOT_PASETO_SECRET in .env}
+      INTELLIPILOT_PASSWORD_PEPPER: ${INTELLIPILOT_PASSWORD_PEPPER:?set INTELLIPILOT_PASSWORD_PEPPER in .env}
+      INTELLIPILOT_ATTACHMENT_SECRET: ${INTELLIPILOT_ATTACHMENT_SECRET:?set INTELLIPILOT_ATTACHMENT_SECRET in .env}
+      INTELLIPILOT_ATTACHMENT_MAX_BYTES: ${INTELLIPILOT_ATTACHMENT_MAX_BYTES:-26214400}
+      INTELLIPILOT_STORAGE_DIR: /var/lib/intellipilot/attachments
+      INTELLIPILOT_RP_ID: ${INTELLIPILOT_RP_ID:-}
+      INTELLIPILOT_RP_ORIGIN: ${INTELLIPILOT_RP_ORIGIN:-}
+      INTELLIPILOT_RP_NAME: ${INTELLIPILOT_RP_NAME:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "${INTELLIPILOT_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - intellipilot_attachments:/var/lib/intellipilot/attachments
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # No container healthcheck: the image is distroless (no shell, no curl).
+    # The app exposes GET /health/live and /health/ready — wire those into
+    # your reverse proxy or orchestrator instead.
+
+volumes:
+  intellipilot_pg_data:
+  intellipilot_attachments:
