@@ -29,7 +29,7 @@ jobs:
       version: ${{ steps.extract.outputs.version }}
       is_prerelease: ${{ steps.extract.outputs.is_prerelease }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - id: extract
         shell: bash
         run: |
@@ -99,7 +99,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -141,11 +141,11 @@ jobs:
           echo "checksum=dist/${tarball}.sha256"   >> "$GITHUB_OUTPUT"
 
       - name: attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ steps.pkg.outputs.tarball }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.arch }}
           path: |
@@ -172,12 +172,12 @@ jobs:
       digest-amd64: ${{ steps.export.outputs.digest-amd64 }}
       digest-arm64: ${{ steps.export.outputs.digest-arm64 }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -185,7 +185,7 @@ jobs:
 
       - name: build & push by digest
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile
@@ -211,7 +211,7 @@ jobs:
           mkdir -p /tmp/digests
           echo -n "$digest" > "/tmp/digests/${{ matrix.arch }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: image-digest-${{ matrix.arch }}
           path: /tmp/digests/${{ matrix.arch }}
@@ -223,16 +223,16 @@ jobs:
     needs: [verify-tag, build-image]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: image-digest-*
           merge-multiple: true
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -240,7 +240,7 @@ jobs:
 
       - name: compute tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -277,7 +277,7 @@ jobs:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
 
       - name: attest image provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ steps.manifest.outputs.image }}
           subject-digest: ${{ steps.manifest.outputs.digest }}
@@ -290,7 +290,7 @@ jobs:
     outputs:
       file: ${{ steps.gen.outputs.file }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -310,7 +310,7 @@ jobs:
           root_bom="$(find . -maxdepth 4 -name 'bom.json' | head -n1)"
           cp "$root_bom" "$out"
           echo "file=$out" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: ${{ steps.gen.outputs.file }}
@@ -322,13 +322,13 @@ jobs:
     needs: [verify-tag, build-binary, image-manifest, sbom]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: binary-*
           merge-multiple: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           name: sbom
@@ -338,7 +338,7 @@ jobs:
         run: ls -la dist
 
       - name: create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ${{ needs.verify-tag.outputs.version }}
           tag_name: ${{ github.ref_name }}
