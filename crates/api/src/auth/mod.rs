@@ -9,7 +9,7 @@ use std::time::Duration;
 use axum::http::HeaderMap;
 use sha2::{Digest, Sha256};
 
-pub use extractor::AuthUser;
+pub use extractor::{AuthUser, SuperadminUser};
 
 const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 

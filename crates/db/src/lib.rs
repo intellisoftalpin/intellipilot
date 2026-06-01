@@ -17,6 +17,8 @@ pub mod memberships;
 pub mod migrations;
 pub mod milestones;
 pub mod password_reset;
+pub mod platform_invitations;
+pub mod platform_settings;
 pub mod projects;
 pub mod recovery;
 pub mod roles;

@@ -19,7 +19,7 @@ services:
       timeout: 3s
       retries: 10
     volumes:
-      - intellipilot_pg_data:/var/lib/postgresql/data
+      - intellipilot_pg_data:/var/lib/postgresql
 
   api:
     build:
@@ -34,6 +34,13 @@ services:
       INTELLIPILOT_BIND: 0.0.0.0:8080
       INTELLIPILOT_DATABASE_URL: postgres://intellipilot:intellipilot_dev@postgres:5432/intellipilot?sslmode=disable
       RUST_LOG: info,intellipilot=debug
+      # Dev convenience: bootstrap a default superadmin on first boot so a
+      # bare `docker compose up` lands you logged-in-able. Idempotent; safe
+      # to leave set across reboots.
+      INTELLIPILOT_BOOTSTRAP_ADMIN_EMAIL: admin@local
+      INTELLIPILOT_BOOTSTRAP_ADMIN_PASSWORD: admin-dev-password
+      INTELLIPILOT_BOOTSTRAP_ADMIN_USERNAME: admin
+      INTELLIPILOT_BOOTSTRAP_ADMIN_FULL_NAME: Local Admin
     ports:
       - "127.0.0.1:8080:8080"
     read_only: true

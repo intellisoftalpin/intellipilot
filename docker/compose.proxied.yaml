@@ -1,0 +1,103 @@
+# Single-endpoint stack WITHOUT TLS — one nginx merges backend + frontend on
+# a single port. Two intended use cases:
+#
+#   1. Local testing on a custom port:
+#        docker compose -f docker/compose.proxied.yaml up
+#        open http://localhost:8080
+#      All defaults are dev-friendly: ephemeral dev keys, RP_ID=localhost,
+#      RP_ORIGIN=http://localhost:8080. No .env file required.
+#
+#   2. Behind an external reverse proxy that terminates TLS
+#      (caddy, traefik, an upstream nginx, a cloud load balancer):
+#        cp docker/.env.example docker/.env
+#        # set INTELLIPILOT_ENV=production, real secrets, INTELLIPILOT_PUBLIC_*,
+#        # and INTELLIPILOT_BIND_ADDR=0.0.0.0
+#        docker compose -f docker/compose.proxied.yaml --env-file docker/.env up -d
+#        # then point your external proxy at <host>:${INTELLIPILOT_PORT}.
+#
+# Differences from compose.full.yaml:
+#   - No nginx-proxy / acme-companion. No TLS. No DNS dependency.
+#   - One nginx ("router") multiplexes  /api/* + /health/* -> backend,  /* -> frontend.
+#   - Defaults to development env so it boots without supplying secrets.
+#   - Binds 127.0.0.1 by default; flip INTELLIPILOT_BIND_ADDR=0.0.0.0 when an
+#     external proxy needs to reach it.
+
+services:
+  router:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+      - frontend
+    ports:
+      - "${INTELLIPILOT_BIND_ADDR:-127.0.0.1}:${INTELLIPILOT_PORT:-8080}:80"
+    volumes:
+      - ./nginx-router.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [edge]
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-intellipilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-intellipilot_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-intellipilot}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-intellipilot} -d ${POSTGRES_DB:-intellipilot}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - intellipilot_pg_data:/var/lib/postgresql
+    networks: [internal]
+
+  api:
+    image: ghcr.io/intellisoftalpin/intellipilot:${INTELLIPILOT_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8080"
+    environment:
+      INTELLIPILOT_ENV: ${INTELLIPILOT_ENV:-development}
+      INTELLIPILOT_BIND: 0.0.0.0:8080
+      INTELLIPILOT_DATABASE_URL: postgres://${POSTGRES_USER:-intellipilot}:${POSTGRES_PASSWORD:-intellipilot_dev}@postgres:5432/${POSTGRES_DB:-intellipilot}?sslmode=disable
+      INTELLIPILOT_PASETO_SECRET: ${INTELLIPILOT_PASETO_SECRET:-}
+      INTELLIPILOT_PASSWORD_PEPPER: ${INTELLIPILOT_PASSWORD_PEPPER:-}
+      INTELLIPILOT_ATTACHMENT_SECRET: ${INTELLIPILOT_ATTACHMENT_SECRET:-}
+      INTELLIPILOT_ATTACHMENT_MAX_BYTES: ${INTELLIPILOT_ATTACHMENT_MAX_BYTES:-26214400}
+      INTELLIPILOT_STORAGE_DIR: /var/lib/intellipilot/attachments
+      INTELLIPILOT_RP_ID: ${INTELLIPILOT_PUBLIC_HOST:-localhost}
+      INTELLIPILOT_RP_ORIGIN: ${INTELLIPILOT_PUBLIC_ORIGIN:-http://localhost:8080}
+      INTELLIPILOT_RP_NAME: ${INTELLIPILOT_RP_NAME:-IntelliPilot}
+      RUST_LOG: ${RUST_LOG:-info,intellipilot=debug}
+      INTELLIPILOT_BOOTSTRAP_ADMIN_EMAIL: ${INTELLIPILOT_BOOTSTRAP_ADMIN_EMAIL:-}
+      INTELLIPILOT_BOOTSTRAP_ADMIN_PASSWORD: ${INTELLIPILOT_BOOTSTRAP_ADMIN_PASSWORD:-}
+      INTELLIPILOT_BOOTSTRAP_ADMIN_USERNAME: ${INTELLIPILOT_BOOTSTRAP_ADMIN_USERNAME:-}
+      INTELLIPILOT_BOOTSTRAP_ADMIN_FULL_NAME: ${INTELLIPILOT_BOOTSTRAP_ADMIN_FULL_NAME:-}
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - intellipilot_attachments:/var/lib/intellipilot/attachments
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks: [edge, internal]
+
+  frontend:
+    image: ghcr.io/intellisoftalpin/intellipilot-front:${INTELLIPILOT_FRONT_VERSION:-latest}
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks: [edge]
+
+volumes:
+  intellipilot_pg_data:
+  intellipilot_attachments:
+
+networks:
+  edge:
+  internal:

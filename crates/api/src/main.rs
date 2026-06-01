@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use intellipilot_api::state::{AttachmentConfig, DevToggles};
 use intellipilot_api::{AppState, AuthConfig, AuthContext, Env, ReadyCheck, build_router};
 use intellipilot_auth::AccessKey;
+use intellipilot_auth::password::hash_password;
 use intellipilot_auth::webauthn::{RpConfig, build as build_webauthn};
+use intellipilot_core::user::{NewUser, NewUserWithFlags};
+use intellipilot_db::users;
 use intellipilot_db::{Db, DbConfig};
 use intellipilot_mailer::{LoggingMailer, Mailer, NoopMailer};
 use intellipilot_storage::LocalStorage;
@@ -52,6 +55,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Wire identity/session features only when a database is configured.
     match std::env::var("INTELLIPILOT_DATABASE_URL") {
         Ok(url) => {
+            // Apply any pending refinery migrations before opening the pool —
+            // bootstrap and identity code below assumes the schema is current.
+            let report = intellipilot_db::migrations::apply(&url).await?;
+            tracing::info!(
+                applied = report.applied_migrations().len(),
+                "db migrations applied"
+            );
+
             let db = Db::connect(&DbConfig {
                 url,
                 ..DbConfig::default()
@@ -60,6 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let pepper = std::env::var("INTELLIPILOT_PASSWORD_PEPPER")
                 .ok()
                 .map(|p| Arc::new(p.into_bytes()));
+
+            bootstrap_superadmin(&db, pepper.as_deref().map(|p| p.as_slice()), env).await?;
             let mailer = build_mailer(env);
             let webauthn = Arc::new(build_webauthn(&rp_config())?);
             let attachments = build_attachments(env)?;
@@ -98,6 +111,112 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    Ok(())
+}
+
+/// Bootstrap an initial superadmin from environment variables (V011).
+///
+/// Behaviour:
+///   * If `INTELLIPILOT_BOOTSTRAP_ADMIN_EMAIL` names an existing user, promote
+///     that user to `is_superadmin = true`. The password is **never** touched.
+///   * If no such user exists and `INTELLIPILOT_BOOTSTRAP_ADMIN_PASSWORD` is
+///     also set, create a fresh superadmin with those credentials.
+///   * If the env vars are unset:
+///       - production with no existing superadmin → refuse to start.
+///       - development with no existing superadmin → warn and continue.
+///       - any env with at least one existing superadmin → silent no-op.
+///
+/// Idempotent across reboots: re-running with the same env + DB is a no-op
+/// because the second pass finds the user already marked as superadmin.
+async fn bootstrap_superadmin(
+    db: &Db,
+    pepper: Option<&[u8]>,
+    env: Env,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let email = std::env::var("INTELLIPILOT_BOOTSTRAP_ADMIN_EMAIL")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    let password = std::env::var("INTELLIPILOT_BOOTSTRAP_ADMIN_PASSWORD")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let username_opt = std::env::var("INTELLIPILOT_BOOTSTRAP_ADMIN_USERNAME").ok();
+    let full_name_opt = std::env::var("INTELLIPILOT_BOOTSTRAP_ADMIN_FULL_NAME").ok();
+
+    let client = db.pool.get().await?;
+    let existing_admins = users::count_active_superadmins(&client).await?;
+
+    let Some(email_raw) = email else {
+        if existing_admins == 0 {
+            if env == Env::Production {
+                return Err(
+                    "no superadmin exists and INTELLIPILOT_BOOTSTRAP_ADMIN_EMAIL is unset \
+                     — production refuses to start with no admin path"
+                        .into(),
+                );
+            }
+            tracing::warn!(
+                "no superadmin exists and INTELLIPILOT_BOOTSTRAP_ADMIN_EMAIL is unset; \
+                 /api/v1/admin/* will be unreachable until one is created manually"
+            );
+        }
+        return Ok(());
+    };
+
+    let normalized = users::normalize_email(&email_raw);
+
+    if let Some(existing) = users::find_by_email_with_secret(&client, &normalized).await? {
+        if existing.user.is_superadmin {
+            tracing::info!(email = %normalized, "bootstrap: user already superadmin, no-op");
+        } else {
+            users::promote_to_superadmin(&client, existing.user.id).await?;
+            tracing::warn!(
+                email = %normalized,
+                user_id = %existing.user.id,
+                "bootstrap: existing user promoted to superadmin"
+            );
+        }
+        return Ok(());
+    }
+
+    // User does not exist — we have to create one, which requires a password.
+    let Some(password) = password else {
+        return Err(format!(
+            "bootstrap: no user with email '{normalized}' exists and \
+             INTELLIPILOT_BOOTSTRAP_ADMIN_PASSWORD is unset; cannot create one"
+        )
+        .into());
+    };
+
+    let username = username_opt.unwrap_or_else(|| {
+        normalized
+            .split('@')
+            .next()
+            .unwrap_or(&normalized)
+            .to_owned()
+    });
+    let full_name = full_name_opt.unwrap_or_else(|| username.clone());
+    let password_hash = hash_password(&password, pepper)?;
+
+    let created = users::create_with_flags(
+        &client,
+        &NewUserWithFlags {
+            new: NewUser {
+                email: normalized.clone(),
+                username,
+                full_name,
+                password_hash,
+            },
+            is_superadmin: true,
+            must_change_password: false,
+        },
+    )
+    .await?;
+    tracing::warn!(
+        email = %normalized,
+        user_id = %created.id,
+        "bootstrap: created superadmin from env"
+    );
     Ok(())
 }
 

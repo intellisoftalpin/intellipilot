@@ -13,8 +13,8 @@ use crate::middleware::{rate_limit, request_id, security_headers};
 use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
-    attachments, auth, backlog, catalog, health, me, mfa, milestones, openapi, passkeys, projects,
-    search, taxonomy, wiki,
+    admin, attachments, auth, backlog, catalog, health, me, mfa, milestones, openapi, passkeys,
+    projects, search, taxonomy, wiki,
 };
 
 #[allow(clippy::too_many_lines)] // a flat, readable route table
@@ -112,6 +112,32 @@ pub fn build_router(state: AppState) -> Router {
                 get(projects::list_invitations),
             )
             .route("/api/v1/invitations/accept", post(projects::accept_invitation))
+            // Platform admin (V011) — all gated by SuperadminUser inside handlers
+            .route("/api/v1/admin/users", get(admin::handlers::list_users))
+            .route("/api/v1/admin/users", post(admin::handlers::create_user))
+            .route("/api/v1/admin/users/{id}", patch(admin::handlers::update_user))
+            .route("/api/v1/admin/users/{id}", delete(admin::handlers::delete_user))
+            .route(
+                "/api/v1/admin/users/{id}/reset-password",
+                post(admin::handlers::reset_password),
+            )
+            .route(
+                "/api/v1/admin/invitations",
+                post(admin::handlers::create_invitation),
+            )
+            .route(
+                "/api/v1/admin/invitations",
+                get(admin::handlers::list_invitations),
+            )
+            .route(
+                "/api/v1/admin/invitations/{id}",
+                delete(admin::handlers::revoke_invitation),
+            )
+            .route("/api/v1/admin/settings", get(admin::handlers::get_settings))
+            .route(
+                "/api/v1/admin/settings",
+                patch(admin::handlers::update_settings),
+            )
             // Taxonomy (generic, per kind)
             .route(
                 "/api/v1/projects/{project_id}/taxonomy/{kind}",

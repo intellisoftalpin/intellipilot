@@ -59,6 +59,7 @@ bytes = { workspace = true }
 url = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
+rand = { workspace = true }
 infer = { workspace = true }
 comrak = { workspace = true }
 ammonia = { workspace = true }

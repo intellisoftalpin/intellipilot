@@ -15,6 +15,13 @@ pub struct User {
     pub lang: String,
     pub timezone: String,
     pub is_active: bool,
+    /// Platform-wide admin flag (V011). Distinct from per-project `is_admin`
+    /// which lives on `roles`.
+    pub is_superadmin: bool,
+    /// True when the account was created by an admin and has yet to change
+    /// its temporary password. The frontend force-redirects to the change-
+    /// password page while this is set.
+    pub must_change_password: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -26,6 +33,15 @@ pub struct NewUser {
     pub username: String,
     pub full_name: String,
     pub password_hash: String,
+}
+
+/// Admin-driven user creation. The public register path uses `NewUser`; this
+/// variant carries the extra platform flags that only an admin can set.
+#[derive(Debug, Clone)]
+pub struct NewUserWithFlags {
+    pub new: NewUser,
+    pub is_superadmin: bool,
+    pub must_change_password: bool,
 }
 
 /// Partial profile update. `None` fields are left unchanged.

@@ -7,6 +7,7 @@
 
 #![allow(clippy::missing_const_for_fn)] // utoipa-derived items aren't const-friendly
 
+pub mod admin;
 pub mod attachments;
 pub mod auth;
 pub mod backlog;

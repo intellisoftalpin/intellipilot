@@ -1,11 +1,23 @@
 //! User persistence.
 
-use intellipilot_core::user::{NewUser, ProfileUpdate, User};
+use intellipilot_core::user::{NewUser, NewUserWithFlags, ProfileUpdate, User};
 use time::OffsetDateTime;
 use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::DbError;
+
+/// Outcome of an admin update that may be refused by a domain invariant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminUpdateOutcome {
+    /// The row was updated.
+    Updated,
+    /// No matching active user was found.
+    NotFound,
+    /// The change would have removed the last active superadmin and was
+    /// refused. Surfaced to handlers as 409 Conflict.
+    LastSuperadmin,
+}
 
 /// A user row including the password hash, for authentication only.
 #[derive(Debug, Clone)]
@@ -29,11 +41,14 @@ fn row_to_user(row: &Row) -> User {
         lang: row.get("lang"),
         timezone: row.get("timezone"),
         is_active: row.get("is_active"),
+        is_superadmin: row.get("is_superadmin"),
+        must_change_password: row.get("must_change_password"),
         created_at: row.get("created_at"),
     }
 }
 
-const USER_COLS: &str = "id, email, username, full_name, lang, timezone, is_active, created_at";
+const USER_COLS: &str = "id, email, username, full_name, lang, timezone, \
+                         is_active, is_superadmin, must_change_password, created_at";
 
 /// Insert a new user. Email is normalized before storage.
 pub async fn create(client: &deadpool_postgres::Client, new: &NewUser) -> Result<User, DbError> {
@@ -183,6 +198,10 @@ pub async fn has_active_2fa(client: &deadpool_postgres::Client, id: Uuid) -> Res
 
 /// Soft-delete a user (GDPR erase with grace period). Returns true if a row
 /// was affected.
+///
+/// Used by the user's own `DELETE /api/v1/me` flow — does NOT enforce the
+/// last-superadmin guard. Admin-driven deletion goes through
+/// [`soft_delete_guarded`].
 pub async fn soft_delete(
     client: &deadpool_postgres::Client,
     id: Uuid,
@@ -196,4 +215,272 @@ pub async fn soft_delete(
         )
         .await?;
     Ok(affected > 0)
+}
+
+// ===========================================================================
+// V011: superadmin / admin-driven user management
+// ===========================================================================
+
+/// Count active (non-deleted, active, superadmin) users.
+pub async fn count_active_superadmins(
+    client: &deadpool_postgres::Client,
+) -> Result<i64, DbError> {
+    let row = client
+        .query_one(
+            "SELECT COUNT(*)::bigint AS n FROM users \
+             WHERE is_superadmin AND is_active AND deleted_at IS NULL",
+            &[],
+        )
+        .await?;
+    Ok(row.get::<_, i64>("n"))
+}
+
+/// Unconditional promotion. Always safe — adding a superadmin never violates
+/// the "at least one" invariant. Used by the env-driven bootstrap path.
+pub async fn promote_to_superadmin(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+) -> Result<bool, DbError> {
+    let affected = client
+        .execute(
+            "UPDATE users SET is_superadmin = true \
+             WHERE id = $1 AND deleted_at IS NULL",
+            &[&id],
+        )
+        .await?;
+    Ok(affected > 0)
+}
+
+/// Update `is_superadmin`. When demoting, refuses if the user is the last
+/// active superadmin (would lock everyone out of the admin area).
+pub async fn set_superadmin(
+    client: &mut deadpool_postgres::Client,
+    id: Uuid,
+    value: bool,
+) -> Result<AdminUpdateOutcome, DbError> {
+    let tx = client.transaction().await?;
+
+    let target = tx
+        .query_opt(
+            "SELECT is_superadmin, is_active, deleted_at IS NOT NULL AS deleted \
+             FROM users WHERE id = $1 FOR UPDATE",
+            &[&id],
+        )
+        .await?;
+    let Some(target) = target else {
+        return Ok(AdminUpdateOutcome::NotFound);
+    };
+    if target.get::<_, bool>("deleted") {
+        return Ok(AdminUpdateOutcome::NotFound);
+    }
+
+    // Last-admin guard: when demoting an active superadmin, ensure another
+    // active superadmin exists.
+    if !value && target.get::<_, bool>("is_superadmin") && target.get::<_, bool>("is_active") {
+        let row = tx
+            .query_one(
+                "SELECT COUNT(*)::bigint AS n FROM users \
+                 WHERE is_superadmin AND is_active AND deleted_at IS NULL AND id <> $1",
+                &[&id],
+            )
+            .await?;
+        if row.get::<_, i64>("n") == 0 {
+            return Ok(AdminUpdateOutcome::LastSuperadmin);
+        }
+    }
+
+    tx.execute(
+        "UPDATE users SET is_superadmin = $2 WHERE id = $1",
+        &[&id, &value],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(AdminUpdateOutcome::Updated)
+}
+
+/// Update `is_active`. Deactivating an active superadmin uses the same
+/// last-admin guard as demotion.
+pub async fn set_active(
+    client: &mut deadpool_postgres::Client,
+    id: Uuid,
+    value: bool,
+) -> Result<AdminUpdateOutcome, DbError> {
+    let tx = client.transaction().await?;
+
+    let target = tx
+        .query_opt(
+            "SELECT is_superadmin, is_active, deleted_at IS NOT NULL AS deleted \
+             FROM users WHERE id = $1 FOR UPDATE",
+            &[&id],
+        )
+        .await?;
+    let Some(target) = target else {
+        return Ok(AdminUpdateOutcome::NotFound);
+    };
+    if target.get::<_, bool>("deleted") {
+        return Ok(AdminUpdateOutcome::NotFound);
+    }
+
+    if !value && target.get::<_, bool>("is_superadmin") && target.get::<_, bool>("is_active") {
+        let row = tx
+            .query_one(
+                "SELECT COUNT(*)::bigint AS n FROM users \
+                 WHERE is_superadmin AND is_active AND deleted_at IS NULL AND id <> $1",
+                &[&id],
+            )
+            .await?;
+        if row.get::<_, i64>("n") == 0 {
+            return Ok(AdminUpdateOutcome::LastSuperadmin);
+        }
+    }
+
+    tx.execute(
+        "UPDATE users SET is_active = $2 WHERE id = $1",
+        &[&id, &value],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(AdminUpdateOutcome::Updated)
+}
+
+/// Set the forced-password-change flag. Cleared by the password-change handler
+/// on success.
+pub async fn set_must_change_password(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+    value: bool,
+) -> Result<bool, DbError> {
+    let affected = client
+        .execute(
+            "UPDATE users SET must_change_password = $2 \
+             WHERE id = $1 AND deleted_at IS NULL",
+            &[&id, &value],
+        )
+        .await?;
+    Ok(affected > 0)
+}
+
+/// Admin-driven soft-delete with last-admin guard.
+pub async fn soft_delete_guarded(
+    client: &mut deadpool_postgres::Client,
+    id: Uuid,
+    grace_until: OffsetDateTime,
+) -> Result<AdminUpdateOutcome, DbError> {
+    let tx = client.transaction().await?;
+
+    let target = tx
+        .query_opt(
+            "SELECT is_superadmin, is_active, deleted_at IS NOT NULL AS deleted \
+             FROM users WHERE id = $1 FOR UPDATE",
+            &[&id],
+        )
+        .await?;
+    let Some(target) = target else {
+        return Ok(AdminUpdateOutcome::NotFound);
+    };
+    if target.get::<_, bool>("deleted") {
+        return Ok(AdminUpdateOutcome::NotFound);
+    }
+
+    if target.get::<_, bool>("is_superadmin") && target.get::<_, bool>("is_active") {
+        let row = tx
+            .query_one(
+                "SELECT COUNT(*)::bigint AS n FROM users \
+                 WHERE is_superadmin AND is_active AND deleted_at IS NULL AND id <> $1",
+                &[&id],
+            )
+            .await?;
+        if row.get::<_, i64>("n") == 0 {
+            return Ok(AdminUpdateOutcome::LastSuperadmin);
+        }
+    }
+
+    tx.execute(
+        "UPDATE users SET deleted_at = now(), deleted_grace_until = $2, is_active = false \
+         WHERE id = $1",
+        &[&id, &grace_until],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(AdminUpdateOutcome::Updated)
+}
+
+/// Admin-driven create: same shape as [`create`] but allows the admin to mark
+/// the new account as `is_superadmin` and/or `must_change_password`.
+pub async fn create_with_flags(
+    client: &deadpool_postgres::Client,
+    new: &NewUserWithFlags,
+) -> Result<User, DbError> {
+    let email = normalize_email(&new.new.email);
+    let row = client
+        .query_one(
+            &format!(
+                "INSERT INTO users \
+                   (email, username, full_name, password_hash, \
+                    is_superadmin, must_change_password) \
+                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING {USER_COLS}"
+            ),
+            &[
+                &email,
+                &new.new.username,
+                &new.new.full_name,
+                &new.new.password_hash,
+                &new.is_superadmin,
+                &new.must_change_password,
+            ],
+        )
+        .await?;
+    Ok(row_to_user(&row))
+}
+
+/// Filter / pagination params for the admin user list.
+#[derive(Debug, Clone, Default)]
+pub struct ListFilter {
+    /// Case-insensitive substring search across email + username + full_name.
+    pub q: Option<String>,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+/// Paginated listing for the admin UI. Returns active and inactive users but
+/// excludes soft-deleted ones.
+pub async fn list(
+    client: &deadpool_postgres::Client,
+    filter: &ListFilter,
+) -> Result<(Vec<User>, i64), DbError> {
+    let limit = i64::from(filter.limit.clamp(1, 200));
+    let offset = i64::from(filter.offset);
+    let q_pat = filter.q.as_ref().map(|s| format!("%{}%", s.to_lowercase()));
+
+    let rows = client
+        .query(
+            &format!(
+                "SELECT {USER_COLS} FROM users \
+                 WHERE deleted_at IS NULL AND ( \
+                   $1::text IS NULL OR \
+                   lower(email)     LIKE $1 OR \
+                   lower(username)  LIKE $1 OR \
+                   lower(full_name) LIKE $1 \
+                 ) \
+                 ORDER BY created_at DESC \
+                 LIMIT $2 OFFSET $3"
+            ),
+            &[&q_pat, &limit, &offset],
+        )
+        .await?;
+    let users = rows.iter().map(row_to_user).collect();
+
+    let total = client
+        .query_one(
+            "SELECT COUNT(*)::bigint AS n FROM users \
+             WHERE deleted_at IS NULL AND ( \
+               $1::text IS NULL OR \
+               lower(email)     LIKE $1 OR \
+               lower(username)  LIKE $1 OR \
+               lower(full_name) LIKE $1 \
+             )",
+            &[&q_pat],
+        )
+        .await?;
+    Ok((users, total.get::<_, i64>("n")))
 }

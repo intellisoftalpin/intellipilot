@@ -97,6 +97,42 @@ docker compose -f docker/compose.yaml down -v       # wipe Postgres volume
 
 ---
 
+## First-time login
+
+Public registration is **closed by default** — the operator bootstraps an
+initial superadmin from environment variables, and that superadmin invites
+everyone else.
+
+`docker/compose.yaml` defaults to `admin@local` / `admin-dev-password` so a
+bare `docker compose up` lands you with a working admin. For
+`compose.proxied.yaml` / `compose.full.yaml` you set the credentials in
+`docker/.env`:
+
+```env
+INTELLIPILOT_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+INTELLIPILOT_BOOTSTRAP_ADMIN_PASSWORD=replace-me-strong-password
+```
+
+What the API does on boot:
+
+| State on disk | Outcome |
+|---|---|
+| No superadmin exists, env vars set | Creates the superadmin from env |
+| Env email matches an existing user | Promotes that user (password untouched) |
+| At least one superadmin already exists | Env vars are ignored; safe no-op |
+| No superadmin exists and env vars are empty | Production refuses to start; development warns and continues |
+
+Once logged in, manage users from the **Admin** menu:
+
+- `/admin/users` — list, create directly, promote/demote, deactivate, delete, issue password reset.
+- `/admin/invitations` — invite by email (mailer-less dev mode shows the raw link).
+- `/admin/settings` — toggle open registration on/off at runtime.
+
+Direct-created accounts get a `must_change_password` flag set; the user is
+prompted to rotate the temporary password on first login.
+
+---
+
 ## Local development — cargo
 
 If you'd rather run the binary directly against your own Postgres:
@@ -321,28 +357,6 @@ Project-specific patterns:
   sanitized with [ammonia](https://docs.rs/ammonia); do not bypass the
   sanitizer.
 - HTTP errors are RFC 7807 (`crates/api/src/problem.rs`).
-
----
-
-## Delivery phases
-
-Development is organised as numbered phases, each landing as a commit on
-`main`. The current state on `main`:
-
-| Phase | Focus |
-|---|---|
-| 0 | Workspace scaffold, health, OpenAPI, Problem JSON errors |
-| 1 | Identity: register / login / sessions / refresh, password policy |
-| 2 | 2FA: TOTP, recovery codes, WebAuthn passkeys |
-| 3 | Projects, roles, memberships, invitations |
-| 4 | Per-project taxonomies (status, type, priority, severity, points) |
-| 5 | Backlog: epics, stories, tasks, issues, comments, history, idempotency |
-| 6 | Labels & components catalog |
-| 7 | Milestones (board + burndown) and attachments |
-| 8 | Wiki: pages, revisions, diff, restore |
-
-CI comments reference a future Phase 10 (Hardening) that will add container
-vulnerability scanning, SBOM generation on release, and cosign signatures.
 
 ---
 

@@ -21,6 +21,11 @@ pub struct RegisterRequest {
     #[garde(length(max = 256))]
     #[serde(default)]
     pub full_name: String,
+    /// Platform-invitation token issued by a superadmin (V011). Required when
+    /// `platform_settings.open_registration = false`; ignored otherwise.
+    #[garde(skip)]
+    #[serde(default)]
+    pub invitation_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]

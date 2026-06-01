@@ -22,7 +22,9 @@ use intellipilot_auth::refresh::{self, REFRESH_TTL_SECS};
 use intellipilot_auth::token::{
     ACCESS_TTL_SECS, MFA_TTL_SECS, issue_access_token, issue_mfa_token,
 };
-use intellipilot_core::user::NewUser;
+use intellipilot_core::user::{NewUser, NewUserWithFlags};
+use intellipilot_db::platform_invitations::{self, PlatformInviteRole};
+use intellipilot_db::platform_settings;
 use intellipilot_db::{audit, login_attempts, password_reset, sessions, users};
 use serde_json::json;
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -159,7 +161,13 @@ fn token_response(access: String, dev_refresh: Option<String>) -> TokenResponse 
 // --------------------------------------------------------------------------
 
 #[utoipa::path(post, path = "/api/v1/auth/register", request_body = RegisterRequest,
-    responses((status = 201, body = intellipilot_core::user::User), (status = 409), (status = 422)))]
+    responses(
+        (status = 201, body = intellipilot_core::user::User),
+        (status = 403, description = "registration is closed or invitation token mismatch"),
+        (status = 409),
+        (status = 410, description = "invitation token expired or already consumed"),
+        (status = 422),
+    ))]
 pub async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -184,23 +192,110 @@ pub async fn register(
         );
     }
 
-    // Hash BEFORE the uniqueness check so the duplicate path pays the same
-    // argon2 cost as the success path (timing parity / anti-enumeration).
-    let Ok(hash) = hash_password(&req.password, pepper_bytes(auth)) else {
-        return internal(&rid);
-    };
-
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);
     };
 
-    let new = NewUser {
-        email: req.email.clone(),
-        username: req.username.clone(),
-        full_name: req.full_name.clone(),
-        password_hash: hash,
+    // V011: gate on platform_settings.open_registration. When closed, require
+    // a valid invitation_token whose email matches the request email.
+    let settings = match platform_settings::get(&client).await {
+        Ok(s) => s,
+        Err(_) => return internal(&rid),
     };
-    match users::create(&client, &new).await {
+
+    let invitation_role = if settings.open_registration {
+        // Open registration — anyone can sign up; invitation_token is ignored
+        // even if supplied. Always assigns the bare `user` role.
+        PlatformInviteRole::User
+    } else {
+        let Some(raw_token) = req.invitation_token.as_deref().filter(|s| !s.is_empty())
+        else {
+            return problem(
+                StatusCode::FORBIDDEN,
+                "registration_closed",
+                "Registration is invite-only",
+                Some("an invitation token is required".to_owned()),
+                &rid,
+            );
+        };
+        let token_hash = sha256_hex(raw_token);
+
+        let invite = match platform_invitations::find_pending(&client, &token_hash).await {
+            Ok(Some(inv)) => inv,
+            Ok(None) => {
+                // Distinguish "never existed" from "already consumed / expired".
+                let exists = platform_invitations::exists(&client, &token_hash)
+                    .await
+                    .unwrap_or(false);
+                if exists {
+                    return problem(
+                        StatusCode::GONE,
+                        "invitation_consumed",
+                        "Invitation no longer valid",
+                        Some("the invitation has already been used or has expired".to_owned()),
+                        &rid,
+                    );
+                }
+                return problem(
+                    StatusCode::FORBIDDEN,
+                    "invitation_invalid",
+                    "Invitation invalid",
+                    Some("the invitation token was not recognised".to_owned()),
+                    &rid,
+                );
+            }
+            Err(_) => return internal(&rid),
+        };
+
+        // Email must match the invitation (case-insensitive). Stops token reuse
+        // by a third party who happens to learn the token.
+        let req_email_norm = req.email.trim().to_lowercase();
+        if invite.email.trim().to_lowercase() != req_email_norm {
+            return problem(
+                StatusCode::FORBIDDEN,
+                "invitation_email_mismatch",
+                "Invitation email mismatch",
+                Some("the email does not match the invitation".to_owned()),
+                &rid,
+            );
+        }
+
+        // Atomically consume the token before doing the insert; if the
+        // CAS fails, somebody else just consumed it.
+        let consumed = platform_invitations::mark_accepted(&client, &token_hash)
+            .await
+            .unwrap_or(false);
+        if !consumed {
+            return problem(
+                StatusCode::GONE,
+                "invitation_consumed",
+                "Invitation no longer valid",
+                Some("the invitation has already been used or has expired".to_owned()),
+                &rid,
+            );
+        }
+
+        invite.role
+    };
+
+    // Hash AFTER token check (the cheap unrelated work) — argon2 cost only
+    // borne by attempts that pass authorization. Anti-enumeration timing
+    // parity is already provided by the conflict path below.
+    let Ok(hash) = hash_password(&req.password, pepper_bytes(auth)) else {
+        return internal(&rid);
+    };
+
+    let new = NewUserWithFlags {
+        new: NewUser {
+            email: req.email.clone(),
+            username: req.username.clone(),
+            full_name: req.full_name.clone(),
+            password_hash: hash,
+        },
+        is_superadmin: matches!(invitation_role, PlatformInviteRole::Superadmin),
+        must_change_password: false,
+    };
+    match users::create_with_flags(&client, &new).await {
         Ok(user) => {
             let ip = client_ip(&headers);
             audit::record(
@@ -209,7 +304,7 @@ pub async fn register(
                 "register",
                 Some(ip),
                 Some(&user_agent(&headers)),
-                &json!({}),
+                &json!({"is_superadmin": user.is_superadmin}),
             )
             .await;
             (StatusCode::CREATED, Json(user)).into_response()

@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.1.12",
+        version = "0.1.13",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -56,6 +56,16 @@ use crate::problem::{FieldErrorView, Problem};
         crate::projects::update_project,
         crate::projects::delete_project,
         crate::projects::accept_invitation,
+        crate::admin::handlers::list_users,
+        crate::admin::handlers::create_user,
+        crate::admin::handlers::update_user,
+        crate::admin::handlers::delete_user,
+        crate::admin::handlers::reset_password,
+        crate::admin::handlers::create_invitation,
+        crate::admin::handlers::list_invitations,
+        crate::admin::handlers::revoke_invitation,
+        crate::admin::handlers::get_settings,
+        crate::admin::handlers::update_settings,
     ),
     components(schemas(
         LiveResponse,
@@ -128,6 +138,16 @@ use crate::problem::{FieldErrorView, Problem};
         intellipilot_core::wiki::WikiPage,
         intellipilot_core::wiki::WikiRevision,
         intellipilot_core::search::SearchHit,
+        crate::admin::dto::UserListResponse,
+        crate::admin::dto::CreateUserRequest,
+        crate::admin::dto::CreateUserResponse,
+        crate::admin::dto::UpdateUserRequest,
+        crate::admin::dto::PasswordResetIssuedResponse,
+        crate::admin::dto::CreateInvitationRequest,
+        crate::admin::dto::CreateInvitationResponse,
+        crate::admin::dto::PendingInvitation,
+        crate::admin::dto::PlatformSettingsResponse,
+        crate::admin::dto::UpdateSettingsRequest,
     ))
 )]
 pub struct ApiDoc;
