@@ -1,0 +1,156 @@
+# Full production-ish stack:
+#   nginx-proxy + acme-companion  (TLS termination + Let's Encrypt)
+#   postgres                       (database)
+#   api                            (intellipilot backend, pulled from GHCR)
+#   frontend                       (Flutter web bundle, built from git)
+#
+# Single domain, path-based routing:
+#   https://${DOMAIN}/api/*  ->  backend  (prefix stripped by VIRTUAL_DEST)
+#   https://${DOMAIN}/*      ->  Flutter web SPA (try_files fallback)
+#
+# Usage:
+#   cd intellipilot
+#   cp docker/.env.example docker/.env       # fill in DOMAIN, LE_EMAIL, secrets
+#   docker compose -f docker/compose.full.yaml --env-file docker/.env pull
+#   docker compose -f docker/compose.full.yaml --env-file docker/.env up -d --build
+#
+# Prereqs on the host:
+#   - DNS A/AAAA for $DOMAIN points to this host.
+#   - Ports 80 and 443 are free and reachable from the internet (HTTP-01).
+#
+# Tip: while iterating set ACME_CA_URI to the staging endpoint to avoid
+# Let's Encrypt rate limits:
+#   ACME_CA_URI=https://acme-staging-v02.api.letsencrypt.org/directory
+
+services:
+  proxy:
+    image: nginxproxy/nginx-proxy:1.6-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DEFAULT_EMAIL: ${LE_EMAIL:?set LE_EMAIL in .env}
+      ENABLE_IPV6: "true"
+      # Match the backend's INTELLIPILOT_ATTACHMENT_MAX_BYTES (25 MiB default)
+      # plus headroom for multipart overhead.
+      CLIENT_MAX_BODY_SIZE: ${PROXY_CLIENT_MAX_BODY_SIZE:-32m}
+      # Trust the proxy network — keeps the X-Forwarded-* headers honest.
+      TRUST_DOWNSTREAM_PROXY: "false"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - proxy_conf:/etc/nginx/conf.d
+      - proxy_vhost:/etc/nginx/vhost.d
+      - proxy_html:/usr/share/nginx/html
+      - proxy_certs:/etc/nginx/certs:ro
+    networks: [edge]
+
+  acme:
+    image: nginxproxy/acme-companion:2.5
+    restart: unless-stopped
+    depends_on:
+      - proxy
+    environment:
+      DEFAULT_EMAIL: ${LE_EMAIL}
+      ACME_CA_URI: ${ACME_CA_URI:-https://acme-v02.api.letsencrypt.org/directory}
+      # Re-use proxy's nginx for HTTP-01 challenge files.
+      NGINX_PROXY_CONTAINER: ${COMPOSE_PROJECT_NAME:-intellipilot}-proxy-1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - proxy_conf:/etc/nginx/conf.d
+      - proxy_vhost:/etc/nginx/vhost.d
+      - proxy_html:/usr/share/nginx/html
+      - proxy_certs:/etc/nginx/certs:rw
+      - acme_state:/etc/acme.sh
+    networks: [edge]
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-intellipilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-intellipilot}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-intellipilot} -d ${POSTGRES_DB:-intellipilot}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - intellipilot_pg_data:/var/lib/postgresql/data
+    networks: [internal]
+
+  api:
+    image: ghcr.io/intellisoftalpin/intellipilot:${INTELLIPILOT_VERSION:-latest}
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8080"
+    environment:
+      INTELLIPILOT_ENV: production
+      INTELLIPILOT_BIND: 0.0.0.0:8080
+      INTELLIPILOT_DATABASE_URL: postgres://${POSTGRES_USER:-intellipilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-intellipilot}?sslmode=disable
+      INTELLIPILOT_PASETO_SECRET: ${INTELLIPILOT_PASETO_SECRET:?set INTELLIPILOT_PASETO_SECRET in .env}
+      INTELLIPILOT_PASSWORD_PEPPER: ${INTELLIPILOT_PASSWORD_PEPPER:?set INTELLIPILOT_PASSWORD_PEPPER in .env}
+      INTELLIPILOT_ATTACHMENT_SECRET: ${INTELLIPILOT_ATTACHMENT_SECRET:?set INTELLIPILOT_ATTACHMENT_SECRET in .env}
+      INTELLIPILOT_ATTACHMENT_MAX_BYTES: ${INTELLIPILOT_ATTACHMENT_MAX_BYTES:-26214400}
+      INTELLIPILOT_STORAGE_DIR: /var/lib/intellipilot/attachments
+      INTELLIPILOT_RP_ID: ${DOMAIN:?set DOMAIN in .env}
+      INTELLIPILOT_RP_ORIGIN: https://${DOMAIN}
+      INTELLIPILOT_RP_NAME: ${INTELLIPILOT_RP_NAME:-IntelliPilot}
+      RUST_LOG: ${RUST_LOG:-info}
+      # nginx-proxy / acme-companion routing labels.
+      # VIRTUAL_PATH=/api/ + VIRTUAL_DEST=/ means /api/foo -> /foo upstream.
+      VIRTUAL_HOST: ${DOMAIN}
+      VIRTUAL_PATH: /api/
+      VIRTUAL_DEST: /
+      VIRTUAL_PORT: "8080"
+      LETSENCRYPT_HOST: ${DOMAIN}
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - intellipilot_attachments:/var/lib/intellipilot/attachments
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks: [edge, internal]
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        FRONTEND_REPO: ${FRONTEND_REPO:-https://github.com/intellisoftalpin/intellipilot-front.git}
+        FRONTEND_REF: ${FRONTEND_REF:-main}
+        FLUTTER_TAG: ${FLUTTER_TAG:-stable}
+        API_BASE: /api
+    image: intellipilot-frontend:${FRONTEND_REF:-main}
+    restart: unless-stopped
+    expose:
+      - "80"
+    environment:
+      VIRTUAL_HOST: ${DOMAIN}
+      VIRTUAL_PATH: /
+      VIRTUAL_PORT: "80"
+      LETSENCRYPT_HOST: ${DOMAIN}
+    networks: [edge]
+
+volumes:
+  intellipilot_pg_data:
+  intellipilot_attachments:
+  proxy_conf:
+  proxy_vhost:
+  proxy_html:
+  proxy_certs:
+  acme_state:
+
+networks:
+  # Public-facing network shared with the reverse proxy.
+  edge:
+  # Backend ↔ database only. Postgres is NOT reachable from edge.
+  internal:
