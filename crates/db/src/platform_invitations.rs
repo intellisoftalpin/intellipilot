@@ -20,7 +20,7 @@ pub enum PlatformInviteRole {
 
 impl PlatformInviteRole {
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::User => "user",
             Self::Superadmin => "superadmin",
@@ -106,10 +106,7 @@ pub async fn find_pending(
 
 /// Distinguishes "unknown token" (404) from "expired or already consumed" (410)
 /// for honest error responses.
-pub async fn exists(
-    client: &deadpool_postgres::Client,
-    token_hash: &str,
-) -> Result<bool, DbError> {
+pub async fn exists(client: &deadpool_postgres::Client, token_hash: &str) -> Result<bool, DbError> {
     let row = client
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM platform_invitations WHERE token_hash = $1) AS e",
@@ -164,14 +161,12 @@ pub async fn list_pending(
         .collect())
 }
 
-/// Revoke a pending invitation by id. Returns true if it transitioned (was
-/// pending and is now marked accepted to block reuse). We deliberately set
-/// `accepted_at = now()` rather than deleting so audit / forensics keep the
-/// row.
-pub async fn revoke(
-    client: &deadpool_postgres::Client,
-    id: Uuid,
-) -> Result<bool, DbError> {
+/// Revoke a pending invitation by id.
+///
+/// Returns true if it transitioned (was pending and is now marked accepted to
+/// block reuse). We deliberately set `accepted_at = now()` rather than
+/// deleting so audit / forensics keep the row.
+pub async fn revoke(client: &deadpool_postgres::Client, id: Uuid) -> Result<bool, DbError> {
     let n = client
         .execute(
             "UPDATE platform_invitations SET accepted_at = now() \

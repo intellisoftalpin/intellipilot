@@ -24,10 +24,12 @@ pub async fn run(client: &mut Client) -> Result<refinery::Report, MigrateError> 
     Ok(report)
 }
 
-/// Convenience wrapper: open a short-lived NoTls connection from a URL,
-/// apply any pending migrations, then tear the connection down. Refinery
-/// requires a non-pooled `tokio_postgres::Client`, so this is the right
-/// shape for a one-shot startup migration step in a binary.
+/// Convenience wrapper: apply any pending migrations using a one-shot
+/// connection, then tear it down.
+///
+/// Opens a short-lived NoTls connection from a URL. Refinery requires a
+/// non-pooled `tokio_postgres::Client`, so this is the right shape for a
+/// one-shot startup migration step in a binary.
 pub async fn apply(url: &str) -> Result<refinery::Report, MigrateError> {
     let (mut client, conn) = tokio_postgres::connect(url, NoTls).await?;
     let handle = tokio::spawn(async move {

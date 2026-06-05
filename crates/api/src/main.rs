@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .ok()
                 .map(|p| Arc::new(p.into_bytes()));
 
-            bootstrap_superadmin(&db, pepper.as_deref().map(|p| p.as_slice()), env).await?;
+            bootstrap_superadmin(&db, pepper.as_deref().map(Vec::as_slice), env).await?;
             let mailer = build_mailer(env);
             let webauthn = Arc::new(build_webauthn(&rp_config())?);
             let attachments = build_attachments(env)?;

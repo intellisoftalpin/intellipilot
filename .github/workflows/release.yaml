@@ -18,10 +18,103 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # ===========================================================================
+  # CI gate — exact mirror of .github/workflows/ci.yaml. Nothing below this
+  # block runs until every check here is green, so a tag can never publish
+  # an artefact for a commit that hasn't passed fmt + clippy + tests +
+  # supply-chain checks. This duplicates the work CI would run on the same
+  # commit deliberately: triggers are independent, and shipping must not
+  # depend on whether the CI workflow happened to start first or finish at
+  # all.
+  # ===========================================================================
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: nextest
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: intellipilot
+          POSTGRES_PASSWORD: intellipilot_ci
+          POSTGRES_DB: intellipilot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U intellipilot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://intellipilot:intellipilot_ci@localhost:5432/intellipilot_test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+      - run: cargo nextest run --workspace --locked --profile ci
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit --deny warnings
+
+  typos:
+    name: typos
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: crate-ci/typos@v1.47.0
+
+  # ===========================================================================
+  # Release pipeline. Each publishing job below names the full CI gate in
+  # `needs:` so nothing ships without those checks passing.
+  # ===========================================================================
+
   verify-tag:
     name: verify tag matches Cargo.toml
     runs-on: ubuntu-24.04
@@ -86,7 +179,7 @@ jobs:
 
   build-binary:
     name: build binary (${{ matrix.arch }})
-    needs: verify-tag
+    needs: [verify-tag, fmt, clippy, test, deny, audit, typos]
     strategy:
       fail-fast: false
       matrix:
@@ -156,7 +249,7 @@ jobs:
 
   build-image:
     name: build image (${{ matrix.arch }})
-    needs: verify-tag
+    needs: [verify-tag, fmt, clippy, test, deny, audit, typos]
     strategy:
       fail-fast: false
       matrix:
@@ -285,7 +378,7 @@ jobs:
 
   sbom:
     name: generate CycloneDX SBOM
-    needs: verify-tag
+    needs: [verify-tag, fmt, clippy, test, deny, audit, typos]
     runs-on: ubuntu-24.04
     outputs:
       file: ${{ steps.gen.outputs.file }}

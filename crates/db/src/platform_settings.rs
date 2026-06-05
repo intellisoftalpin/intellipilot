@@ -14,9 +14,7 @@ pub struct PlatformSettings {
 
 /// Fetch the single settings row. The migration guarantees the row exists,
 /// so a missing row is treated as an internal error.
-pub async fn get(
-    client: &deadpool_postgres::Client,
-) -> Result<PlatformSettings, DbError> {
+pub async fn get(client: &deadpool_postgres::Client) -> Result<PlatformSettings, DbError> {
     let row = client
         .query_one(
             "SELECT open_registration, updated_at, updated_by \

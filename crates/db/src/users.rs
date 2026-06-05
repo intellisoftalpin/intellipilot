@@ -222,9 +222,7 @@ pub async fn soft_delete(
 // ===========================================================================
 
 /// Count active (non-deleted, active, superadmin) users.
-pub async fn count_active_superadmins(
-    client: &deadpool_postgres::Client,
-) -> Result<i64, DbError> {
+pub async fn count_active_superadmins(client: &deadpool_postgres::Client) -> Result<i64, DbError> {
     let row = client
         .query_one(
             "SELECT COUNT(*)::bigint AS n FROM users \

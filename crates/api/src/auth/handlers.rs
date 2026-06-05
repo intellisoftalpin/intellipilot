@@ -94,6 +94,12 @@ fn validation_problem(report: &garde::Report, rid: &str) -> Response {
             message: err.to_string(),
         })
         .collect();
+    let summary = errors
+        .iter()
+        .map(|e| format!("{}: {}", e.field, e.message))
+        .collect::<Vec<_>>()
+        .join("; ");
+    tracing::warn!(request_id = %rid, fields = %summary, "request validation failed");
     Problem::new(
         StatusCode::UNPROCESSABLE_ENTITY,
         "validation_failed",
@@ -118,13 +124,16 @@ fn parse_json<T: serde::de::DeserializeOwned>(
             Some("expected application/json".to_owned()),
             rid,
         )),
-        Err(_) => Err(problem(
-            StatusCode::BAD_REQUEST,
-            "invalid_body",
-            "Invalid Request Body",
-            Some("could not parse JSON".to_owned()),
-            rid,
-        )),
+        Err(e) => {
+            tracing::warn!(request_id = %rid, error = %e, "request body parse failed");
+            Err(problem(
+                StatusCode::BAD_REQUEST,
+                "invalid_body",
+                "Invalid Request Body",
+                Some("could not parse JSON".to_owned()),
+                rid,
+            ))
+        }
     }
 }
 
@@ -168,6 +177,7 @@ fn token_response(access: String, dev_refresh: Option<String>) -> TokenResponse 
         (status = 410, description = "invitation token expired or already consumed"),
         (status = 422),
     ))]
+#[allow(clippy::too_many_lines)]
 pub async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -198,9 +208,8 @@ pub async fn register(
 
     // V011: gate on platform_settings.open_registration. When closed, require
     // a valid invitation_token whose email matches the request email.
-    let settings = match platform_settings::get(&client).await {
-        Ok(s) => s,
-        Err(_) => return internal(&rid),
+    let Ok(settings) = platform_settings::get(&client).await else {
+        return internal(&rid);
     };
 
     let invitation_role = if settings.open_registration {
@@ -208,8 +217,7 @@ pub async fn register(
         // even if supplied. Always assigns the bare `user` role.
         PlatformInviteRole::User
     } else {
-        let Some(raw_token) = req.invitation_token.as_deref().filter(|s| !s.is_empty())
-        else {
+        let Some(raw_token) = req.invitation_token.as_deref().filter(|s| !s.is_empty()) else {
             return problem(
                 StatusCode::FORBIDDEN,
                 "registration_closed",

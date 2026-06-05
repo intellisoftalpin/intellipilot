@@ -8,7 +8,17 @@
 //!   * Last-superadmin guard on demote / deactivate / delete.
 //!   * `must_change_password` flag plumbing.
 #![cfg(test)]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
+#![allow(
+    let_underscore_drop,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::print_stderr,
+    clippy::too_many_lines,
+    clippy::let_underscore_untyped
+)]
 
 mod common;
 
@@ -49,7 +59,9 @@ async fn set_open_registration(app: &TestApp, value: bool) {
 }
 
 async fn register_and_login(app: &TestApp, email: &str, username: &str) -> String {
-    let r = app.register(email, username, "correct horse battery staple").await;
+    let r = app
+        .register(email, username, "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 201, "register: {:?}", r.json);
     let l = app.login(email, "correct horse battery staple").await;
     assert_eq!(l.status, 200, "login: {:?}", l.json);
@@ -80,7 +92,9 @@ fn post_no_body(uri: &str, token: &str) -> Request<Body> {
 async fn register_open_succeeds() {
     let app = TestApp::spawn().await;
     set_open_registration(&app, true).await;
-    let r = app.register("user@x", "user", "correct horse battery staple").await;
+    let r = app
+        .register("user@x", "user", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 201, "{:?}", r.json);
     // must_change_password is false on open-registration accounts.
     assert_eq!(r.json["must_change_password"], Value::Bool(false));
@@ -91,7 +105,9 @@ async fn register_open_succeeds() {
 async fn register_closed_without_token_is_forbidden() {
     let app = TestApp::spawn().await;
     // default platform_settings.open_registration = false
-    let r = app.register("user@x", "user", "correct horse battery staple").await;
+    let r = app
+        .register("user@x", "user", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 403);
     assert_eq!(r.json["type"], "registration_closed");
 }
@@ -101,7 +117,9 @@ async fn invitation_flow_end_to_end() {
     let app = TestApp::spawn().await;
     // Bootstrap a superadmin out-of-band.
     set_open_registration(&app, true).await;
-    let r = app.register("admin@x", "admin", "correct horse battery staple").await;
+    let r = app
+        .register("admin@x", "admin", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 201);
     promote_to_superadmin(&app, "admin@x").await;
     set_open_registration(&app, false).await;
@@ -172,7 +190,9 @@ async fn invitation_flow_end_to_end() {
 async fn invitation_with_superadmin_role_propagates() {
     let app = TestApp::spawn().await;
     set_open_registration(&app, true).await;
-    let r = app.register("admin@x", "admin", "correct horse battery staple").await;
+    let r = app
+        .register("admin@x", "admin", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 201);
     promote_to_superadmin(&app, "admin@x").await;
     set_open_registration(&app, false).await;
@@ -215,7 +235,9 @@ async fn non_admin_cannot_reach_admin_routes() {
     let app = TestApp::spawn().await;
     set_open_registration(&app, true).await;
     let token = register_and_login(&app, "joe@x", "joe").await;
-    let r = app.send(get_with_bearer("/api/v1/admin/users", &token)).await;
+    let r = app
+        .send(get_with_bearer("/api/v1/admin/users", &token))
+        .await;
     assert_eq!(r.status, 403);
 }
 
@@ -234,7 +256,9 @@ async fn unauthenticated_admin_routes_are_unauthorized() {
 async fn admin_create_user_sets_must_change_password() {
     let app = TestApp::spawn().await;
     set_open_registration(&app, true).await;
-    let r = app.register("admin@x", "admin", "correct horse battery staple").await;
+    let r = app
+        .register("admin@x", "admin", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 201);
     promote_to_superadmin(&app, "admin@x").await;
     set_open_registration(&app, false).await;
@@ -277,7 +301,9 @@ async fn admin_create_user_sets_must_change_password() {
 async fn last_superadmin_cannot_be_demoted() {
     let app = TestApp::spawn().await;
     set_open_registration(&app, true).await;
-    let r = app.register("admin@x", "admin", "correct horse battery staple").await;
+    let r = app
+        .register("admin@x", "admin", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 201);
     promote_to_superadmin(&app, "admin@x").await;
     let admin_token = app
@@ -305,7 +331,9 @@ async fn last_superadmin_cannot_be_demoted() {
 async fn last_superadmin_cannot_be_deleted() {
     let app = TestApp::spawn().await;
     set_open_registration(&app, true).await;
-    let r = app.register("admin@x", "admin", "correct horse battery staple").await;
+    let r = app
+        .register("admin@x", "admin", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 201);
     promote_to_superadmin(&app, "admin@x").await;
     let admin_token = app
@@ -331,10 +359,14 @@ async fn last_superadmin_cannot_be_deleted() {
 async fn second_admin_can_demote_first() {
     let app = TestApp::spawn().await;
     set_open_registration(&app, true).await;
-    let r1 = app.register("admin1@x", "admin1", "correct horse battery staple").await;
+    let r1 = app
+        .register("admin1@x", "admin1", "correct horse battery staple")
+        .await;
     assert_eq!(r1.status, 201);
     promote_to_superadmin(&app, "admin1@x").await;
-    let r2 = app.register("admin2@x", "admin2", "correct horse battery staple").await;
+    let r2 = app
+        .register("admin2@x", "admin2", "correct horse battery staple")
+        .await;
     assert_eq!(r2.status, 201);
     promote_to_superadmin(&app, "admin2@x").await;
     let t1 = app
@@ -387,7 +419,9 @@ async fn second_admin_can_demote_first() {
 async fn settings_get_and_patch_round_trip() {
     let app = TestApp::spawn().await;
     set_open_registration(&app, true).await;
-    let r = app.register("admin@x", "admin", "correct horse battery staple").await;
+    let r = app
+        .register("admin@x", "admin", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 201);
     promote_to_superadmin(&app, "admin@x").await;
     let admin_token = app
@@ -413,7 +447,9 @@ async fn settings_get_and_patch_round_trip() {
     assert_eq!(p.json["open_registration"], Value::Bool(false));
 
     // Anonymous register is now closed.
-    let r = app.register("bob@x", "bob", "correct horse battery staple").await;
+    let r = app
+        .register("bob@x", "bob", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 403);
 }
 
@@ -421,7 +457,9 @@ async fn settings_get_and_patch_round_trip() {
 async fn revoke_invitation_blocks_reuse() {
     let app = TestApp::spawn().await;
     set_open_registration(&app, true).await;
-    let r = app.register("admin@x", "admin", "correct horse battery staple").await;
+    let r = app
+        .register("admin@x", "admin", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 201);
     promote_to_superadmin(&app, "admin@x").await;
     set_open_registration(&app, false).await;
@@ -469,7 +507,9 @@ async fn revoke_invitation_blocks_reuse() {
 async fn reset_password_returns_token_in_dev() {
     let app = TestApp::spawn().await;
     set_open_registration(&app, true).await;
-    let r = app.register("admin@x", "admin", "correct horse battery staple").await;
+    let r = app
+        .register("admin@x", "admin", "correct horse battery staple")
+        .await;
     assert_eq!(r.status, 201);
     promote_to_superadmin(&app, "admin@x").await;
     let admin_token = app
@@ -477,11 +517,16 @@ async fn reset_password_returns_token_in_dev() {
         .await
         .access_token()
         .unwrap();
-    let ru = app.register("user@x", "user", "correct horse battery staple").await;
+    let ru = app
+        .register("user@x", "user", "correct horse battery staple")
+        .await;
     assert_eq!(ru.status, 201);
 
     let list = app
-        .send(get_with_bearer("/api/v1/admin/users?limit=200", &admin_token))
+        .send(get_with_bearer(
+            "/api/v1/admin/users?limit=200",
+            &admin_token,
+        ))
         .await;
     let uid = list.json["items"]
         .as_array()

@@ -131,8 +131,7 @@ impl FromRequestParts<AppState> for SuperadminUser {
 
         let allowed = row
             .as_ref()
-            .map(|r| r.get::<_, bool>("is_superadmin") && r.get::<_, bool>("is_active"))
-            .unwrap_or(false);
+            .is_some_and(|r| r.get::<_, bool>("is_superadmin") && r.get::<_, bool>("is_active"));
 
         if !allowed {
             return Err(Problem::new(

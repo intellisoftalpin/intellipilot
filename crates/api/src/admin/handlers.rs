@@ -27,8 +27,8 @@ use uuid::Uuid;
 
 use crate::admin::dto::{
     CreateInvitationRequest, CreateInvitationResponse, CreateUserRequest, CreateUserResponse,
-    PasswordResetIssuedResponse, PendingInvitation, PlatformSettingsResponse, UpdateSettingsRequest,
-    UpdateUserRequest, UserListResponse,
+    PasswordResetIssuedResponse, PendingInvitation, PlatformSettingsResponse,
+    UpdateSettingsRequest, UpdateUserRequest, UserListResponse,
 };
 use crate::auth::{SuperadminUser, client_ip, request_id, user_agent};
 use crate::problem::Problem;
@@ -79,13 +79,16 @@ fn parse_json<T: serde::de::DeserializeOwned>(
             Some("expected application/json".to_owned()),
             rid,
         )),
-        Err(_) => Err(problem(
-            StatusCode::BAD_REQUEST,
-            "invalid_body",
-            "Invalid Request Body",
-            Some("could not parse JSON".to_owned()),
-            rid,
-        )),
+        Err(e) => {
+            tracing::warn!(request_id = %rid, error = %e, "request body parse failed");
+            Err(problem(
+                StatusCode::BAD_REQUEST,
+                "invalid_body",
+                "Invalid Request Body",
+                Some("could not parse JSON".to_owned()),
+                rid,
+            ))
+        }
     }
 }
 
@@ -99,6 +102,12 @@ fn validation_problem(report: &garde::Report, rid: &str) -> Response {
             message: err.to_string(),
         })
         .collect();
+    let summary = errors
+        .iter()
+        .map(|e| format!("{}: {}", e.field, e.message))
+        .collect::<Vec<_>>()
+        .join("; ");
+    tracing::warn!(request_id = %rid, fields = %summary, "request validation failed");
     Problem::new(
         StatusCode::UNPROCESSABLE_ENTITY,
         "validation_failed",
@@ -225,13 +234,17 @@ pub async fn create_user(
     }
 
     // Decide whether the admin supplied a password or we generate one.
-    let (password, generated) = match req.password.as_deref().filter(|s| !s.is_empty()) {
-        Some(p) => (p.to_owned(), None),
-        None => {
-            let p = random_password();
-            (p.clone(), Some(p))
-        }
-    };
+    let (password, generated) = req
+        .password
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map_or_else(
+            || {
+                let p = random_password();
+                (p.clone(), Some(p))
+            },
+            |p| (p.to_owned(), None),
+        );
     // No zxcvbn check on admin-set passwords — we trust the admin's judgement
     // and the temp password will be force-rotated on first login anyway.
 
@@ -351,13 +364,7 @@ pub async fn update_user(
         };
         match users::update_profile(&client, id, &upd).await {
             Ok(None) => {
-                return problem(
-                    StatusCode::NOT_FOUND,
-                    "not_found",
-                    "Not Found",
-                    None,
-                    &rid,
-                );
+                return problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, &rid);
             }
             Ok(Some(_)) => {}
             Err(_) => return internal(&rid),
@@ -538,7 +545,7 @@ pub async fn create_invitation(
 
     let token = refresh::generate();
     let expires_at = OffsetDateTime::now_utc() + TimeDuration::seconds(PLATFORM_INVITE_TTL_SECS);
-    let invitation_id = match platform_invitations::create(
+    let Ok(invitation_id) = platform_invitations::create(
         &client,
         &req.email,
         role,
@@ -547,9 +554,8 @@ pub async fn create_invitation(
         expires_at,
     )
     .await
-    {
-        Ok(id) => id,
-        Err(_) => return internal(&rid),
+    else {
+        return internal(&rid);
     };
 
     audit::record(
@@ -593,23 +599,25 @@ pub async fn list_invitations(
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);
     };
-    match platform_invitations::list_pending(&client).await {
-        Ok(items) => {
-            let mapped: Vec<PendingInvitation> = items
-                .into_iter()
-                .map(|i| PendingInvitation {
-                    id: i.id,
-                    email: i.email,
-                    role: i.role.as_str().to_owned(),
-                    invited_by: i.invited_by,
-                    expires_at: i.expires_at,
-                    created_at: i.created_at,
-                })
-                .collect();
-            Json(mapped).into_response()
-        }
-        Err(_) => internal(&rid),
-    }
+    platform_invitations::list_pending(&client)
+        .await
+        .map_or_else(
+            |_| internal(&rid),
+            |items| {
+                let mapped: Vec<PendingInvitation> = items
+                    .into_iter()
+                    .map(|i| PendingInvitation {
+                        id: i.id,
+                        email: i.email,
+                        role: i.role.as_str().to_owned(),
+                        invited_by: i.invited_by,
+                        expires_at: i.expires_at,
+                        created_at: i.created_at,
+                    })
+                    .collect();
+                Json(mapped).into_response()
+            },
+        )
 }
 
 #[utoipa::path(
@@ -670,15 +678,17 @@ pub async fn get_settings(
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);
     };
-    match platform_settings::get(&client).await {
-        Ok(s) => Json(PlatformSettingsResponse {
-            open_registration: s.open_registration,
-            updated_at: s.updated_at,
-            updated_by: s.updated_by,
-        })
-        .into_response(),
-        Err(_) => internal(&rid),
-    }
+    platform_settings::get(&client).await.map_or_else(
+        |_| internal(&rid),
+        |s| {
+            Json(PlatformSettingsResponse {
+                open_registration: s.open_registration,
+                updated_at: s.updated_at,
+                updated_by: s.updated_by,
+            })
+            .into_response()
+        },
+    )
 }
 
 #[utoipa::path(
