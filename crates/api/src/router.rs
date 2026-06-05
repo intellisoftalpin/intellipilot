@@ -94,7 +94,10 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/projects/{project_id}/roles/{role_id}",
                 delete(projects::delete_role),
             )
-            .route("/api/v1/projects/{project_id}/members", get(projects::list_members))
+            .route(
+                "/api/v1/projects/{project_id}/members",
+                get(projects::list_members).post(projects::add_member),
+            )
             .route(
                 "/api/v1/projects/{project_id}/members/{user_id}",
                 patch(projects::change_member_role),

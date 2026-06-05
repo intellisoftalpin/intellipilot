@@ -328,3 +328,63 @@ async fn audit_records_membership_grant() {
     assert_eq!(granted, 1);
     assert_eq!(invited, 1);
 }
+
+#[tokio::test]
+async fn add_existing_user_directly() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (owner, _oid) = user(&app, "owner@example.com", "owner").await;
+    let (_t2, uid2) = user(&app, "bob@example.com", "bob").await;
+    let project = create_project(&app, &owner, "Apollo").await;
+    let pid = project["id"].as_str().unwrap();
+
+    // Add bob by exact email identifier, as the dev role.
+    let add = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/members"),
+            &owner,
+            &json!({ "identifier": "bob@example.com", "role": "dev" }),
+        ))
+        .await;
+    assert_eq!(add.status, 201, "{:?}", add.json);
+
+    // Membership list now has owner + bob.
+    let list = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/members"),
+            &owner,
+        ))
+        .await;
+    assert_eq!(list.json["members"].as_array().unwrap().len(), 2);
+
+    // Adding the same user again (by id this time) → 409.
+    let dup = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/members"),
+            &owner,
+            &json!({ "user_id": uid2, "role": "dev" }),
+        ))
+        .await;
+    assert_eq!(dup.status, 409, "{:?}", dup.json);
+    assert_eq!(dup.json["code"], "conflict");
+
+    // Unknown identifier → 404.
+    let nope = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/members"),
+            &owner,
+            &json!({ "identifier": "ghost@example.com", "role": "dev" }),
+        ))
+        .await;
+    assert_eq!(nope.status, 404, "{:?}", nope.json);
+
+    // Unknown role → 422.
+    let bad_role = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/members"),
+            &owner,
+            &json!({ "identifier": "bob@example.com", "role": "nope" }),
+        ))
+        .await;
+    assert_eq!(bad_role.status, 422, "{:?}", bad_role.json);
+}

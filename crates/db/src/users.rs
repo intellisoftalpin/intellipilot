@@ -100,6 +100,26 @@ pub async fn find_by_id(
     Ok(row.as_ref().map(row_to_user))
 }
 
+/// Find an active user by exact (normalized) email or username. Used to add an
+/// existing account to a project without browsing the user directory.
+pub async fn find_active_by_identifier(
+    client: &deadpool_postgres::Client,
+    identifier: &str,
+) -> Result<Option<User>, DbError> {
+    let email = normalize_email(identifier);
+    let uname = identifier.trim();
+    let row = client
+        .query_opt(
+            &format!(
+                "SELECT {USER_COLS} FROM users \
+                 WHERE (email = $1 OR username = $2) AND deleted_at IS NULL LIMIT 1"
+            ),
+            &[&email, &uname],
+        )
+        .await?;
+    Ok(row.as_ref().map(row_to_user))
+}
+
 /// Update mutable profile fields. Returns the updated user, or `None` if no
 /// such active user.
 pub async fn update_profile(

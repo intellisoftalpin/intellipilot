@@ -235,6 +235,20 @@ pub struct ChangeMemberRoleRequest {
     pub role: String,
 }
 
+/// Add an existing user to a project directly. Provide `user_id` (from the
+/// user picker) or `identifier` (exact email / username); `role` is a role slug.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct AddMemberRequest {
+    #[garde(skip)]
+    #[serde(default)]
+    pub user_id: Option<uuid::Uuid>,
+    #[garde(length(max = 254))]
+    #[serde(default)]
+    pub identifier: Option<String>,
+    #[garde(length(min = 1, max = 64))]
+    pub role: String,
+}
+
 // --- Phase 4: taxonomy ----------------------------------------------------
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]

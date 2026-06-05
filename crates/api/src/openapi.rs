@@ -3,8 +3,8 @@
 use utoipa::OpenApi;
 
 use crate::dto::{
-    AcceptInviteRequest, ChangeMemberRoleRequest, CreateProjectRequest, CreateRoleRequest,
-    CreateTaxonomyItemRequest, InviteRequest, InviteResponse, LoginRequest,
+    AcceptInviteRequest, AddMemberRequest, ChangeMemberRoleRequest, CreateProjectRequest,
+    CreateRoleRequest, CreateTaxonomyItemRequest, InviteRequest, InviteResponse, LoginRequest,
     MoveTaxonomyItemRequest, PasskeyAuthStartRequest, PasskeyFinishRequest,
     PasswordResetConfirmBody, PasswordResetRequestBody, PasswordResetRequestResponse,
     ProfileUpdateRequest, RecoveryCodesResponse, RegisterRequest, TokenResponse,
@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.2.1",
+        version = "0.2.2",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -93,6 +93,7 @@ use crate::problem::{FieldErrorView, Problem};
         InviteResponse,
         AcceptInviteRequest,
         ChangeMemberRoleRequest,
+        AddMemberRequest,
         intellipilot_core::user::User,
         intellipilot_core::project::Project,
         intellipilot_core::project::Role,

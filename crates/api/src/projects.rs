@@ -28,6 +28,7 @@ use intellipilot_core::project::{NewProject, ProjectUpdate, Visibility};
 use intellipilot_db::memberships::MemberAccess;
 use intellipilot_db::{
     audit, invitations as invdb, memberships as memdb, projects as projdb, roles as roledb,
+    users as udb,
 };
 use serde_json::json;
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -35,8 +36,8 @@ use uuid::Uuid;
 
 use crate::auth::{AuthUser, client_ip, request_id, user_agent};
 use crate::dto::{
-    AcceptInviteRequest, ChangeMemberRoleRequest, CreateProjectRequest, CreateRoleRequest,
-    InviteRequest, InviteResponse, UpdateProjectRequest, UpdateRoleRequest,
+    AcceptInviteRequest, AddMemberRequest, ChangeMemberRoleRequest, CreateProjectRequest,
+    CreateRoleRequest, InviteRequest, InviteResponse, UpdateProjectRequest, UpdateRoleRequest,
 };
 use crate::problem::Problem;
 use crate::state::AppState;
@@ -540,6 +541,106 @@ pub async fn list_members(State(state): State<AppState>, ctx: ProjectContext) ->
     };
     match memdb::list_for_project(&client, ctx.project.id).await {
         Ok(members) => Json(json!({ "members": members })).into_response(),
+        Err(_) => internal(&ctx.rid),
+    }
+}
+
+/// `POST /api/v1/projects/{project_id}/members` — add an existing user.
+///
+/// Adds an account to the project directly (no email invitation). The target
+/// is given by `user_id` (from the picker) or `identifier` (email/username).
+pub async fn add_member(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    headers: axum::http::HeaderMap,
+    body: Result<Json<AddMemberRequest>, JsonRejection>,
+) -> Response {
+    if let Err(r) = ctx.require(Permission::MemberAdd) {
+        return r;
+    }
+    let req = match parse_body(body, &ctx.rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&ctx.rid);
+    };
+
+    // Resolve the target user — by id first, else by exact email/username.
+    let lookup = if let Some(id) = req.user_id {
+        udb::find_by_id(&client, id).await
+    } else if let Some(ident) = req
+        .identifier
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        udb::find_active_by_identifier(&client, ident).await
+    } else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "missing_user",
+            "Provide user_id or identifier",
+            None,
+            &ctx.rid,
+        );
+    };
+    let Ok(Some(user)) = lookup else {
+        return problem(
+            StatusCode::NOT_FOUND,
+            "user_not_found",
+            "No such user",
+            None,
+            &ctx.rid,
+        );
+    };
+
+    let Ok(Some(role)) = roledb::find_by_slug(&client, ctx.project.id, &req.role).await else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unknown_role",
+            "Unknown role",
+            None,
+            &ctx.rid,
+        );
+    };
+
+    // Reject if they're already a member.
+    if memdb::access(&client, ctx.project.id, user.id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return conflict(&ctx.rid, "user is already a member");
+    }
+
+    match memdb::upsert(
+        &client,
+        ctx.project.id,
+        user.id,
+        role.id,
+        Some(ctx.actor_id),
+    )
+    .await
+    {
+        Ok(_) => {
+            audit::record(
+                &client,
+                Some(ctx.actor_id),
+                "member_added",
+                Some(client_ip(&headers)),
+                Some(&user_agent(&headers)),
+                &json!({ "user_id": user.id.to_string(), "role": req.role }),
+            )
+            .await;
+            (
+                StatusCode::CREATED,
+                Json(json!({ "user_id": user.id, "role": req.role })),
+            )
+                .into_response()
+        }
         Err(_) => internal(&ctx.rid),
     }
 }
