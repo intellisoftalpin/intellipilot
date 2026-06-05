@@ -1,10 +1,15 @@
-//! Backlog entity persistence: epics, user stories, tasks, issues.
+//! Backlog entity persistence: epics and the unified issue.
+//!
+//! The backlog is Jira-style: `epics` are a separate table; everything else
+//! (formerly user stories, tasks and issues) is a single `issues` table whose
+//! *type* is a per-project `issue_type` taxonomy item, with sub-tasks via
+//! `parent_id` and optional grouping under an epic via `epic_id`.
 //!
 //! Shared concerns: atomic per-project `ref` allocation, optimistic
 //! concurrency via a `version` column, soft-delete, and fractional ordering.
 #![allow(clippy::too_many_arguments)]
 
-use intellipilot_core::backlog::{Epic, Issue, Task, UserStory};
+use intellipilot_core::backlog::{Epic, Issue};
 use intellipilot_core::ordering::{normalized_ranks, rank_between};
 use time::OffsetDateTime;
 use tokio_postgres::Row;
@@ -174,99 +179,6 @@ pub async fn update_epic(
     }
 }
 
-// ==========================================================================
-// user_stories
-// ==========================================================================
-
-const US_COLS: &str = "id, project_id, ref, subject, description, status_id, epic_id, \
-     milestone_id, points_id, owner_id, assigned_to, \"order\", version, created_at, modified_at";
-
-fn row_to_us(r: &Row) -> UserStory {
-    UserStory {
-        id: r.get("id"),
-        project_id: r.get("project_id"),
-        reference: r.get("ref"),
-        subject: r.get("subject"),
-        description: r.get("description"),
-        status_id: r.get("status_id"),
-        epic_id: r.get("epic_id"),
-        milestone_id: r.get("milestone_id"),
-        points_id: r.get("points_id"),
-        owner_id: r.get("owner_id"),
-        assigned_to: r.get("assigned_to"),
-        order: r.get("order"),
-        version: r.get("version"),
-        created_at: r.get("created_at"),
-        modified_at: r.get("modified_at"),
-    }
-}
-
-pub async fn create_us(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-    owner_id: Uuid,
-    subject: &str,
-    description: &str,
-    status_id: Option<Uuid>,
-    epic_id: Option<Uuid>,
-    milestone_id: Option<Uuid>,
-    points_id: Option<Uuid>,
-    assigned_to: Option<Uuid>,
-) -> Result<UserStory, DbError> {
-    let reference = alloc_ref(client, project_id).await?;
-    let order = next_order(client, "user_stories", project_id).await?;
-    let row = client
-        .query_one(
-            &format!(
-                "INSERT INTO user_stories (project_id, ref, subject, description, status_id, \
-                   epic_id, milestone_id, points_id, owner_id, assigned_to, \"order\") \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING {US_COLS}"
-            ),
-            &[
-                &project_id,
-                &reference,
-                &subject,
-                &description,
-                &status_id,
-                &epic_id,
-                &milestone_id,
-                &points_id,
-                &owner_id,
-                &assigned_to,
-                &order,
-            ],
-        )
-        .await?;
-    Ok(row_to_us(&row))
-}
-
-pub async fn get_us(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-    id: Uuid,
-) -> Result<Option<UserStory>, DbError> {
-    let row = client
-        .query_opt(
-            &format!("SELECT {US_COLS} FROM user_stories WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL"),
-            &[&id, &project_id],
-        )
-        .await?;
-    Ok(row.as_ref().map(row_to_us))
-}
-
-pub async fn list_us(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-) -> Result<Vec<UserStory>, DbError> {
-    let rows = client
-        .query(
-            &format!("SELECT {US_COLS} FROM user_stories WHERE project_id=$1 AND deleted_at IS NULL ORDER BY \"order\""),
-            &[&project_id],
-        )
-        .await?;
-    Ok(rows.iter().map(row_to_us).collect())
-}
-
 /// Whether an epic exists in this project (for cross-project assoc checks).
 pub async fn epic_in_project(
     client: &deadpool_postgres::Client,
@@ -282,229 +194,13 @@ pub async fn epic_in_project(
     Ok(row.get("e"))
 }
 
-/// User stories assigned to a milestone (ordered).
-pub async fn us_in_milestone(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-    milestone_id: Uuid,
-) -> Result<Vec<UserStory>, DbError> {
-    let rows = client
-        .query(
-            &format!(
-                "SELECT {US_COLS} FROM user_stories \
-                 WHERE project_id=$1 AND milestone_id=$2 AND deleted_at IS NULL ORDER BY \"order\""
-            ),
-            &[&project_id, &milestone_id],
-        )
-        .await?;
-    Ok(rows.iter().map(row_to_us).collect())
-}
-
-/// Tasks belonging to a user story (ordered).
-pub async fn tasks_for_story(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-    us_id: Uuid,
-) -> Result<Vec<Task>, DbError> {
-    let rows = client
-        .query(
-            &format!(
-                "SELECT {TASK_COLS} FROM tasks \
-                 WHERE project_id=$1 AND user_story_id=$2 AND deleted_at IS NULL ORDER BY \"order\""
-            ),
-            &[&project_id, &us_id],
-        )
-        .await?;
-    Ok(rows.iter().map(row_to_task).collect())
-}
-
-pub async fn update_us(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-    id: Uuid,
-    expected_version: i32,
-    subject: &str,
-    description: &str,
-    status_id: Option<Uuid>,
-    epic_id: Option<Uuid>,
-    milestone_id: Option<Uuid>,
-    points_id: Option<Uuid>,
-    assigned_to: Option<Uuid>,
-) -> Result<UpdateOutcome<UserStory>, DbError> {
-    let row = client
-        .query_opt(
-            &format!(
-                "UPDATE user_stories SET subject=$4, description=$5, status_id=$6, epic_id=$7, \
-                   milestone_id=$8, points_id=$9, assigned_to=$10, version=version+1 \
-                 WHERE id=$1 AND project_id=$2 AND version=$3 AND deleted_at IS NULL \
-                 RETURNING {US_COLS}"
-            ),
-            &[
-                &id,
-                &project_id,
-                &expected_version,
-                &subject,
-                &description,
-                &status_id,
-                &epic_id,
-                &milestone_id,
-                &points_id,
-                &assigned_to,
-            ],
-        )
-        .await?;
-    match row {
-        Some(r) => Ok(UpdateOutcome::Updated(row_to_us(&r))),
-        None => Ok(classify_miss(client, "user_stories", project_id, id, expected_version).await?),
-    }
-}
-
 // ==========================================================================
-// tasks
-// ==========================================================================
-
-const TASK_COLS: &str = "id, project_id, ref, subject, description, status_id, user_story_id, \
-     owner_id, assigned_to, \"order\", version, created_at, modified_at";
-
-fn row_to_task(r: &Row) -> Task {
-    Task {
-        id: r.get("id"),
-        project_id: r.get("project_id"),
-        reference: r.get("ref"),
-        subject: r.get("subject"),
-        description: r.get("description"),
-        status_id: r.get("status_id"),
-        user_story_id: r.get("user_story_id"),
-        owner_id: r.get("owner_id"),
-        assigned_to: r.get("assigned_to"),
-        order: r.get("order"),
-        version: r.get("version"),
-        created_at: r.get("created_at"),
-        modified_at: r.get("modified_at"),
-    }
-}
-
-pub async fn create_task(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-    owner_id: Uuid,
-    subject: &str,
-    description: &str,
-    status_id: Option<Uuid>,
-    user_story_id: Option<Uuid>,
-    assigned_to: Option<Uuid>,
-) -> Result<Task, DbError> {
-    let reference = alloc_ref(client, project_id).await?;
-    let order = next_order(client, "tasks", project_id).await?;
-    let row = client
-        .query_one(
-            &format!(
-                "INSERT INTO tasks (project_id, ref, subject, description, status_id, \
-                   user_story_id, owner_id, assigned_to, \"order\") \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING {TASK_COLS}"
-            ),
-            &[
-                &project_id,
-                &reference,
-                &subject,
-                &description,
-                &status_id,
-                &user_story_id,
-                &owner_id,
-                &assigned_to,
-                &order,
-            ],
-        )
-        .await?;
-    Ok(row_to_task(&row))
-}
-
-pub async fn get_task(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-    id: Uuid,
-) -> Result<Option<Task>, DbError> {
-    let row = client
-        .query_opt(
-            &format!(
-                "SELECT {TASK_COLS} FROM tasks WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL"
-            ),
-            &[&id, &project_id],
-        )
-        .await?;
-    Ok(row.as_ref().map(row_to_task))
-}
-
-pub async fn list_tasks(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-) -> Result<Vec<Task>, DbError> {
-    let rows = client
-        .query(
-            &format!("SELECT {TASK_COLS} FROM tasks WHERE project_id=$1 AND deleted_at IS NULL ORDER BY \"order\""),
-            &[&project_id],
-        )
-        .await?;
-    Ok(rows.iter().map(row_to_task).collect())
-}
-
-pub async fn us_in_project(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-    us_id: Uuid,
-) -> Result<bool, DbError> {
-    let row = client
-        .query_one(
-            "SELECT EXISTS(SELECT 1 FROM user_stories WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL) AS e",
-            &[&us_id, &project_id],
-        )
-        .await?;
-    Ok(row.get("e"))
-}
-
-pub async fn update_task(
-    client: &deadpool_postgres::Client,
-    project_id: Uuid,
-    id: Uuid,
-    expected_version: i32,
-    subject: &str,
-    description: &str,
-    status_id: Option<Uuid>,
-    user_story_id: Option<Uuid>,
-    assigned_to: Option<Uuid>,
-) -> Result<UpdateOutcome<Task>, DbError> {
-    let row = client
-        .query_opt(
-            &format!(
-                "UPDATE tasks SET subject=$4, description=$5, status_id=$6, user_story_id=$7, \
-                   assigned_to=$8, version=version+1 \
-                 WHERE id=$1 AND project_id=$2 AND version=$3 AND deleted_at IS NULL \
-                 RETURNING {TASK_COLS}"
-            ),
-            &[
-                &id,
-                &project_id,
-                &expected_version,
-                &subject,
-                &description,
-                &status_id,
-                &user_story_id,
-                &assigned_to,
-            ],
-        )
-        .await?;
-    match row {
-        Some(r) => Ok(UpdateOutcome::Updated(row_to_task(&r))),
-        None => Ok(classify_miss(client, "tasks", project_id, id, expected_version).await?),
-    }
-}
-
-// ==========================================================================
-// issues
+// issues (unified: Story / Task / Bug / sub-task)
 // ==========================================================================
 
 const ISSUE_COLS: &str = "id, project_id, ref, subject, description, status_id, type_id, \
-     priority_id, severity_id, owner_id, assigned_to, version, created_at, modified_at";
+     priority_id, severity_id, points_id, epic_id, parent_id, milestone_id, owner_id, \
+     assigned_to, \"order\", version, created_at, modified_at";
 
 fn row_to_issue(r: &Row) -> Issue {
     Issue {
@@ -517,11 +213,16 @@ fn row_to_issue(r: &Row) -> Issue {
         type_id: r.get("type_id"),
         priority_id: r.get("priority_id"),
         severity_id: r.get("severity_id"),
+        points_id: r.get("points_id"),
+        epic_id: r.get("epic_id"),
+        parent_id: r.get("parent_id"),
+        milestone_id: r.get("milestone_id"),
         owner_id: r.get("owner_id"),
         assigned_to: r.get("assigned_to"),
         // Filled by the caller from the junction tables.
         labels: Vec::new(),
         components: Vec::new(),
+        order: r.get("order"),
         version: r.get("version"),
         created_at: r.get("created_at"),
         modified_at: r.get("modified_at"),
@@ -610,15 +311,21 @@ pub async fn create_issue(
     type_id: Option<Uuid>,
     priority_id: Option<Uuid>,
     severity_id: Option<Uuid>,
+    points_id: Option<Uuid>,
+    epic_id: Option<Uuid>,
+    parent_id: Option<Uuid>,
+    milestone_id: Option<Uuid>,
     assigned_to: Option<Uuid>,
 ) -> Result<Issue, DbError> {
     let reference = alloc_ref(client, project_id).await?;
+    let order = next_order(client, "issues", project_id).await?;
     let row = client
         .query_one(
             &format!(
                 "INSERT INTO issues (project_id, ref, subject, description, status_id, type_id, \
-                   priority_id, severity_id, owner_id, assigned_to) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING {ISSUE_COLS}"
+                   priority_id, severity_id, points_id, epic_id, parent_id, milestone_id, \
+                   owner_id, assigned_to, \"order\") \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING {ISSUE_COLS}"
             ),
             &[
                 &project_id,
@@ -629,8 +336,13 @@ pub async fn create_issue(
                 &type_id,
                 &priority_id,
                 &severity_id,
+                &points_id,
+                &epic_id,
+                &parent_id,
+                &milestone_id,
                 &owner_id,
                 &assigned_to,
+                &order,
             ],
         )
         .await?;
@@ -665,7 +377,7 @@ pub async fn list_issues(
 ) -> Result<Vec<Issue>, DbError> {
     let rows = client
         .query(
-            &format!("SELECT {ISSUE_COLS} FROM issues WHERE project_id=$1 AND deleted_at IS NULL ORDER BY ref"),
+            &format!("SELECT {ISSUE_COLS} FROM issues WHERE project_id=$1 AND deleted_at IS NULL ORDER BY \"order\""),
             &[&project_id],
         )
         .await?;
@@ -690,13 +402,18 @@ pub async fn update_issue(
     type_id: Option<Uuid>,
     priority_id: Option<Uuid>,
     severity_id: Option<Uuid>,
+    points_id: Option<Uuid>,
+    epic_id: Option<Uuid>,
+    parent_id: Option<Uuid>,
+    milestone_id: Option<Uuid>,
     assigned_to: Option<Uuid>,
 ) -> Result<UpdateOutcome<Issue>, DbError> {
     let row = client
         .query_opt(
             &format!(
                 "UPDATE issues SET subject=$4, description=$5, status_id=$6, type_id=$7, \
-                   priority_id=$8, severity_id=$9, assigned_to=$10, version=version+1 \
+                   priority_id=$8, severity_id=$9, points_id=$10, epic_id=$11, parent_id=$12, \
+                   milestone_id=$13, assigned_to=$14, version=version+1 \
                  WHERE id=$1 AND project_id=$2 AND version=$3 AND deleted_at IS NULL \
                  RETURNING {ISSUE_COLS}"
             ),
@@ -710,6 +427,10 @@ pub async fn update_issue(
                 &type_id,
                 &priority_id,
                 &severity_id,
+                &points_id,
+                &epic_id,
+                &parent_id,
+                &milestone_id,
                 &assigned_to,
             ],
         )
@@ -718,6 +439,64 @@ pub async fn update_issue(
         Some(r) => Ok(UpdateOutcome::Updated(row_to_issue(&r))),
         None => Ok(classify_miss(client, "issues", project_id, id, expected_version).await?),
     }
+}
+
+/// Whether an issue exists in this project (for parent / cross-project checks).
+pub async fn issue_in_project(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    issue_id: Uuid,
+) -> Result<bool, DbError> {
+    let row = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM issues WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL) AS e",
+            &[&issue_id, &project_id],
+        )
+        .await?;
+    Ok(row.get("e"))
+}
+
+/// Issues assigned to a milestone (ordered, with labels/components hydrated).
+pub async fn issues_in_milestone(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    milestone_id: Uuid,
+) -> Result<Vec<Issue>, DbError> {
+    let rows = client
+        .query(
+            &format!(
+                "SELECT {ISSUE_COLS} FROM issues \
+                 WHERE project_id=$1 AND milestone_id=$2 AND deleted_at IS NULL ORDER BY \"order\""
+            ),
+            &[&project_id, &milestone_id],
+        )
+        .await?;
+    let mut issues = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let mut issue = row_to_issue(r);
+        issue.labels = issue_label_ids(client, issue.id).await?;
+        issue.components = issue_component_ids(client, issue.id).await?;
+        issues.push(issue);
+    }
+    Ok(issues)
+}
+
+/// Sub-tasks (child issues) of a parent issue, ordered.
+pub async fn children_for_parent(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    parent_id: Uuid,
+) -> Result<Vec<Issue>, DbError> {
+    let rows = client
+        .query(
+            &format!(
+                "SELECT {ISSUE_COLS} FROM issues \
+                 WHERE project_id=$1 AND parent_id=$2 AND deleted_at IS NULL ORDER BY \"order\""
+            ),
+            &[&project_id, &parent_id],
+        )
+        .await?;
+    Ok(rows.iter().map(row_to_issue).collect())
 }
 
 // ==========================================================================
@@ -742,8 +521,7 @@ async fn classify_miss<T>(
     Ok(row.map_or(UpdateOutcome::NotFound, |_| UpdateOutcome::Conflict))
 }
 
-/// Soft-delete an entity (any kind) by table. Returns (found, was_closed_status).
-/// `closed` is true when the entity's status is a closed taxonomy status.
+/// Soft-delete an entity (any kind) by table. Returns whether a row was hit.
 pub async fn soft_delete(
     client: &deadpool_postgres::Client,
     table: &str,
@@ -810,12 +588,7 @@ pub async fn resolve_ref(
     project_id: Uuid,
     reference: i64,
 ) -> Result<Option<(&'static str, Uuid)>, DbError> {
-    for (table, kind) in [
-        ("epics", "epic"),
-        ("user_stories", "user_story"),
-        ("tasks", "task"),
-        ("issues", "issue"),
-    ] {
+    for (table, kind) in [("epics", "epic"), ("issues", "issue")] {
         let sql =
             format!("SELECT id FROM {table} WHERE project_id=$1 AND ref=$2 AND deleted_at IS NULL");
         if let Some(row) = client.query_opt(&sql, &[&project_id, &reference]).await? {
@@ -834,9 +607,9 @@ pub async fn taxonomy_reference_count(
         .query_one(
             "SELECT \
                (SELECT count(*) FROM epics WHERE status_id=$1) \
-             + (SELECT count(*) FROM user_stories WHERE status_id=$1) \
-             + (SELECT count(*) FROM tasks WHERE status_id=$1) \
-             + (SELECT count(*) FROM issues WHERE status_id=$1 OR type_id=$1 OR priority_id=$1 OR severity_id=$1) \
+             + (SELECT count(*) FROM issues \
+                  WHERE status_id=$1 OR type_id=$1 OR priority_id=$1 \
+                     OR severity_id=$1 OR points_id=$1) \
              AS n",
             &[&item_id],
         )

@@ -5,35 +5,35 @@ expression: shape
 [
   {
     "status": "new",
-    "user_stories": [
+    "issues": [
       {
         "subject": "Card",
-        "tasks": 1
+        "subtasks": 1
       }
     ]
   },
   {
     "status": "ready",
-    "user_stories": []
+    "issues": []
   },
   {
     "status": "in-progress",
-    "user_stories": []
+    "issues": []
   },
   {
     "status": "ready-for-test",
-    "user_stories": []
+    "issues": []
   },
   {
     "status": "done",
-    "user_stories": []
+    "issues": []
   },
   {
     "status": "archived",
-    "user_stories": []
+    "issues": []
   },
   {
     "status": null,
-    "user_stories": []
+    "issues": []
   }
 ]

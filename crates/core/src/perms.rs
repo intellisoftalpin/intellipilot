@@ -52,24 +52,7 @@ pub enum Permission {
     #[serde(rename = "epic.delete")]
     EpicDelete,
     // User stories
-    #[serde(rename = "us.view")]
-    UsView,
-    #[serde(rename = "us.create")]
-    UsCreate,
-    #[serde(rename = "us.modify")]
-    UsModify,
-    #[serde(rename = "us.delete")]
-    UsDelete,
-    // Tasks
-    #[serde(rename = "task.view")]
-    TaskView,
-    #[serde(rename = "task.create")]
-    TaskCreate,
-    #[serde(rename = "task.modify")]
-    TaskModify,
-    #[serde(rename = "task.delete")]
-    TaskDelete,
-    // Issues
+    // Issues (the unified work item: Story / Task / Bug / sub-task)
     #[serde(rename = "issue.view")]
     IssueView,
     #[serde(rename = "issue.create")]
@@ -109,7 +92,7 @@ pub enum Permission {
 
 impl Permission {
     /// Every permission in catalog order.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 32] = [
         Self::ProjectView,
         Self::ProjectModify,
         Self::ProjectDelete,
@@ -126,14 +109,6 @@ impl Permission {
         Self::EpicCreate,
         Self::EpicModify,
         Self::EpicDelete,
-        Self::UsView,
-        Self::UsCreate,
-        Self::UsModify,
-        Self::UsDelete,
-        Self::TaskView,
-        Self::TaskCreate,
-        Self::TaskModify,
-        Self::TaskDelete,
         Self::IssueView,
         Self::IssueCreate,
         Self::IssueModify,
@@ -174,14 +149,6 @@ impl Permission {
             Self::EpicCreate => "epic.create",
             Self::EpicModify => "epic.modify",
             Self::EpicDelete => "epic.delete",
-            Self::UsView => "us.view",
-            Self::UsCreate => "us.create",
-            Self::UsModify => "us.modify",
-            Self::UsDelete => "us.delete",
-            Self::TaskView => "task.view",
-            Self::TaskCreate => "task.create",
-            Self::TaskModify => "task.modify",
-            Self::TaskDelete => "task.delete",
             Self::IssueView => "issue.view",
             Self::IssueCreate => "issue.create",
             Self::IssueModify => "issue.modify",
@@ -226,17 +193,12 @@ fn all_view() -> Vec<Permission> {
 fn developer_perms() -> Vec<Permission> {
     use Permission::{
         AttachmentCreate, AttachmentDelete, CommentCreate, EpicCreate, EpicModify, IssueCreate,
-        IssueModify, MilestoneCreate, MilestoneModify, TaskCreate, TaskModify, UsCreate, UsModify,
-        WikiCreate, WikiModify,
+        IssueModify, MilestoneCreate, MilestoneModify, WikiCreate, WikiModify,
     };
     let mut perms = all_view();
     perms.extend([
         EpicCreate,
         EpicModify,
-        UsCreate,
-        UsModify,
-        TaskCreate,
-        TaskModify,
         IssueCreate,
         IssueModify,
         MilestoneCreate,
@@ -258,7 +220,7 @@ fn product_owner_perms() -> Vec<Permission> {
     use Permission::{
         CommentModerate, EpicDelete, IssueDelete, MemberAdd, MemberModifyRole, MemberRemove,
         MemberView, MilestoneDelete, ProjectModify, RoleCreate, RoleDelete, RoleModify, RoleView,
-        TaskDelete, UsDelete, WikiDelete,
+        WikiDelete,
     };
     let mut perms = developer_perms();
     perms.extend([
@@ -272,8 +234,6 @@ fn product_owner_perms() -> Vec<Permission> {
         RoleModify,
         RoleDelete,
         EpicDelete,
-        UsDelete,
-        TaskDelete,
         IssueDelete,
         MilestoneDelete,
         WikiDelete,
@@ -334,7 +294,7 @@ mod tests {
                 p.as_str()
             );
         }
-        assert_eq!(Permission::ALL.len(), 40);
+        assert_eq!(Permission::ALL.len(), 32);
     }
 
     #[test]

@@ -9,7 +9,7 @@
     clippy::too_many_lines,
     clippy::let_underscore_untyped
 )]
-//! Phase 5 acceptance: epics, user stories, tasks, issues + cross-cutting.
+//! Phase 5 acceptance: epics + unified issues (Story/Task/Bug) + cross-cutting.
 
 mod common;
 
@@ -54,22 +54,23 @@ async fn create_entities_allocate_shared_contiguous_refs() {
     assert_eq!(e.json["ref"], 1);
     assert!(e.header("etag").is_some(), "response carries an ETag");
 
-    let us = app
+    // Three issues share the per-project ref series with the epic.
+    let u1 = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/userstories"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
             &json!({ "subject": "U1" }),
         ))
         .await;
-    assert_eq!(us.json["ref"], 2);
-    let t = app
+    assert_eq!(u1.json["ref"], 2);
+    let u2 = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/tasks"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
             &json!({ "subject": "T1" }),
         ))
         .await;
-    assert_eq!(t.json["ref"], 3);
+    assert_eq!(u2.json["ref"], 3);
     let i = app
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/issues"),
@@ -85,7 +86,7 @@ async fn concurrent_creates_yield_unique_contiguous_refs() {
     require_db!();
     let app = TestApp::spawn().await;
     let (token, pid) = owner_project(&app).await;
-    let uri = format!("/api/v1/projects/{pid}/userstories");
+    let uri = format!("/api/v1/projects/{pid}/issues");
 
     let mut futs = Vec::new();
     for n in 0..100 {
@@ -198,7 +199,7 @@ async fn merge_patch_rejects_unknown_fields() {
 }
 
 #[tokio::test]
-async fn bulk_create_user_stories() {
+async fn bulk_create_issues() {
     require_db!();
     let app = TestApp::spawn().await;
     let (token, pid) = owner_project(&app).await;
@@ -207,17 +208,17 @@ async fn bulk_create_user_stories() {
         .collect();
     let resp = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/userstories/bulk"),
+            &format!("/api/v1/projects/{pid}/issues/bulk"),
             &token,
             &json!({ "items": items }),
         ))
         .await;
     assert_eq!(resp.status, 201, "{:?}", resp.json);
-    assert_eq!(resp.json["user_stories"].as_array().unwrap().len(), 5);
+    assert_eq!(resp.json["issues"].as_array().unwrap().len(), 5);
 }
 
 #[tokio::test]
-async fn reorder_user_stories() {
+async fn reorder_issues() {
     require_db!();
     let app = TestApp::spawn().await;
     let (token, pid) = owner_project(&app).await;
@@ -225,7 +226,7 @@ async fn reorder_user_stories() {
     for n in 0..3 {
         let r = app
             .send(post_json_bearer(
-                &format!("/api/v1/projects/{pid}/userstories"),
+                &format!("/api/v1/projects/{pid}/issues"),
                 &token,
                 &json!({ "subject": format!("R{n}") }),
             ))
@@ -235,7 +236,7 @@ async fn reorder_user_stories() {
     // Move the 3rd to the front (before the 1st).
     let mv = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/userstories/{}/move", ids[2]),
+            &format!("/api/v1/projects/{pid}/issues/{}/move", ids[2]),
             &token,
             &json!({ "after_id": ids[0] }),
         ))
@@ -243,11 +244,11 @@ async fn reorder_user_stories() {
     assert_eq!(mv.status, 204, "{:?}", mv.json);
     let list = app
         .send(get_with_bearer(
-            &format!("/api/v1/projects/{pid}/userstories"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
         ))
         .await;
-    let order: Vec<&str> = list.json["user_stories"]
+    let order: Vec<&str> = list.json["issues"]
         .as_array()
         .unwrap()
         .iter()
@@ -279,10 +280,10 @@ async fn cross_project_epic_association_is_422() {
         .await;
     let epic_b_id = epic_b.json["id"].as_str().unwrap();
 
-    // Create a US in project A referencing project B's epic → 422.
+    // Create an issue in project A referencing project B's epic → 422.
     let us = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid_a}/userstories"),
+            &format!("/api/v1/projects/{pid_a}/issues"),
             &token,
             &json!({ "subject": "U", "epic_id": epic_b_id }),
         ))
@@ -297,7 +298,7 @@ async fn ref_resolver() {
     let (token, pid) = owner_project(&app).await;
     let t = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/tasks"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
             &json!({ "subject": "TT" }),
         ))
@@ -312,7 +313,7 @@ async fn ref_resolver() {
         ))
         .await;
     assert_eq!(resolved.status, 200);
-    assert_eq!(resolved.json["kind"], "task");
+    assert_eq!(resolved.json["kind"], "issue");
     assert_eq!(resolved.json["id"], id);
 }
 
@@ -406,13 +407,13 @@ async fn comments_lifecycle() {
     let (token, pid) = owner_project(&app).await;
     let us = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/userstories"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
             &json!({ "subject": "C" }),
         ))
         .await;
     let id = us.json["id"].as_str().unwrap().to_owned();
-    let base = format!("/api/v1/projects/{pid}/userstories/{id}/comments");
+    let base = format!("/api/v1/projects/{pid}/issues/{id}/comments");
 
     let c = app
         .send(post_json_bearer(
@@ -457,17 +458,17 @@ async fn taxonomy_in_use_delete_is_409() {
     require_db!();
     let app = TestApp::spawn().await;
     let (token, pid) = owner_project(&app).await;
-    // Grab a us_status taxonomy item and attach it to a new US.
+    // Grab an issue_status taxonomy item and attach it to a new issue.
     let statuses = app
         .send(get_with_bearer(
-            &format!("/api/v1/projects/{pid}/taxonomy/us_status"),
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_status"),
             &token,
         ))
         .await;
     let status_id = statuses.json["items"][0]["id"].as_str().unwrap().to_owned();
     let _ = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/userstories"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
             &json!({ "subject": "S", "status_id": status_id }),
         ))
@@ -477,7 +478,7 @@ async fn taxonomy_in_use_delete_is_409() {
     let del = app
         .send(req(
             "DELETE",
-            &format!("/api/v1/projects/{pid}/taxonomy/us_status/{status_id}"),
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_status/{status_id}"),
             Some(&token),
             &[],
             None,

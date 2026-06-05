@@ -1,6 +1,7 @@
-//! Backlog endpoints: epics, user stories, tasks, issues, comments, plus the
-//! ref resolver. Cross-cutting: ETag/If-Match OCC, JSON-merge-patch updates,
-//! auto-generated history, bulk create, reordering, and Idempotency-Key.
+//! Backlog endpoints: epics and the unified issue (Story/Task/Bug/sub-task),
+//! plus comments, history and the ref resolver. Cross-cutting: ETag/If-Match
+//! OCC, JSON-merge-patch updates, auto-generated history, bulk create,
+//! reordering, and Idempotency-Key.
 #![allow(
     clippy::result_large_err,
     clippy::implicit_hasher,
@@ -37,9 +38,8 @@ use uuid::Uuid;
 
 use crate::auth::{client_ip, user_agent};
 use crate::dto::{
-    BulkCreateUserStoriesRequest, CommentRequest, CreateEpicRequest, CreateIssueRequest,
-    CreateTaskRequest, CreateUserStoryRequest, ReorderRequest, UpdateEpicRequest,
-    UpdateIssueRequest, UpdateTaskRequest, UpdateUserStoryRequest,
+    BulkCreateIssuesRequest, CommentRequest, CreateEpicRequest, CreateIssueRequest, ReorderRequest,
+    UpdateEpicRequest, UpdateIssueRequest,
 };
 use crate::problem::Problem;
 use crate::projects::ProjectContext;
@@ -487,640 +487,46 @@ pub async fn move_epic(
 }
 
 // ==========================================================================
-// user stories
-// ==========================================================================
-
-pub async fn create_us(
-    State(state): State<AppState>,
-    ctx: ProjectContext,
-    headers: HeaderMap,
-    body: Result<Json<CreateUserStoryRequest>, JsonRejection>,
-) -> Response {
-    if let Err(r) = ctx.require(Permission::UsCreate) {
-        return r;
-    }
-    let req = match parse_create(body, &ctx.rid) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let auth = state.auth();
-    let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
-    };
-    // Cross-project association guard.
-    if let Some(epic_id) = req.epic_id {
-        if !bl::epic_in_project(&client, ctx.project.id, epic_id)
-            .await
-            .unwrap_or(false)
-        {
-            return unprocessable(
-                &ctx.rid,
-                "invalid_association",
-                "epic is not in this project",
-            );
-        }
-    }
-    if let Err(r) =
-        validate_milestone_assignment(&client, ctx.project.id, req.milestone_id, &ctx.rid).await
-    {
-        return r;
-    }
-    let key = idem_key(&headers);
-    let path = format!("/projects/{}/userstories", ctx.project.id);
-    if let Some(r) = replay(auth, &client, ctx.actor_id, &key, "POST", &path).await {
-        return r;
-    }
-    match bl::create_us(
-        &client,
-        ctx.project.id,
-        ctx.actor_id,
-        &req.subject,
-        &req.description,
-        req.status_id,
-        req.epic_id,
-        req.milestone_id,
-        req.points_id,
-        req.assigned_to,
-    )
-    .await
-    {
-        Ok(us) => {
-            history::record(
-                &client,
-                ctx.project.id,
-                "user_story",
-                us.id,
-                Some(ctx.actor_id),
-                &json!({"created": true}),
-            )
-            .await;
-            let body = serde_json::to_value(&us).unwrap_or(Value::Null);
-            remember(
-                &client,
-                ctx.actor_id,
-                &key,
-                "POST",
-                &path,
-                StatusCode::CREATED,
-                &body,
-            )
-            .await;
-            with_etag(StatusCode::CREATED, us.id, us.version, &us)
-        }
-        Err(_) => internal(&ctx.rid),
-    }
-}
-
-/// `POST /api/v1/projects/{project_id}/userstories/bulk`
-pub async fn bulk_create_us(
-    State(state): State<AppState>,
-    ctx: ProjectContext,
-    body: Result<Json<BulkCreateUserStoriesRequest>, JsonRejection>,
-) -> Response {
-    if let Err(r) = ctx.require(Permission::UsCreate) {
-        return r;
-    }
-    let req = match parse_create(body, &ctx.rid) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let auth = state.auth();
-    let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
-    };
-    // Validate associations up front so the batch is all-or-nothing.
-    for item in &req.items {
-        if let Some(epic_id) = item.epic_id {
-            if !bl::epic_in_project(&client, ctx.project.id, epic_id)
-                .await
-                .unwrap_or(false)
-            {
-                return unprocessable(
-                    &ctx.rid,
-                    "invalid_association",
-                    "epic is not in this project",
-                );
-            }
-        }
-        if let Err(r) =
-            validate_milestone_assignment(&client, ctx.project.id, item.milestone_id, &ctx.rid)
-                .await
-        {
-            return r;
-        }
-    }
-    // Each create allocates a ref; refs stay contiguous because creation is
-    // sequential within this handler.
-    let mut created = Vec::with_capacity(req.items.len());
-    for item in &req.items {
-        match bl::create_us(
-            &client,
-            ctx.project.id,
-            ctx.actor_id,
-            &item.subject,
-            &item.description,
-            item.status_id,
-            item.epic_id,
-            item.milestone_id,
-            item.points_id,
-            item.assigned_to,
-        )
-        .await
-        {
-            Ok(us) => {
-                history::record(
-                    &client,
-                    ctx.project.id,
-                    "user_story",
-                    us.id,
-                    Some(ctx.actor_id),
-                    &json!({"created": true}),
-                )
-                .await;
-                created.push(us);
-            }
-            Err(_) => return internal(&ctx.rid),
-        }
-    }
-    (
-        StatusCode::CREATED,
-        Json(json!({ "user_stories": created })),
-    )
-        .into_response()
-}
-
-pub async fn list_us(State(state): State<AppState>, ctx: ProjectContext) -> Response {
-    if let Err(r) = ctx.require(Permission::UsView) {
-        return r;
-    }
-    let auth = state.auth();
-    let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
-    };
-    match bl::list_us(&client, ctx.project.id).await {
-        Ok(items) => Json(json!({ "user_stories": items })).into_response(),
-        Err(_) => internal(&ctx.rid),
-    }
-}
-
-pub async fn get_us(
-    State(state): State<AppState>,
-    ctx: ProjectContext,
-    Path(params): Path<HashMap<String, String>>,
-) -> Response {
-    if let Err(r) = ctx.require(Permission::UsView) {
-        return r;
-    }
-    let Some(id) = id_param(&params) else {
-        return not_found(&ctx.rid);
-    };
-    let auth = state.auth();
-    let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
-    };
-    match bl::get_us(&client, ctx.project.id, id).await {
-        Ok(Some(e)) => with_etag(StatusCode::OK, e.id, e.version, &e),
-        Ok(None) => not_found(&ctx.rid),
-        Err(_) => internal(&ctx.rid),
-    }
-}
-
-pub async fn update_us(
-    State(state): State<AppState>,
-    ctx: ProjectContext,
-    Path(params): Path<HashMap<String, String>>,
-    headers: HeaderMap,
-    body: Result<Json<UpdateUserStoryRequest>, JsonRejection>,
-) -> Response {
-    if let Err(r) = ctx.require(Permission::UsModify) {
-        return r;
-    }
-    let Some(id) = id_param(&params) else {
-        return not_found(&ctx.rid);
-    };
-    let patch = match parse_patch(body, &ctx.rid) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let auth = state.auth();
-    let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
-    };
-    let Ok(Some(old)) = bl::get_us(&client, ctx.project.id, id).await else {
-        return not_found(&ctx.rid);
-    };
-    if let Err(r) = check_if_match(&headers, &etag(old.id, old.version), &ctx.rid) {
-        return r;
-    }
-
-    let subject = patch.subject.unwrap_or(old.subject.clone());
-    let description = patch.description.unwrap_or(old.description.clone());
-    let status_id = patch.status_id.unwrap_or(old.status_id);
-    let epic_id = patch.epic_id.unwrap_or(old.epic_id);
-    let milestone_id = patch.milestone_id.unwrap_or(old.milestone_id);
-    let points_id = patch.points_id.unwrap_or(old.points_id);
-    let assigned_to = patch.assigned_to.unwrap_or(old.assigned_to);
-
-    if let Some(eid) = epic_id {
-        if Some(eid) != old.epic_id
-            && !bl::epic_in_project(&client, ctx.project.id, eid)
-                .await
-                .unwrap_or(false)
-        {
-            return unprocessable(
-                &ctx.rid,
-                "invalid_association",
-                "epic is not in this project",
-            );
-        }
-    }
-    // Validate milestone assignment only when it changes.
-    if milestone_id != old.milestone_id {
-        if let Err(r) =
-            validate_milestone_assignment(&client, ctx.project.id, milestone_id, &ctx.rid).await
-        {
-            return r;
-        }
-    }
-
-    let mut diff = serde_json::Map::new();
-    diff_field(&mut diff, "subject", &json!(old.subject), &json!(subject));
-    diff_field(
-        &mut diff,
-        "description",
-        &json!(old.description),
-        &json!(description),
-    );
-    diff_field(
-        &mut diff,
-        "status_id",
-        &json!(old.status_id),
-        &json!(status_id),
-    );
-    diff_field(&mut diff, "epic_id", &json!(old.epic_id), &json!(epic_id));
-    diff_field(
-        &mut diff,
-        "milestone_id",
-        &json!(old.milestone_id),
-        &json!(milestone_id),
-    );
-    diff_field(
-        &mut diff,
-        "points_id",
-        &json!(old.points_id),
-        &json!(points_id),
-    );
-    diff_field(
-        &mut diff,
-        "assigned_to",
-        &json!(old.assigned_to),
-        &json!(assigned_to),
-    );
-
-    match bl::update_us(
-        &client,
-        ctx.project.id,
-        id,
-        old.version,
-        &subject,
-        &description,
-        status_id,
-        epic_id,
-        milestone_id,
-        points_id,
-        assigned_to,
-    )
-    .await
-    {
-        Ok(UpdateOutcome::Updated(e)) => {
-            if !diff.is_empty() {
-                history::record(
-                    &client,
-                    ctx.project.id,
-                    "user_story",
-                    e.id,
-                    Some(ctx.actor_id),
-                    &Value::Object(diff),
-                )
-                .await;
-            }
-            with_etag(StatusCode::OK, e.id, e.version, &e)
-        }
-        Ok(UpdateOutcome::NotFound) => not_found(&ctx.rid),
-        Ok(UpdateOutcome::Conflict) => problem(
-            StatusCode::PRECONDITION_FAILED,
-            "precondition_failed",
-            "Precondition Failed",
-            None,
-            &ctx.rid,
-        ),
-        Err(_) => internal(&ctx.rid),
-    }
-}
-
-pub async fn delete_us(
-    State(state): State<AppState>,
-    ctx: ProjectContext,
-    Path(params): Path<HashMap<String, String>>,
-    headers: HeaderMap,
-) -> Response {
-    delete_entity(
-        state,
-        ctx,
-        &params,
-        &headers,
-        "user_stories",
-        "user_story",
-        Permission::UsDelete,
-    )
-    .await
-}
-
-pub async fn move_us(
-    State(state): State<AppState>,
-    ctx: ProjectContext,
-    Path(params): Path<HashMap<String, String>>,
-    body: Result<Json<ReorderRequest>, JsonRejection>,
-) -> Response {
-    if let Err(r) = ctx.require(Permission::UsModify) {
-        return r;
-    }
-    let Some(id) = id_param(&params) else {
-        return not_found(&ctx.rid);
-    };
-    let req = match parse_create(body, &ctx.rid) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let auth = state.auth();
-    let mut client = match auth.db.pool.get().await {
-        Ok(c) => c,
-        Err(_) => return internal(&ctx.rid),
-    };
-    let Ok(items) = bl::list_us(&client, ctx.project.id).await else {
-        return internal(&ctx.rid);
-    };
-    reorder(
-        &mut client,
-        "user_stories",
-        ctx.project.id,
-        id,
-        req.before_id,
-        req.after_id,
-        items.iter().map(|i| (i.id, i.order)).collect(),
-        &ctx.rid,
-    )
-    .await
-}
-
-// ==========================================================================
-// tasks
-// ==========================================================================
-
-pub async fn create_task(
-    State(state): State<AppState>,
-    ctx: ProjectContext,
-    headers: HeaderMap,
-    body: Result<Json<CreateTaskRequest>, JsonRejection>,
-) -> Response {
-    if let Err(r) = ctx.require(Permission::TaskCreate) {
-        return r;
-    }
-    let req = match parse_create(body, &ctx.rid) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let auth = state.auth();
-    let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
-    };
-    if let Some(us_id) = req.user_story_id {
-        if !bl::us_in_project(&client, ctx.project.id, us_id)
-            .await
-            .unwrap_or(false)
-        {
-            return unprocessable(
-                &ctx.rid,
-                "invalid_association",
-                "user story is not in this project",
-            );
-        }
-    }
-    let key = idem_key(&headers);
-    let path = format!("/projects/{}/tasks", ctx.project.id);
-    if let Some(r) = replay(auth, &client, ctx.actor_id, &key, "POST", &path).await {
-        return r;
-    }
-    match bl::create_task(
-        &client,
-        ctx.project.id,
-        ctx.actor_id,
-        &req.subject,
-        &req.description,
-        req.status_id,
-        req.user_story_id,
-        req.assigned_to,
-    )
-    .await
-    {
-        Ok(t) => {
-            history::record(
-                &client,
-                ctx.project.id,
-                "task",
-                t.id,
-                Some(ctx.actor_id),
-                &json!({"created": true}),
-            )
-            .await;
-            let body = serde_json::to_value(&t).unwrap_or(Value::Null);
-            remember(
-                &client,
-                ctx.actor_id,
-                &key,
-                "POST",
-                &path,
-                StatusCode::CREATED,
-                &body,
-            )
-            .await;
-            with_etag(StatusCode::CREATED, t.id, t.version, &t)
-        }
-        Err(_) => internal(&ctx.rid),
-    }
-}
-
-pub async fn list_tasks(State(state): State<AppState>, ctx: ProjectContext) -> Response {
-    if let Err(r) = ctx.require(Permission::TaskView) {
-        return r;
-    }
-    let auth = state.auth();
-    let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
-    };
-    match bl::list_tasks(&client, ctx.project.id).await {
-        Ok(items) => Json(json!({ "tasks": items })).into_response(),
-        Err(_) => internal(&ctx.rid),
-    }
-}
-
-pub async fn get_task(
-    State(state): State<AppState>,
-    ctx: ProjectContext,
-    Path(params): Path<HashMap<String, String>>,
-) -> Response {
-    if let Err(r) = ctx.require(Permission::TaskView) {
-        return r;
-    }
-    let Some(id) = id_param(&params) else {
-        return not_found(&ctx.rid);
-    };
-    let auth = state.auth();
-    let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
-    };
-    match bl::get_task(&client, ctx.project.id, id).await {
-        Ok(Some(e)) => with_etag(StatusCode::OK, e.id, e.version, &e),
-        Ok(None) => not_found(&ctx.rid),
-        Err(_) => internal(&ctx.rid),
-    }
-}
-
-pub async fn update_task(
-    State(state): State<AppState>,
-    ctx: ProjectContext,
-    Path(params): Path<HashMap<String, String>>,
-    headers: HeaderMap,
-    body: Result<Json<UpdateTaskRequest>, JsonRejection>,
-) -> Response {
-    if let Err(r) = ctx.require(Permission::TaskModify) {
-        return r;
-    }
-    let Some(id) = id_param(&params) else {
-        return not_found(&ctx.rid);
-    };
-    let patch = match parse_patch(body, &ctx.rid) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let auth = state.auth();
-    let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
-    };
-    let Ok(Some(old)) = bl::get_task(&client, ctx.project.id, id).await else {
-        return not_found(&ctx.rid);
-    };
-    if let Err(r) = check_if_match(&headers, &etag(old.id, old.version), &ctx.rid) {
-        return r;
-    }
-
-    let subject = patch.subject.unwrap_or(old.subject.clone());
-    let description = patch.description.unwrap_or(old.description.clone());
-    let status_id = patch.status_id.unwrap_or(old.status_id);
-    let user_story_id = patch.user_story_id.unwrap_or(old.user_story_id);
-    let assigned_to = patch.assigned_to.unwrap_or(old.assigned_to);
-
-    if let Some(us_id) = user_story_id {
-        if Some(us_id) != old.user_story_id
-            && !bl::us_in_project(&client, ctx.project.id, us_id)
-                .await
-                .unwrap_or(false)
-        {
-            return unprocessable(
-                &ctx.rid,
-                "invalid_association",
-                "user story is not in this project",
-            );
-        }
-    }
-
-    let mut diff = serde_json::Map::new();
-    diff_field(&mut diff, "subject", &json!(old.subject), &json!(subject));
-    diff_field(
-        &mut diff,
-        "description",
-        &json!(old.description),
-        &json!(description),
-    );
-    diff_field(
-        &mut diff,
-        "status_id",
-        &json!(old.status_id),
-        &json!(status_id),
-    );
-    diff_field(
-        &mut diff,
-        "user_story_id",
-        &json!(old.user_story_id),
-        &json!(user_story_id),
-    );
-    diff_field(
-        &mut diff,
-        "assigned_to",
-        &json!(old.assigned_to),
-        &json!(assigned_to),
-    );
-
-    match bl::update_task(
-        &client,
-        ctx.project.id,
-        id,
-        old.version,
-        &subject,
-        &description,
-        status_id,
-        user_story_id,
-        assigned_to,
-    )
-    .await
-    {
-        Ok(UpdateOutcome::Updated(e)) => {
-            if !diff.is_empty() {
-                history::record(
-                    &client,
-                    ctx.project.id,
-                    "task",
-                    e.id,
-                    Some(ctx.actor_id),
-                    &Value::Object(diff),
-                )
-                .await;
-            }
-            with_etag(StatusCode::OK, e.id, e.version, &e)
-        }
-        Ok(UpdateOutcome::NotFound) => not_found(&ctx.rid),
-        Ok(UpdateOutcome::Conflict) => problem(
-            StatusCode::PRECONDITION_FAILED,
-            "precondition_failed",
-            "Precondition Failed",
-            None,
-            &ctx.rid,
-        ),
-        Err(_) => internal(&ctx.rid),
-    }
-}
-
-pub async fn delete_task(
-    State(state): State<AppState>,
-    ctx: ProjectContext,
-    Path(params): Path<HashMap<String, String>>,
-    headers: HeaderMap,
-) -> Response {
-    delete_entity(
-        state,
-        ctx,
-        &params,
-        &headers,
-        "tasks",
-        "task",
-        Permission::TaskDelete,
-    )
-    .await
-}
-
-// ==========================================================================
 // issues
 // ==========================================================================
+
+/// Validate an issue's optional associations: epic and parent must be in the
+/// project (422); the milestone must be in the project (422) and not closed
+/// (409). `None` for any is always allowed.
+async fn validate_issue_associations(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    epic_id: Option<Uuid>,
+    parent_id: Option<Uuid>,
+    milestone_id: Option<Uuid>,
+    rid: &str,
+) -> Result<(), Response> {
+    if let Some(eid) = epic_id {
+        if !bl::epic_in_project(client, project_id, eid)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(unprocessable(
+                rid,
+                "invalid_association",
+                "epic is not in this project",
+            ));
+        }
+    }
+    if let Some(pid) = parent_id {
+        if !bl::issue_in_project(client, project_id, pid)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(unprocessable(
+                rid,
+                "invalid_association",
+                "parent issue is not in this project",
+            ));
+        }
+    }
+    validate_milestone_assignment(client, project_id, milestone_id, rid).await
+}
 
 pub async fn create_issue(
     State(state): State<AppState>,
@@ -1152,6 +558,18 @@ pub async fn create_issue(
     {
         return r;
     }
+    if let Err(r) = validate_issue_associations(
+        &client,
+        ctx.project.id,
+        req.epic_id,
+        req.parent_id,
+        req.milestone_id,
+        &ctx.rid,
+    )
+    .await
+    {
+        return r;
+    }
     let key = idem_key(&headers);
     let path = format!("/projects/{}/issues", ctx.project.id);
     if let Some(r) = replay(auth, &client, ctx.actor_id, &key, "POST", &path).await {
@@ -1167,6 +585,10 @@ pub async fn create_issue(
         req.type_id,
         req.priority_id,
         req.severity_id,
+        req.points_id,
+        req.epic_id,
+        req.parent_id,
+        req.milestone_id,
         req.assigned_to,
     )
     .await;
@@ -1210,8 +632,140 @@ pub async fn create_issue(
     with_etag(StatusCode::CREATED, full.id, full.version, &full)
 }
 
-/// Validate a US→milestone assignment: the milestone must be in the project
-/// (422) and not closed (409). A `None` assignment is always allowed.
+/// `POST /api/v1/projects/{project_id}/issues/bulk`
+pub async fn bulk_create_issues(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    body: Result<Json<BulkCreateIssuesRequest>, JsonRejection>,
+) -> Response {
+    if let Err(r) = ctx.require(Permission::IssueCreate) {
+        return r;
+    }
+    let req = match parse_create(body, &ctx.rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let auth = state.auth();
+    let mut client = match auth.db.pool.get().await {
+        Ok(c) => c,
+        Err(_) => return internal(&ctx.rid),
+    };
+    // Validate associations + labels/components up front so the batch is
+    // all-or-nothing.
+    for item in &req.items {
+        if let Err(r) = validate_label_component_ids(
+            &client,
+            ctx.project.id,
+            &item.labels,
+            &item.components,
+            &ctx.rid,
+        )
+        .await
+        {
+            return r;
+        }
+        if let Err(r) = validate_issue_associations(
+            &client,
+            ctx.project.id,
+            item.epic_id,
+            item.parent_id,
+            item.milestone_id,
+            &ctx.rid,
+        )
+        .await
+        {
+            return r;
+        }
+    }
+    let mut created = Vec::with_capacity(req.items.len());
+    for item in &req.items {
+        let i = match bl::create_issue(
+            &client,
+            ctx.project.id,
+            ctx.actor_id,
+            &item.subject,
+            &item.description,
+            item.status_id,
+            item.type_id,
+            item.priority_id,
+            item.severity_id,
+            item.points_id,
+            item.epic_id,
+            item.parent_id,
+            item.milestone_id,
+            item.assigned_to,
+        )
+        .await
+        {
+            Ok(i) => i,
+            Err(_) => return internal(&ctx.rid),
+        };
+        if bl::set_issue_labels(&mut client, i.id, &item.labels)
+            .await
+            .is_err()
+            || bl::set_issue_components(&mut client, i.id, &item.components)
+                .await
+                .is_err()
+        {
+            return internal(&ctx.rid);
+        }
+        history::record(
+            &client,
+            ctx.project.id,
+            "issue",
+            i.id,
+            Some(ctx.actor_id),
+            &json!({"created": true}),
+        )
+        .await;
+        match bl::get_issue(&client, ctx.project.id, i.id).await {
+            Ok(Some(f)) => created.push(f),
+            _ => return internal(&ctx.rid),
+        }
+    }
+    (StatusCode::CREATED, Json(json!({ "issues": created }))).into_response()
+}
+
+/// `POST /api/v1/projects/{project_id}/issues/{id}/move`
+pub async fn move_issue(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    Path(params): Path<HashMap<String, String>>,
+    body: Result<Json<ReorderRequest>, JsonRejection>,
+) -> Response {
+    if let Err(r) = ctx.require(Permission::IssueModify) {
+        return r;
+    }
+    let Some(id) = id_param(&params) else {
+        return not_found(&ctx.rid);
+    };
+    let req = match parse_create(body, &ctx.rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let auth = state.auth();
+    let mut client = match auth.db.pool.get().await {
+        Ok(c) => c,
+        Err(_) => return internal(&ctx.rid),
+    };
+    let Ok(items) = bl::list_issues(&client, ctx.project.id).await else {
+        return internal(&ctx.rid);
+    };
+    reorder(
+        &mut client,
+        "issues",
+        ctx.project.id,
+        id,
+        req.before_id,
+        req.after_id,
+        items.iter().map(|i| (i.id, i.order)).collect(),
+        &ctx.rid,
+    )
+    .await
+}
+
+/// Validate an issue→milestone assignment: the milestone must be in the
+/// project (422) and not closed (409). A `None` assignment is always allowed.
 async fn validate_milestone_assignment(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
@@ -1239,7 +793,7 @@ async fn validate_milestone_assignment(
             StatusCode::CONFLICT,
             "milestone_closed",
             "Milestone closed",
-            Some("cannot assign a user story to a closed milestone".to_owned()),
+            Some("cannot assign an issue to a closed milestone".to_owned()),
             rid,
         ));
     }
@@ -1362,7 +916,42 @@ pub async fn update_issue(
     let type_id = patch.type_id.unwrap_or(old.type_id);
     let priority_id = patch.priority_id.unwrap_or(old.priority_id);
     let severity_id = patch.severity_id.unwrap_or(old.severity_id);
+    let points_id = patch.points_id.unwrap_or(old.points_id);
+    let epic_id = patch.epic_id.unwrap_or(old.epic_id);
+    let parent_id = patch.parent_id.unwrap_or(old.parent_id);
+    let milestone_id = patch.milestone_id.unwrap_or(old.milestone_id);
     let assigned_to = patch.assigned_to.unwrap_or(old.assigned_to);
+
+    // Validate only associations that actually changed.
+    let epic_changed = epic_id != old.epic_id;
+    let parent_changed = parent_id != old.parent_id;
+    let milestone_changed = milestone_id != old.milestone_id;
+    if epic_changed || parent_changed || milestone_changed {
+        if let Err(r) = validate_issue_associations(
+            &client,
+            ctx.project.id,
+            if epic_changed { epic_id } else { None },
+            if parent_changed { parent_id } else { None },
+            if milestone_changed {
+                milestone_id
+            } else {
+                None
+            },
+            &ctx.rid,
+        )
+        .await
+        {
+            return r;
+        }
+    }
+    // An issue cannot be its own parent.
+    if parent_id == Some(id) {
+        return unprocessable(
+            &ctx.rid,
+            "invalid_association",
+            "an issue cannot be its own parent",
+        );
+    }
 
     let mut diff = serde_json::Map::new();
     diff_field(&mut diff, "subject", &json!(old.subject), &json!(subject));
@@ -1393,6 +982,25 @@ pub async fn update_issue(
     );
     diff_field(
         &mut diff,
+        "points_id",
+        &json!(old.points_id),
+        &json!(points_id),
+    );
+    diff_field(&mut diff, "epic_id", &json!(old.epic_id), &json!(epic_id));
+    diff_field(
+        &mut diff,
+        "parent_id",
+        &json!(old.parent_id),
+        &json!(parent_id),
+    );
+    diff_field(
+        &mut diff,
+        "milestone_id",
+        &json!(old.milestone_id),
+        &json!(milestone_id),
+    );
+    diff_field(
+        &mut diff,
         "assigned_to",
         &json!(old.assigned_to),
         &json!(assigned_to),
@@ -1409,6 +1017,10 @@ pub async fn update_issue(
         type_id,
         priority_id,
         severity_id,
+        points_id,
+        epic_id,
+        parent_id,
+        milestone_id,
         assigned_to,
     )
     .await
@@ -1664,8 +1276,6 @@ fn id_param(params: &HashMap<String, String>) -> Option<Uuid> {
 fn entity_target(params: &HashMap<String, String>) -> Option<(EntityKind, Uuid)> {
     let kind = params.get("entity").and_then(|s| match s.as_str() {
         "epics" => Some(EntityKind::Epic),
-        "userstories" => Some(EntityKind::UserStory),
-        "tasks" => Some(EntityKind::Task),
         "issues" => Some(EntityKind::Issue),
         _ => None,
     })?;
@@ -1676,8 +1286,6 @@ fn entity_target(params: &HashMap<String, String>) -> Option<(EntityKind, Uuid)>
 fn view_perm(kind: EntityKind) -> Permission {
     match kind {
         EntityKind::Epic => Permission::EpicView,
-        EntityKind::UserStory => Permission::UsView,
-        EntityKind::Task => Permission::TaskView,
         EntityKind::Issue => Permission::IssueView,
     }
 }

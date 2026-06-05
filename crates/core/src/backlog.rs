@@ -1,4 +1,9 @@
-//! Backlog domain types: epics, user stories, tasks, issues, comments.
+//! Backlog domain types: epics, unified issues, comments.
+//!
+//! The backlog is Jira-style: `epics` are a separate entity; everything else
+//! (formerly user stories, tasks and issues) is a single `Issue` whose *type*
+//! is a per-project `issue_type` taxonomy item, with sub-tasks expressed via
+//! `parent_id` and optional grouping under an epic via `epic_id`.
 
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -11,8 +16,6 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 pub enum EntityKind {
     Epic,
-    UserStory,
-    Task,
     Issue,
 }
 
@@ -21,8 +24,6 @@ impl EntityKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Epic => "epic",
-            Self::UserStory => "user_story",
-            Self::Task => "task",
             Self::Issue => "issue",
         }
     }
@@ -31,8 +32,6 @@ impl EntityKind {
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "epic" => Self::Epic,
-            "user_story" => Self::UserStory,
-            "task" => Self::Task,
             "issue" => Self::Issue,
             _ => return None,
         })
@@ -59,48 +58,11 @@ pub struct Epic {
     pub modified_at: OffsetDateTime,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct UserStory {
-    pub id: Uuid,
-    pub project_id: Uuid,
-    #[serde(rename = "ref")]
-    pub reference: i64,
-    pub subject: String,
-    pub description: String,
-    pub status_id: Option<Uuid>,
-    pub epic_id: Option<Uuid>,
-    pub milestone_id: Option<Uuid>,
-    pub points_id: Option<Uuid>,
-    pub owner_id: Option<Uuid>,
-    pub assigned_to: Option<Uuid>,
-    pub order: f64,
-    pub version: i32,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339")]
-    pub modified_at: OffsetDateTime,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct Task {
-    pub id: Uuid,
-    pub project_id: Uuid,
-    #[serde(rename = "ref")]
-    pub reference: i64,
-    pub subject: String,
-    pub description: String,
-    pub status_id: Option<Uuid>,
-    pub user_story_id: Option<Uuid>,
-    pub owner_id: Option<Uuid>,
-    pub assigned_to: Option<Uuid>,
-    pub order: f64,
-    pub version: i32,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339")]
-    pub modified_at: OffsetDateTime,
-}
-
+/// Unified work item (Story / Task / Bug / sub-task).
+///
+/// `type_id` (an `issue_type` taxonomy item) tells Story from Task from Bug;
+/// `parent_id` nests sub-tasks; `epic_id` groups under an epic; `milestone_id`
+/// assigns to a sprint; `points_id` is the estimate.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Issue {
     pub id: Uuid,
@@ -113,12 +75,17 @@ pub struct Issue {
     pub type_id: Option<Uuid>,
     pub priority_id: Option<Uuid>,
     pub severity_id: Option<Uuid>,
+    pub points_id: Option<Uuid>,
+    pub epic_id: Option<Uuid>,
+    pub parent_id: Option<Uuid>,
+    pub milestone_id: Option<Uuid>,
     pub owner_id: Option<Uuid>,
     pub assigned_to: Option<Uuid>,
     /// Label ids attached to this issue.
     pub labels: Vec<Uuid>,
     /// Component ids attached to this issue.
     pub components: Vec<Uuid>,
+    pub order: f64,
     pub version: i32,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -152,10 +119,11 @@ mod tests {
 
     #[test]
     fn entity_kind_round_trips() {
-        for s in ["epic", "user_story", "task", "issue"] {
+        for s in ["epic", "issue"] {
             assert_eq!(EntityKind::parse(s).map(EntityKind::as_str), Some(s));
         }
         assert!(EntityKind::parse("nope").is_none());
+        assert!(EntityKind::parse("task").is_none());
     }
 
     #[test]

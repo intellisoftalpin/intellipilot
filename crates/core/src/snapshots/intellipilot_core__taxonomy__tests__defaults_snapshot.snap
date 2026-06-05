@@ -4,122 +4,59 @@ expression: rows
 ---
 [
   [
-    "us_status",
+    "issue_status",
     "new",
     "#999999",
     false,
     null
   ],
   [
-    "us_status",
+    "issue_status",
     "ready",
     "#ff8a84",
     false,
     null
   ],
   [
-    "us_status",
+    "issue_status",
     "in-progress",
     "#ffcc00",
     false,
     null
   ],
   [
-    "us_status",
+    "issue_status",
     "ready-for-test",
     "#9dce0a",
     false,
     null
   ],
   [
-    "us_status",
+    "issue_status",
     "done",
     "#669900",
     true,
     null
   ],
   [
-    "us_status",
+    "issue_status",
     "archived",
     "#5c3566",
     true,
     null
   ],
   [
-    "task_status",
-    "new",
-    "#999999",
-    false,
+    "issue_type",
+    "story",
+    "#3b7dd8",
+    null,
     null
   ],
   [
-    "task_status",
-    "in-progress",
-    "#ffcc00",
-    false,
-    null
-  ],
-  [
-    "task_status",
-    "ready-for-test",
-    "#9dce0a",
-    false,
-    null
-  ],
-  [
-    "task_status",
-    "closed",
+    "issue_type",
+    "task",
     "#669900",
-    true,
-    null
-  ],
-  [
-    "task_status",
-    "needs-info",
-    "#ff8a84",
-    false,
-    null
-  ],
-  [
-    "issue_status",
-    "new",
-    "#999999",
-    false,
-    null
-  ],
-  [
-    "issue_status",
-    "in-progress",
-    "#ffcc00",
-    false,
-    null
-  ],
-  [
-    "issue_status",
-    "ready-for-test",
-    "#9dce0a",
-    false,
-    null
-  ],
-  [
-    "issue_status",
-    "closed",
-    "#669900",
-    true,
-    null
-  ],
-  [
-    "issue_status",
-    "needs-info",
-    "#ff8a84",
-    false,
-    null
-  ],
-  [
-    "issue_status",
-    "rejected",
-    "#cc0000",
-    true,
+    null,
     null
   ],
   [
@@ -131,15 +68,15 @@ expression: rows
   ],
   [
     "issue_type",
-    "question",
-    "#0079bc",
+    "enhancement",
+    "#9dce0a",
     null,
     null
   ],
   [
     "issue_type",
-    "enhancement",
-    "#669900",
+    "question",
+    "#0079bc",
     null,
     null
   ],

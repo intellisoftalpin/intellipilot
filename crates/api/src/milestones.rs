@@ -289,31 +289,31 @@ pub async fn board(
         return not_found(&ctx.rid);
     }
 
-    let Ok(statuses) = taxdb::list(&client, ctx.project.id, TaxonomyKind::UsStatus).await else {
+    let Ok(statuses) = taxdb::list(&client, ctx.project.id, TaxonomyKind::IssueStatus).await else {
         return internal(&ctx.rid);
     };
-    let Ok(stories) = bl::us_in_milestone(&client, ctx.project.id, id).await else {
+    let Ok(issues) = bl::issues_in_milestone(&client, ctx.project.id, id).await else {
         return internal(&ctx.rid);
     };
 
-    // Pre-fetch tasks per story.
-    let mut cards: Vec<Value> = Vec::with_capacity(stories.len());
-    for us in &stories {
-        let tasks = bl::tasks_for_story(&client, ctx.project.id, us.id)
+    // Attach each issue's sub-tasks (child issues) to its card.
+    let mut cards: Vec<Value> = Vec::with_capacity(issues.len());
+    for iss in &issues {
+        let subtasks = bl::children_for_parent(&client, ctx.project.id, iss.id)
             .await
             .unwrap_or_default();
-        let mut card = serde_json::to_value(us).unwrap_or(Value::Null);
+        let mut card = serde_json::to_value(iss).unwrap_or(Value::Null);
         if let Value::Object(ref mut map) = card {
             map.insert(
-                "tasks".to_owned(),
-                serde_json::to_value(&tasks).unwrap_or(Value::Null),
+                "subtasks".to_owned(),
+                serde_json::to_value(&subtasks).unwrap_or(Value::Null),
             );
         }
         cards.push(card);
     }
 
     let column = |status: Option<&Value>, status_id: Option<Uuid>| -> Value {
-        let stories: Vec<&Value> = cards
+        let issues: Vec<&Value> = cards
             .iter()
             .filter(|c| {
                 c.get("status_id")
@@ -322,7 +322,7 @@ pub async fn board(
                     == status_id
             })
             .collect();
-        json!({ "status": status, "user_stories": stories })
+        json!({ "status": status, "issues": issues })
     };
 
     let mut columns: Vec<Value> = Vec::with_capacity(statuses.len() + 1);

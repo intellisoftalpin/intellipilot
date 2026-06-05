@@ -66,8 +66,6 @@ fn not_found(rid: &str) -> Response {
 fn entity_target(params: &HashMap<String, String>) -> Option<(&'static str, Uuid)> {
     let target_type = params.get("entity").and_then(|s| match s.as_str() {
         "epics" => Some("epic"),
-        "userstories" => Some("user_story"),
-        "tasks" => Some("task"),
         "issues" => Some("issue"),
         "wiki" => Some("wiki"),
         _ => None,
@@ -79,8 +77,6 @@ fn entity_target(params: &HashMap<String, String>) -> Option<(&'static str, Uuid
 fn view_perm(target_type: &str) -> Option<Permission> {
     Some(match target_type {
         "epic" => Permission::EpicView,
-        "user_story" => Permission::UsView,
-        "task" => Permission::TaskView,
         "issue" => Permission::IssueView,
         "wiki" => Permission::WikiView,
         _ => return None,

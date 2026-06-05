@@ -1,7 +1,9 @@
 //! Per-project taxonomy: statuses, issue types, priorities, severities, points.
 //!
 //! All kinds share one storage shape (`taxonomy_items`) with kind-specific
-//! fields left `None` where not applicable.
+//! fields left `None` where not applicable. With the unified backlog there is
+//! a single `issue_status` workflow shared by every issue (Story/Task/Bug);
+//! the issue *type* is itself a taxonomy (`issue_type`).
 
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -12,8 +14,6 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaxonomyKind {
-    UsStatus,
-    TaskStatus,
     IssueStatus,
     IssueType,
     Priority,
@@ -25,8 +25,6 @@ impl TaxonomyKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::UsStatus => "us_status",
-            Self::TaskStatus => "task_status",
             Self::IssueStatus => "issue_status",
             Self::IssueType => "issue_type",
             Self::Priority => "priority",
@@ -38,8 +36,6 @@ impl TaxonomyKind {
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
-            "us_status" => Self::UsStatus,
-            "task_status" => Self::TaskStatus,
             "issue_status" => Self::IssueStatus,
             "issue_type" => Self::IssueType,
             "priority" => Self::Priority,
@@ -49,10 +45,10 @@ impl TaxonomyKind {
         })
     }
 
-    /// Whether this kind carries an `is_closed` flag (the status kinds).
+    /// Whether this kind carries an `is_closed` flag (the status kind).
     #[must_use]
     pub const fn has_closed(self) -> bool {
-        matches!(self, Self::UsStatus | Self::TaskStatus | Self::IssueStatus)
+        matches!(self, Self::IssueStatus)
     }
 
     /// Whether this kind carries a numeric `value` (points only).
@@ -91,10 +87,10 @@ pub struct DefaultTaxonomyItem {
     pub value: Option<f64>,
 }
 
-/// The default taxonomy seeded on project creation (Taiga-inspired).
+/// The default taxonomy seeded on project creation.
 #[must_use]
 pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
-    use TaxonomyKind::{IssueStatus, IssueType, Point, Priority, Severity, TaskStatus, UsStatus};
+    use TaxonomyKind::{IssueStatus, IssueType, Point, Priority, Severity};
 
     let status = |kind: TaxonomyKind,
                   name: &'static str,
@@ -131,33 +127,9 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
     };
 
     vec![
-        // User story statuses
-        status(UsStatus, "New", "new", "#999999", false),
-        status(UsStatus, "Ready", "ready", "#ff8a84", false),
-        status(UsStatus, "In progress", "in-progress", "#ffcc00", false),
-        status(
-            UsStatus,
-            "Ready for test",
-            "ready-for-test",
-            "#9dce0a",
-            false,
-        ),
-        status(UsStatus, "Done", "done", "#669900", true),
-        status(UsStatus, "Archived", "archived", "#5c3566", true),
-        // Task statuses
-        status(TaskStatus, "New", "new", "#999999", false),
-        status(TaskStatus, "In progress", "in-progress", "#ffcc00", false),
-        status(
-            TaskStatus,
-            "Ready for test",
-            "ready-for-test",
-            "#9dce0a",
-            false,
-        ),
-        status(TaskStatus, "Closed", "closed", "#669900", true),
-        status(TaskStatus, "Needs info", "needs-info", "#ff8a84", false),
-        // Issue statuses
+        // Unified issue statuses (shared by every issue type)
         status(IssueStatus, "New", "new", "#999999", false),
+        status(IssueStatus, "Ready", "ready", "#ff8a84", false),
         status(IssueStatus, "In progress", "in-progress", "#ffcc00", false),
         status(
             IssueStatus,
@@ -166,13 +138,14 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
             "#9dce0a",
             false,
         ),
-        status(IssueStatus, "Closed", "closed", "#669900", true),
-        status(IssueStatus, "Needs info", "needs-info", "#ff8a84", false),
-        status(IssueStatus, "Rejected", "rejected", "#cc0000", true),
-        // Issue types
+        status(IssueStatus, "Done", "done", "#669900", true),
+        status(IssueStatus, "Archived", "archived", "#5c3566", true),
+        // Issue types (the work-item discriminator: Story / Task / Bug / …)
+        plain(IssueType, "Story", "story", "#3b7dd8"),
+        plain(IssueType, "Task", "task", "#669900"),
         plain(IssueType, "Bug", "bug", "#cc0000"),
+        plain(IssueType, "Enhancement", "enhancement", "#9dce0a"),
         plain(IssueType, "Question", "question", "#0079bc"),
-        plain(IssueType, "Enhancement", "enhancement", "#669900"),
         // Priorities
         plain(Priority, "Low", "low", "#999999"),
         plain(Priority, "Normal", "normal", "#ffcc00"),
@@ -206,8 +179,6 @@ mod tests {
     #[test]
     fn kind_round_trips() {
         for s in [
-            "us_status",
-            "task_status",
             "issue_status",
             "issue_type",
             "priority",
@@ -217,6 +188,8 @@ mod tests {
             assert_eq!(TaxonomyKind::parse(s).unwrap().as_str(), s);
         }
         assert!(TaxonomyKind::parse("nope").is_none());
+        assert!(TaxonomyKind::parse("us_status").is_none());
+        assert!(TaxonomyKind::parse("task_status").is_none());
     }
 
     #[test]

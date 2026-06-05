@@ -317,82 +317,11 @@ pub struct UpdateEpicRequest {
     pub assigned_to: Option<Option<Uuid>>,
 }
 
-#[derive(Debug, Deserialize, Validate, ToSchema)]
-pub struct CreateUserStoryRequest {
-    #[garde(length(min = 1, max = 500))]
-    pub subject: String,
-    #[garde(length(max = 100_000))]
-    #[serde(default)]
-    pub description: String,
-    #[garde(skip)]
-    #[serde(default)]
-    pub status_id: Option<Uuid>,
-    #[garde(skip)]
-    #[serde(default)]
-    pub epic_id: Option<Uuid>,
-    #[garde(skip)]
-    #[serde(default)]
-    pub milestone_id: Option<Uuid>,
-    #[garde(skip)]
-    #[serde(default)]
-    pub points_id: Option<Uuid>,
-    #[garde(skip)]
-    #[serde(default)]
-    pub assigned_to: Option<Uuid>,
-}
-
-#[derive(Debug, Default, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateUserStoryRequest {
-    #[serde(default)]
-    pub subject: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub status_id: Option<Option<Uuid>>,
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub epic_id: Option<Option<Uuid>>,
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub milestone_id: Option<Option<Uuid>>,
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub points_id: Option<Option<Uuid>>,
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub assigned_to: Option<Option<Uuid>>,
-}
-
-#[derive(Debug, Deserialize, Validate, ToSchema)]
-pub struct CreateTaskRequest {
-    #[garde(length(min = 1, max = 500))]
-    pub subject: String,
-    #[garde(length(max = 100_000))]
-    #[serde(default)]
-    pub description: String,
-    #[garde(skip)]
-    #[serde(default)]
-    pub status_id: Option<Uuid>,
-    #[garde(skip)]
-    #[serde(default)]
-    pub user_story_id: Option<Uuid>,
-    #[garde(skip)]
-    #[serde(default)]
-    pub assigned_to: Option<Uuid>,
-}
-
-#[derive(Debug, Default, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateTaskRequest {
-    #[serde(default)]
-    pub subject: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub status_id: Option<Option<Uuid>>,
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub user_story_id: Option<Option<Uuid>>,
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub assigned_to: Option<Option<Uuid>>,
-}
-
+/// Create a unified issue.
+///
+/// `type_id` (an `issue_type` taxonomy item) picks Story / Task / Bug;
+/// `parent_id` makes it a sub-task; `epic_id` groups it under an epic;
+/// `milestone_id` assigns a sprint; `points_id` is the estimate.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct CreateIssueRequest {
     #[garde(length(min = 1, max = 500))]
@@ -412,6 +341,18 @@ pub struct CreateIssueRequest {
     #[garde(skip)]
     #[serde(default)]
     pub severity_id: Option<Uuid>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub points_id: Option<Uuid>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub epic_id: Option<Uuid>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub milestone_id: Option<Uuid>,
     #[garde(skip)]
     #[serde(default)]
     pub assigned_to: Option<Uuid>,
@@ -439,6 +380,14 @@ pub struct UpdateIssueRequest {
     #[serde(default, with = "serde_with::rust::double_option")]
     pub severity_id: Option<Option<Uuid>>,
     #[serde(default, with = "serde_with::rust::double_option")]
+    pub points_id: Option<Option<Uuid>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub epic_id: Option<Option<Uuid>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub parent_id: Option<Option<Uuid>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub milestone_id: Option<Option<Uuid>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
     pub assigned_to: Option<Option<Uuid>>,
     /// Full replacement of the issue's labels when present.
     #[serde(default)]
@@ -449,9 +398,9 @@ pub struct UpdateIssueRequest {
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
-pub struct BulkCreateUserStoriesRequest {
+pub struct BulkCreateIssuesRequest {
     #[garde(length(min = 1, max = 100), dive)]
-    pub items: Vec<CreateUserStoryRequest>,
+    pub items: Vec<CreateIssueRequest>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]

@@ -53,7 +53,7 @@ async fn defaults_are_seeded_on_project_creation() {
 
     let us = app
         .send(get_with_bearer(
-            &format!("/api/v1/projects/{pid}/taxonomy/us_status"),
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_status"),
             &token,
         ))
         .await;

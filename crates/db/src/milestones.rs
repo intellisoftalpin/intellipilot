@@ -170,42 +170,35 @@ pub async fn is_closed(
     Ok(row.is_some_and(|r| r.get::<_, bool>("closed")))
 }
 
-/// Sprint stats: point totals (via the US `points_id` → taxonomy value) and
-/// task counts, with "completed" meaning a closed status.
+/// Sprint stats over the issues assigned to a milestone.
+///
+/// Point totals (via each issue's `points_id` → taxonomy value) and issue
+/// counts, with "completed" meaning a closed status. `total_tasks` /
+/// `completed_tasks` count issues in the sprint (the unified work item).
 pub async fn stats(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
     milestone_id: Uuid,
 ) -> Result<MilestoneStats, DbError> {
-    let points_row = client
+    let row = client
         .query_one(
             "SELECT \
-               COALESCE(sum(pt.value), 0)::float8 AS total, \
-               COALESCE(sum(CASE WHEN st.is_closed THEN pt.value ELSE 0 END), 0)::float8 AS done \
-             FROM user_stories us \
-             LEFT JOIN taxonomy_items pt ON pt.id = us.points_id \
-             LEFT JOIN taxonomy_items st ON st.id = us.status_id \
-             WHERE us.project_id = $1 AND us.milestone_id = $2 AND us.deleted_at IS NULL",
-            &[&project_id, &milestone_id],
-        )
-        .await?;
-    let task_row = client
-        .query_one(
-            "SELECT \
-               count(*)::int8 AS total, \
-               count(*) FILTER (WHERE tst.is_closed)::int8 AS done \
-             FROM tasks t \
-             JOIN user_stories us ON us.id = t.user_story_id \
-             LEFT JOIN taxonomy_items tst ON tst.id = t.status_id \
-             WHERE us.project_id = $1 AND us.milestone_id = $2 \
-               AND us.deleted_at IS NULL AND t.deleted_at IS NULL",
+               COALESCE(sum(pt.value), 0)::float8 AS total_points, \
+               COALESCE(sum(CASE WHEN st.is_closed THEN pt.value ELSE 0 END), 0)::float8 \
+                 AS done_points, \
+               count(*)::int8 AS total_tasks, \
+               count(*) FILTER (WHERE st.is_closed)::int8 AS done_tasks \
+             FROM issues i \
+             LEFT JOIN taxonomy_items pt ON pt.id = i.points_id \
+             LEFT JOIN taxonomy_items st ON st.id = i.status_id \
+             WHERE i.project_id = $1 AND i.milestone_id = $2 AND i.deleted_at IS NULL",
             &[&project_id, &milestone_id],
         )
         .await?;
     Ok(MilestoneStats {
-        total_points: points_row.get("total"),
-        completed_points: points_row.get("done"),
-        total_tasks: task_row.get("total"),
-        completed_tasks: task_row.get("done"),
+        total_points: row.get("total_points"),
+        completed_points: row.get("done_points"),
+        total_tasks: row.get("total_tasks"),
+        completed_tasks: row.get("done_tasks"),
     })
 }

@@ -146,7 +146,7 @@ async fn closing_milestone_blocks_further_assignment() {
     // A US can be assigned while open.
     let us = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/userstories"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
             &json!({ "subject": "Assigned", "milestone_id": mid }),
         ))
@@ -169,7 +169,7 @@ async fn closing_milestone_blocks_further_assignment() {
     // Assigning another US to the closed milestone → 409.
     let blocked = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/userstories"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
             &json!({ "subject": "TooLate", "milestone_id": mid }),
         ))
@@ -202,7 +202,7 @@ async fn cross_project_milestone_is_422() {
 
     let us = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid_a}/userstories"),
+            &format!("/api/v1/projects/{pid_a}/issues"),
             &token,
             &json!({ "subject": "X", "milestone_id": mb_id }),
         ))
@@ -226,43 +226,23 @@ async fn milestone_stats_from_fixture() {
 
     let p5 = tax_id(&app, &token, &pid, "point", "5").await;
     let p3 = tax_id(&app, &token, &pid, "point", "3").await;
-    let us_done = tax_id(&app, &token, &pid, "us_status", "Done").await; // closed
-    let us_new = tax_id(&app, &token, &pid, "us_status", "New").await; // open
-    let task_closed = tax_id(&app, &token, &pid, "task_status", "Closed").await; // closed
-    let task_new = tax_id(&app, &token, &pid, "task_status", "New").await; // open
+    let st_done = tax_id(&app, &token, &pid, "issue_status", "Done").await; // closed
+    let st_new = tax_id(&app, &token, &pid, "issue_status", "New").await; // open
 
-    // US1: 5 points, closed status.
-    let us1 = app
-        .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/userstories"),
-            &token,
-            &json!({ "subject": "US1", "milestone_id": mid, "points_id": p5, "status_id": us_done }),
-        ))
-        .await;
-    let us1_id = us1.json["id"].as_str().unwrap().to_owned();
-    // US2: 3 points, open status.
-    let us2 = app
-        .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/userstories"),
-            &token,
-            &json!({ "subject": "US2", "milestone_id": mid, "points_id": p3, "status_id": us_new }),
-        ))
-        .await;
-    let us2_id = us2.json["id"].as_str().unwrap().to_owned();
-
-    // One closed task under US1, one open task under US2.
+    // Issue 1: 5 points, closed status, in the sprint.
     let _ = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/tasks"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
-            &json!({ "subject": "T1", "user_story_id": us1_id, "status_id": task_closed }),
+            &json!({ "subject": "I1", "milestone_id": mid, "points_id": p5, "status_id": st_done }),
         ))
         .await;
+    // Issue 2: 3 points, open status, in the sprint.
     let _ = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/tasks"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
-            &json!({ "subject": "T2", "user_story_id": us2_id, "status_id": task_new }),
+            &json!({ "subject": "I2", "milestone_id": mid, "points_id": p3, "status_id": st_new }),
         ))
         .await;
 
@@ -292,21 +272,22 @@ async fn milestone_board_shape() {
         ))
         .await;
     let mid = m.json["id"].as_str().unwrap().to_owned();
-    let us_new = tax_id(&app, &token, &pid, "us_status", "New").await;
+    let st_new = tax_id(&app, &token, &pid, "issue_status", "New").await;
 
-    let us = app
+    // A top-level issue in the sprint, plus one sub-task hanging off it.
+    let parent = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/userstories"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
-            &json!({ "subject": "Card", "milestone_id": mid, "status_id": us_new }),
+            &json!({ "subject": "Card", "milestone_id": mid, "status_id": st_new }),
         ))
         .await;
-    let us_id = us.json["id"].as_str().unwrap().to_owned();
+    let parent_id = parent.json["id"].as_str().unwrap().to_owned();
     let _ = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/tasks"),
+            &format!("/api/v1/projects/{pid}/issues"),
             &token,
-            &json!({ "subject": "Sub", "user_story_id": us_id }),
+            &json!({ "subject": "Sub", "parent_id": parent_id }),
         ))
         .await;
 
@@ -318,20 +299,20 @@ async fn milestone_board_shape() {
         .await;
     assert_eq!(board.status, 200, "{:?}", board.json);
 
-    // Schema snapshot: column status slugs + the subjects/task-counts placed in
-    // each. Derived to avoid non-deterministic UUIDs.
+    // Schema snapshot: column status slugs + the subjects/sub-task-counts placed
+    // in each. Derived to avoid non-deterministic UUIDs.
     let columns = board.json["columns"].as_array().unwrap();
     let shape: Vec<Value> = columns
         .iter()
         .map(|c| {
             let status_slug = c["status"].get("slug").and_then(Value::as_str).map(str::to_owned);
-            let cards: Vec<Value> = c["user_stories"]
+            let cards: Vec<Value> = c["issues"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|u| json!({ "subject": u["subject"], "tasks": u["tasks"].as_array().unwrap().len() }))
+                .map(|u| json!({ "subject": u["subject"], "subtasks": u["subtasks"].as_array().unwrap().len() }))
                 .collect();
-            json!({ "status": status_slug, "user_stories": cards })
+            json!({ "status": status_slug, "issues": cards })
         })
         .collect();
     insta::assert_json_snapshot!(shape);
