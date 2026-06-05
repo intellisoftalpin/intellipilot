@@ -104,12 +104,12 @@ async fn register_open_succeeds() {
 #[tokio::test]
 async fn register_closed_without_token_is_forbidden() {
     let app = TestApp::spawn().await;
-    // default platform_settings.open_registration = false
+    set_open_registration(&app, false).await;
     let r = app
         .register("user@x", "user", "correct horse battery staple")
         .await;
     assert_eq!(r.status, 403);
-    assert_eq!(r.json["type"], "registration_closed");
+    assert_eq!(r.json["code"], "registration_closed");
 }
 
 #[tokio::test]
@@ -153,7 +153,7 @@ async fn invitation_flow_end_to_end() {
         ))
         .await;
     assert_eq!(r.status, 403);
-    assert_eq!(r.json["type"], "invitation_email_mismatch");
+    assert_eq!(r.json["code"], "invitation_email_mismatch");
 
     // Correct email → 201.
     let r = app
@@ -183,7 +183,7 @@ async fn invitation_flow_end_to_end() {
         ))
         .await;
     assert_eq!(r.status, 410);
-    assert_eq!(r.json["type"], "invitation_consumed");
+    assert_eq!(r.json["code"], "invitation_consumed");
 }
 
 #[tokio::test]
@@ -324,7 +324,7 @@ async fn last_superadmin_cannot_be_demoted() {
         ))
         .await;
     assert_eq!(r.status, 409);
-    assert_eq!(r.json["type"], "last_superadmin");
+    assert_eq!(r.json["code"], "last_superadmin");
 }
 
 #[tokio::test]
@@ -352,7 +352,7 @@ async fn last_superadmin_cannot_be_deleted() {
         ))
         .await;
     assert_eq!(r.status, 409);
-    assert_eq!(r.json["type"], "last_superadmin");
+    assert_eq!(r.json["code"], "last_superadmin");
 }
 
 #[tokio::test]

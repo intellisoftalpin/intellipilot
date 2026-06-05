@@ -266,9 +266,11 @@ pub async fn set_superadmin(
         )
         .await?;
     let Some(target) = target else {
+        tx.rollback().await?;
         return Ok(AdminUpdateOutcome::NotFound);
     };
     if target.get::<_, bool>("deleted") {
+        tx.rollback().await?;
         return Ok(AdminUpdateOutcome::NotFound);
     }
 
@@ -283,6 +285,7 @@ pub async fn set_superadmin(
             )
             .await?;
         if row.get::<_, i64>("n") == 0 {
+            tx.rollback().await?;
             return Ok(AdminUpdateOutcome::LastSuperadmin);
         }
     }
@@ -313,9 +316,11 @@ pub async fn set_active(
         )
         .await?;
     let Some(target) = target else {
+        tx.rollback().await?;
         return Ok(AdminUpdateOutcome::NotFound);
     };
     if target.get::<_, bool>("deleted") {
+        tx.rollback().await?;
         return Ok(AdminUpdateOutcome::NotFound);
     }
 
@@ -328,6 +333,7 @@ pub async fn set_active(
             )
             .await?;
         if row.get::<_, i64>("n") == 0 {
+            tx.rollback().await?;
             return Ok(AdminUpdateOutcome::LastSuperadmin);
         }
     }
@@ -374,9 +380,11 @@ pub async fn soft_delete_guarded(
         )
         .await?;
     let Some(target) = target else {
+        tx.rollback().await?;
         return Ok(AdminUpdateOutcome::NotFound);
     };
     if target.get::<_, bool>("deleted") {
+        tx.rollback().await?;
         return Ok(AdminUpdateOutcome::NotFound);
     }
 
@@ -389,6 +397,7 @@ pub async fn soft_delete_guarded(
             )
             .await?;
         if row.get::<_, i64>("n") == 0 {
+            tx.rollback().await?;
             return Ok(AdminUpdateOutcome::LastSuperadmin);
         }
     }

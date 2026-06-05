@@ -72,6 +72,20 @@ impl TestApp {
             },
         };
         let router = build_router(AppState::builder().auth_context(auth).build());
+        // The suite predates the V011 registration gate, whose migration
+        // defaults `open_registration` to false. Open it so the shared
+        // register -> login setup works everywhere; the platform-admin tests
+        // that exercise the gate toggle it explicitly themselves.
+        {
+            let client = db.pool.get().await.expect("db client");
+            client
+                .execute(
+                    "UPDATE platform_settings SET open_registration = true WHERE id = 1",
+                    &[],
+                )
+                .await
+                .expect("enable open registration for tests");
+        }
         Self {
             router,
             db,
