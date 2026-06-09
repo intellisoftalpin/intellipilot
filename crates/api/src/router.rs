@@ -23,7 +23,10 @@ pub fn build_router(state: AppState) -> Router {
 
     let mut router = Router::new()
         .route("/health/live", get(health::live))
-        .route("/health/ready", get(health::ready));
+        .route("/health/ready", get(health::ready))
+        // Public, unauthenticated, never rate-limited — usable by the SPA's
+        // About box and by uptime/version probes.
+        .route("/api/v1/version", get(health::version));
 
     if state.dev.fault_endpoints {
         router = router.route("/_fault/panic", get(fault_panic));

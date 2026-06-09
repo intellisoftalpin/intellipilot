@@ -20,6 +20,37 @@ pub struct ReadyResponse {
     pub checks: serde_json::Value,
 }
 
+/// Build/version metadata, captured at compile time (see `build.rs`).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VersionResponse {
+    /// Cargo workspace version (= the git tag for releases).
+    pub version: &'static str,
+    /// `git describe --tags --always --dirty`, or empty if unavailable.
+    pub git_describe: &'static str,
+    /// Short commit SHA, or empty if unavailable.
+    pub git_sha: &'static str,
+}
+
+/// `GET /api/v1/version` — service version + build metadata. Public.
+#[utoipa::path(
+    get,
+    path = "/api/v1/version",
+    responses((status = 200, body = VersionResponse, description = "Service version"))
+)]
+pub async fn version() -> Response {
+    no_store(
+        (
+            StatusCode::OK,
+            Json(VersionResponse {
+                version: env!("CARGO_PKG_VERSION"),
+                git_describe: env!("IP_GIT_DESCRIBE"),
+                git_sha: env!("IP_GIT_SHA"),
+            }),
+        )
+            .into_response(),
+    )
+}
+
 fn no_store(mut resp: Response) -> Response {
     resp.headers_mut().insert(
         header::CACHE_CONTROL,

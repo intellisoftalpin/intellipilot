@@ -143,3 +143,27 @@ async fn health_endpoints_have_no_cache_headers() {
         "health endpoints must set cache-control: no-store, got {cache_control:?}"
     );
 }
+
+#[tokio::test]
+async fn version_returns_service_version() {
+    init_tracing();
+    let app = build_router(state_with(vec![]));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/version")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    // `version` is the Cargo workspace version, always present and non-empty.
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+    assert!(body.get("git_describe").is_some());
+    assert!(body.get("git_sha").is_some());
+}

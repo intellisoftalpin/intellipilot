@@ -11,14 +11,14 @@ use crate::dto::{
     TotpConfirmRequest, TotpStartResponse, TwoFactorVerifyRequest, UpdateProjectRequest,
     UpdateRoleRequest, UpdateTaxonomyItemRequest,
 };
-use crate::health::{LiveResponse, ReadyResponse};
+use crate::health::{LiveResponse, ReadyResponse, VersionResponse};
 use crate::problem::{FieldErrorView, Problem};
 
 #[derive(Debug, OpenApi)]
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.2.3",
+        version = "0.2.4",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -29,6 +29,7 @@ use crate::problem::{FieldErrorView, Problem};
     paths(
         crate::health::live,
         crate::health::ready,
+        crate::health::version,
         crate::auth::handlers::register,
         crate::auth::handlers::login,
         crate::auth::handlers::refresh,
@@ -70,6 +71,7 @@ use crate::problem::{FieldErrorView, Problem};
     components(schemas(
         LiveResponse,
         ReadyResponse,
+        VersionResponse,
         Problem,
         FieldErrorView,
         RegisterRequest,

@@ -21,6 +21,12 @@ FROM chef AS builder
 COPY --from=planner /work/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
+# Stamp the build with the release version. Pass at build time, e.g.
+#   docker build --build-arg IP_BUILD_VERSION="$(git describe --tags --always)" ...
+# When unset, build.rs falls back to `git describe` (the .git dir is in the
+# build context) and finally to the Cargo version.
+ARG IP_BUILD_VERSION=""
+ENV IP_BUILD_VERSION=$IP_BUILD_VERSION
 RUN cargo build --release --locked --bin intellipilot \
     && strip target/release/intellipilot
 
