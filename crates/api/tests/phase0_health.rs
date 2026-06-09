@@ -167,3 +167,36 @@ async fn version_returns_service_version() {
     assert!(body.get("git_describe").is_some());
     assert!(body.get("git_sha").is_some());
 }
+
+#[tokio::test]
+async fn cors_preflight_is_answered_not_405() {
+    init_tracing();
+    let app = build_router(state_with(vec![]));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/api/v1/version")
+                .header("origin", "https://app.example.com")
+                .header("access-control-request-method", "GET")
+                .header("access-control-request-headers", "authorization")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Must NOT be 405 (the bug) — CORS layer answers the preflight directly.
+    assert!(
+        resp.status().is_success(),
+        "preflight should be 2xx, got {}",
+        resp.status()
+    );
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("https://app.example.com"),
+    );
+}

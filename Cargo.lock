@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-api"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "ammonia",
  "assert-json-diff",
@@ -1906,7 +1906,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-auth"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "argon2",
  "base32",
@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "garde",
  "insta",
@@ -1948,7 +1948,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-db"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
@@ -1968,7 +1968,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-mailer"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "async-trait",
  "intellipilot-core",
@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-storage"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1999,7 +1999,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-testkit"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "async-trait",
  "deadpool-postgres",

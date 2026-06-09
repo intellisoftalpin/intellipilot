@@ -2,9 +2,11 @@
 
 use axum::Router;
 use axum::http::StatusCode;
+use axum::http::header;
 use axum::response::Response;
 use axum::routing::{delete, get, patch, post};
 use intellipilot_core::error::DomainError;
+use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use utoipa_scalar::{Scalar, Servable as ScalarServable};
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -249,12 +251,26 @@ pub fn build_router(state: AppState) -> Router {
         .merge(SwaggerUi::new("/docs").url("/openapi.json", api_doc.clone()))
         .merge(Scalar::with_url("/reference", api_doc));
 
+    // CORS / preflight. The API authenticates with a Bearer token in the
+    // `Authorization` header (the refresh cookie is SameSite=Strict and never
+    // travels cross-site), so this is NOT a credentialed CORS setup — we mirror
+    // the request's origin/method/headers and omit `allow-credentials`. This
+    // lets the SPA call the API from any origin (and, crucially, answers the
+    // browser's preflight `OPTIONS` with 204 instead of a 405). Same-origin
+    // deployments are unaffected (no preflight is sent).
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::mirror_request())
+        .allow_methods(AllowMethods::mirror_request())
+        .allow_headers(AllowHeaders::mirror_request())
+        .expose_headers([header::ETAG]);
+
     router
         .with_state(state)
         .fallback(fallback_404)
         .method_not_allowed_fallback(fallback_405)
         .layer(axum::middleware::from_fn(security_headers::layer))
         .layer(axum::middleware::from_fn(request_id::layer))
+        .layer(cors)
 }
 
 async fn fault_panic() -> Response {
