@@ -137,6 +137,21 @@ pub async fn slug_exists(client: &deadpool_postgres::Client, slug: &str) -> Resu
 }
 
 /// Projects the user is a member of.
+/// Every non-deleted project, newest first. For superadmins, who see all
+/// projects regardless of membership.
+pub async fn list_all(client: &deadpool_postgres::Client) -> Result<Vec<Project>, DbError> {
+    let rows = client
+        .query(
+            &format!(
+                "SELECT {PROJECT_COLS} FROM projects \
+                 WHERE deleted_at IS NULL ORDER BY created_at DESC"
+            ),
+            &[],
+        )
+        .await?;
+    Ok(rows.iter().map(row_to_project).collect())
+}
+
 pub async fn list_for_member(
     client: &deadpool_postgres::Client,
     user_id: Uuid,

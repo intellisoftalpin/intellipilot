@@ -170,6 +170,21 @@ async fn occ_etag_if_match_flow() {
         etag,
         "ETag changes after update"
     );
+
+    // PATCH with the *weak* form of the current ETag (as a gzip-ing reverse
+    // proxy would rewrite it) is still accepted.
+    let new_etag = ok.header("etag").unwrap().to_owned();
+    let weak = app
+        .send(req(
+            "PATCH",
+            &base,
+            Some(&token),
+            &[("if-match", &format!("W/{new_etag}"))],
+            Some(&json!({ "subject": "Weak" })),
+        ))
+        .await;
+    assert_eq!(weak.status, 200, "weak If-Match accepted: {:?}", weak.json);
+    assert_eq!(weak.json["version"], 3);
 }
 
 #[tokio::test]

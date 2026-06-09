@@ -93,8 +93,16 @@ fn with_etag<T: Serialize>(status: StatusCode, id: Uuid, version: i32, body: &T)
     resp
 }
 
+/// Drop an optional weak-validator prefix (`W/`) so a strong ETag and its
+/// weakened form compare equal. Reverse proxies (e.g. nginx when it gzips a
+/// response) rewrite a strong `"x"` to `W/"x"`; our revision token's meaning is
+/// unchanged by that marker, so we treat them as equivalent for `If-Match`.
+fn strip_weak(tag: &str) -> &str {
+    tag.strip_prefix("W/").unwrap_or(tag)
+}
+
 /// Validate the `If-Match` precondition: 428 if missing, 412 if it doesn't
-/// match the current ETag.
+/// match the current ETag (weak and strong forms are treated as equal).
 fn check_if_match(headers: &HeaderMap, current: &str, rid: &str) -> Result<(), Response> {
     match headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok()) {
         None => Err(problem(
@@ -104,7 +112,13 @@ fn check_if_match(headers: &HeaderMap, current: &str, rid: &str) -> Result<(), R
             Some("If-Match header is required for updates".to_owned()),
             rid,
         )),
-        Some(val) if val.trim() == "*" || val.split(',').map(str::trim).any(|e| e == current) => {
+        Some(val)
+            if val.trim() == "*"
+                || val
+                    .split(',')
+                    .map(str::trim)
+                    .any(|e| strip_weak(e) == strip_weak(current)) =>
+        {
             Ok(())
         }
         Some(_) => Err(problem(

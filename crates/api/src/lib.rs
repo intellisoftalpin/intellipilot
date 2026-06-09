@@ -14,6 +14,7 @@ pub mod backlog;
 pub mod catalog;
 pub mod dto;
 pub mod health;
+pub mod ldap;
 pub mod markdown;
 pub mod me;
 pub mod mfa;

@@ -25,6 +25,7 @@ intellipilot-storage = { path = "../storage" }
 intellipilot-mailer = { path = "../mailer" }
 
 webauthn-rs = { workspace = true }
+ldap3 = { workspace = true }
 deadpool-postgres = { workspace = true }
 
 axum = { workspace = true }

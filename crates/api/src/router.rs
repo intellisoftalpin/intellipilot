@@ -141,6 +141,14 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/admin/settings",
                 patch(admin::handlers::update_settings),
             )
+            .route(
+                "/api/v1/admin/ldap-settings",
+                get(admin::handlers::get_ldap_settings).put(admin::handlers::update_ldap_settings),
+            )
+            .route(
+                "/api/v1/admin/ldap-settings/test",
+                post(admin::handlers::test_ldap_settings),
+            )
             // Taxonomy (generic, per kind)
             .route(
                 "/api/v1/projects/{project_id}/taxonomy/{kind}",

@@ -140,8 +140,16 @@ async fn bootstrap_superadmin(
     let password = std::env::var("INTELLIPILOT_BOOTSTRAP_ADMIN_PASSWORD")
         .ok()
         .filter(|s| !s.is_empty());
-    let username_opt = std::env::var("INTELLIPILOT_BOOTSTRAP_ADMIN_USERNAME").ok();
-    let full_name_opt = std::env::var("INTELLIPILOT_BOOTSTRAP_ADMIN_FULL_NAME").ok();
+    // A present-but-empty value (`VAR=` in a .env file) must behave as "unset"
+    // so the email-local-part fallback kicks in instead of an empty name.
+    let username_opt = std::env::var("INTELLIPILOT_BOOTSTRAP_ADMIN_USERNAME")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    let full_name_opt = std::env::var("INTELLIPILOT_BOOTSTRAP_ADMIN_FULL_NAME")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
 
     let client = db.pool.get().await?;
     let existing_admins = users::count_active_superadmins(&client).await?;

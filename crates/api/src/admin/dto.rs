@@ -128,3 +128,79 @@ pub struct UpdateSettingsRequest {
     #[garde(skip)]
     pub open_registration: bool,
 }
+
+// ---------------------------------------------------------------------------
+// LDAP settings
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LdapSettingsResponse {
+    pub enabled: bool,
+    pub server_url: String,
+    pub use_start_tls: bool,
+    pub skip_tls_verify: bool,
+    pub base_dn: String,
+    pub default_domain: String,
+    pub bind_dn_format: String,
+    pub user_search_filter: String,
+    pub superadmin_group: String,
+    pub attr_email: String,
+    pub attr_display_name: String,
+    pub attr_username: String,
+    pub connection_timeout_secs: i32,
+    pub updated_at: OffsetDateTime,
+    pub updated_by: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct UpdateLdapSettingsRequest {
+    #[garde(skip)]
+    pub enabled: bool,
+    #[garde(length(max = 512))]
+    pub server_url: String,
+    #[garde(skip)]
+    pub use_start_tls: bool,
+    #[garde(skip)]
+    pub skip_tls_verify: bool,
+    #[garde(length(max = 512))]
+    pub base_dn: String,
+    #[garde(length(max = 255))]
+    pub default_domain: String,
+    #[garde(length(min = 1, max = 255))]
+    pub bind_dn_format: String,
+    #[garde(length(min = 1, max = 512))]
+    pub user_search_filter: String,
+    #[garde(length(max = 512))]
+    pub superadmin_group: String,
+    #[garde(length(min = 1, max = 64))]
+    pub attr_email: String,
+    #[garde(length(min = 1, max = 64))]
+    pub attr_display_name: String,
+    #[garde(length(min = 1, max = 64))]
+    pub attr_username: String,
+    #[garde(range(min = 1, max = 120))]
+    pub connection_timeout_secs: i32,
+}
+
+/// Request body for the "test connection" endpoint: the (possibly unsaved)
+/// settings plus a real username/password to attempt a bind with.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct TestLdapRequest {
+    #[garde(dive)]
+    pub settings: UpdateLdapSettingsRequest,
+    #[garde(length(min = 1, max = 254))]
+    pub username: String,
+    #[garde(length(min = 1, max = 1024))]
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TestLdapResponse {
+    pub ok: bool,
+    pub message: String,
+    /// Resolved details on success (helps confirm attribute mappings).
+    pub email: Option<String>,
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub would_be_superadmin: Option<bool>,
+}

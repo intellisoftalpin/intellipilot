@@ -48,6 +48,10 @@ CREATE TABLE users (
     -- Platform-wide admin flag + forced first-login password rotation.
     is_superadmin        boolean             NOT NULL DEFAULT false,
     must_change_password boolean             NOT NULL DEFAULT false,
+    -- Authentication source: 'local' (Argon2 password) or 'ldap' (directory).
+    auth_source          text                NOT NULL DEFAULT 'local',
+    -- The user's distinguished name in the directory (informational).
+    ldap_dn              text,
     -- GDPR erase: soft-delete with grace before hard purge.
     deleted_at           timestamptz,
     deleted_grace_until  timestamptz,
@@ -558,6 +562,39 @@ CREATE TABLE platform_settings (
     updated_by        uuid         REFERENCES users(id) ON DELETE SET NULL
 );
 INSERT INTO platform_settings (id) VALUES (1);
+
+-- Single-row LDAP / directory configuration, edited by a superadmin via the
+-- admin UI. Authentication uses a direct bind as the logging-in user, so no
+-- bind secret is stored here.
+CREATE TABLE ldap_settings (
+    id                      smallint    PRIMARY KEY CHECK (id = 1),
+    -- Master switch. When true, non-superadmins must authenticate via LDAP.
+    enabled                 boolean     NOT NULL DEFAULT false,
+    -- e.g. ldap://dc.example.com:389
+    server_url              text        NOT NULL DEFAULT '',
+    -- Negotiate StartTLS after connecting (the reference's `use_ssl`).
+    use_start_tls           boolean     NOT NULL DEFAULT false,
+    -- Skip TLS certificate verification (lab / self-signed only).
+    skip_tls_verify         boolean     NOT NULL DEFAULT false,
+    -- Search base, e.g. dc=example,dc=com
+    base_dn                 text        NOT NULL DEFAULT '',
+    -- Appended to a bare login name lacking '@' to form a UPN, e.g. example.com
+    default_domain          text        NOT NULL DEFAULT '',
+    -- Bind DN template; '%s' is replaced with the (UPN-formed) identifier.
+    bind_dn_format          text        NOT NULL DEFAULT '%s',
+    -- User search filter; '%s' is replaced with the identifier's local part.
+    user_search_filter      text        NOT NULL DEFAULT '(sAMAccountName=%s)',
+    -- Group (CN or DN) whose members are granted superadmin. Empty = disabled.
+    superadmin_group        text        NOT NULL DEFAULT '',
+    -- Attribute names for provisioning the local user record.
+    attr_email              text        NOT NULL DEFAULT 'mail',
+    attr_display_name       text        NOT NULL DEFAULT 'displayName',
+    attr_username           text        NOT NULL DEFAULT 'sAMAccountName',
+    connection_timeout_secs integer     NOT NULL DEFAULT 10,
+    updated_at              timestamptz NOT NULL DEFAULT now(),
+    updated_by              uuid        REFERENCES users(id) ON DELETE SET NULL
+);
+INSERT INTO ldap_settings (id) VALUES (1);
 
 CREATE TABLE platform_invitations (
     id           uuid         PRIMARY KEY DEFAULT uuidv7(),

@@ -22,6 +22,10 @@ pub struct User {
     /// its temporary password. The frontend force-redirects to the change-
     /// password page while this is set.
     pub must_change_password: bool,
+    /// How this account authenticates: `"local"` (Argon2 password) or
+    /// `"ldap"` (directory). LDAP accounts cannot change/reset a local
+    /// password — it is managed in the directory.
+    pub auth_source: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }

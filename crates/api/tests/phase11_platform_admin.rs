@@ -548,3 +548,64 @@ async fn reset_password_returns_token_in_dev() {
     // Dev mailer is NoopMailer → reset_token surfaced.
     assert!(r.json["reset_token"].as_str().is_some());
 }
+
+#[tokio::test]
+async fn superadmin_sees_and_opens_all_projects() {
+    require_db!();
+    let app = TestApp::spawn().await;
+
+    // User A creates a private project.
+    let token_a = register_and_login(&app, "a@example.com", "usera").await;
+    let made = app
+        .send(post_req(
+            "/api/v1/projects",
+            &token_a,
+            &json!({ "name": "Alpha", "visibility": "private" }),
+        ))
+        .await;
+    assert_eq!(made.status, 201, "{:?}", made.json);
+    let pid_a = made.json["id"].as_str().unwrap().to_owned();
+
+    // User B creates their own project, then becomes superadmin.
+    let token_b = register_and_login(&app, "b@example.com", "userb").await;
+    let made_b = app
+        .send(post_req(
+            "/api/v1/projects",
+            &token_b,
+            &json!({ "name": "Beta", "visibility": "private" }),
+        ))
+        .await;
+    assert_eq!(made_b.status, 201);
+
+    // Before promotion, B sees only their own project and can't open A's.
+    let before = app
+        .send(get_with_bearer("/api/v1/projects", &token_b))
+        .await;
+    assert_eq!(before.json["projects"].as_array().unwrap().len(), 1);
+    let denied = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid_a}"),
+            &token_b,
+        ))
+        .await;
+    assert_eq!(denied.status, 404, "private project hidden from non-member");
+
+    promote_to_superadmin(&app, "b@example.com").await;
+
+    // After promotion, B sees every project and can open A's private one.
+    let after = app
+        .send(get_with_bearer("/api/v1/projects", &token_b))
+        .await;
+    assert!(
+        after.json["projects"].as_array().unwrap().len() >= 2,
+        "superadmin sees all projects: {:?}",
+        after.json
+    );
+    let opened = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid_a}"),
+            &token_b,
+        ))
+        .await;
+    assert_eq!(opened.status, 200, "superadmin opens any project");
+}

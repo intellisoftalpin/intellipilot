@@ -14,6 +14,7 @@ use garde::Validate;
 use intellipilot_auth::password::hash_password;
 use intellipilot_auth::refresh;
 use intellipilot_core::user::{NewUser, NewUserWithFlags};
+use intellipilot_db::ldap_settings::{self, LdapSettingsUpdate};
 use intellipilot_db::platform_invitations::{self, PlatformInviteRole};
 use intellipilot_db::platform_settings;
 use intellipilot_db::users::{self, AdminUpdateOutcome, ListFilter};
@@ -27,10 +28,12 @@ use uuid::Uuid;
 
 use crate::admin::dto::{
     CreateInvitationRequest, CreateInvitationResponse, CreateUserRequest, CreateUserResponse,
-    PasswordResetIssuedResponse, PendingInvitation, PlatformSettingsResponse,
-    UpdateSettingsRequest, UpdateUserRequest, UserListResponse,
+    LdapSettingsResponse, PasswordResetIssuedResponse, PendingInvitation, PlatformSettingsResponse,
+    TestLdapRequest, TestLdapResponse, UpdateLdapSettingsRequest, UpdateSettingsRequest,
+    UpdateUserRequest, UserListResponse,
 };
 use crate::auth::{SuperadminUser, client_ip, request_id, user_agent};
+use crate::ldap::{LdapAuthenticator, LdapConfig, LdapError, RealLdap};
 use crate::problem::Problem;
 use crate::state::{AppState, AuthContext};
 
@@ -735,6 +738,179 @@ pub async fn update_settings(
         }
         Err(_) => internal(&rid),
     }
+}
+
+// ---------------------------------------------------------------------------
+// LDAP settings (superadmin only)
+// ---------------------------------------------------------------------------
+
+fn ldap_response(s: ldap_settings::LdapSettings) -> LdapSettingsResponse {
+    LdapSettingsResponse {
+        enabled: s.enabled,
+        server_url: s.server_url,
+        use_start_tls: s.use_start_tls,
+        skip_tls_verify: s.skip_tls_verify,
+        base_dn: s.base_dn,
+        default_domain: s.default_domain,
+        bind_dn_format: s.bind_dn_format,
+        user_search_filter: s.user_search_filter,
+        superadmin_group: s.superadmin_group,
+        attr_email: s.attr_email,
+        attr_display_name: s.attr_display_name,
+        attr_username: s.attr_username,
+        connection_timeout_secs: s.connection_timeout_secs,
+        updated_at: s.updated_at,
+        updated_by: s.updated_by,
+    }
+}
+
+fn ldap_update_from(req: &UpdateLdapSettingsRequest) -> LdapSettingsUpdate {
+    LdapSettingsUpdate {
+        enabled: req.enabled,
+        server_url: req.server_url.trim().to_owned(),
+        use_start_tls: req.use_start_tls,
+        skip_tls_verify: req.skip_tls_verify,
+        base_dn: req.base_dn.trim().to_owned(),
+        default_domain: req.default_domain.trim().to_owned(),
+        bind_dn_format: req.bind_dn_format.trim().to_owned(),
+        user_search_filter: req.user_search_filter.trim().to_owned(),
+        superadmin_group: req.superadmin_group.trim().to_owned(),
+        attr_email: req.attr_email.trim().to_owned(),
+        attr_display_name: req.attr_display_name.trim().to_owned(),
+        attr_username: req.attr_username.trim().to_owned(),
+        connection_timeout_secs: req.connection_timeout_secs,
+    }
+}
+
+fn ldap_config_of(u: &LdapSettingsUpdate) -> LdapConfig {
+    LdapConfig {
+        server_url: u.server_url.clone(),
+        use_start_tls: u.use_start_tls,
+        skip_tls_verify: u.skip_tls_verify,
+        base_dn: u.base_dn.clone(),
+        default_domain: u.default_domain.clone(),
+        bind_dn_format: u.bind_dn_format.clone(),
+        user_search_filter: u.user_search_filter.clone(),
+        superadmin_group: u.superadmin_group.clone(),
+        attr_email: u.attr_email.clone(),
+        attr_display_name: u.attr_display_name.clone(),
+        attr_username: u.attr_username.clone(),
+        connection_timeout_secs: u.connection_timeout_secs,
+    }
+}
+
+fn invalid_settings(rid: &str) -> Response {
+    problem(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "validation_failed",
+        "Validation failed",
+        None,
+        rid,
+    )
+}
+
+/// `GET /api/v1/admin/ldap-settings`
+pub async fn get_ldap_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    ldap_settings::get(&client).await.map_or_else(
+        |_| internal(&rid),
+        |s| Json(ldap_response(s)).into_response(),
+    )
+}
+
+/// `PUT /api/v1/admin/ldap-settings`
+pub async fn update_ldap_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    body: Result<Json<UpdateLdapSettingsRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let req = match parse_json(body, &rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if req.validate().is_err() {
+        return invalid_settings(&rid);
+    }
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let upd = ldap_update_from(&req);
+    match ldap_settings::set(&client, &upd, admin.user_id).await {
+        Ok(s) => {
+            audit::record(
+                &client,
+                Some(admin.user_id),
+                "ldap_settings_updated",
+                Some(client_ip(&headers)),
+                Some(&user_agent(&headers)),
+                &json!({ "enabled": s.enabled, "server_url": s.server_url }),
+            )
+            .await;
+            Json(ldap_response(s)).into_response()
+        }
+        Err(_) => internal(&rid),
+    }
+}
+
+/// `POST /api/v1/admin/ldap-settings/test` — attempt a real bind with the given
+/// (possibly unsaved) settings + credentials and report the outcome.
+pub async fn test_ldap_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+    body: Result<Json<TestLdapRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let _auth = state.auth();
+    let req = match parse_json(body, &rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if req.validate().is_err() {
+        return invalid_settings(&rid);
+    }
+    let upd = ldap_update_from(&req.settings);
+    let result = RealLdap::new(ldap_config_of(&upd))
+        .authenticate(&req.username, &req.password)
+        .await;
+    let resp = match result {
+        Ok(u) => TestLdapResponse {
+            ok: true,
+            message: "Bind succeeded.".to_owned(),
+            email: Some(u.email),
+            username: Some(u.username),
+            display_name: Some(u.display_name),
+            would_be_superadmin: Some(u.is_superadmin),
+        },
+        Err(LdapError::InvalidCredentials) => TestLdapResponse {
+            ok: false,
+            message: "Bind failed: invalid username or password.".to_owned(),
+            email: None,
+            username: None,
+            display_name: None,
+            would_be_superadmin: None,
+        },
+        Err(e) => TestLdapResponse {
+            ok: false,
+            message: format!("Connection error: {e}"),
+            email: None,
+            username: None,
+            display_name: None,
+            would_be_superadmin: None,
+        },
+    };
+    Json(resp).into_response()
 }
 
 // Re-export the symbols the router needs.

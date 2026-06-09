@@ -25,7 +25,7 @@ use intellipilot_auth::token::{
 use intellipilot_core::user::{NewUser, NewUserWithFlags};
 use intellipilot_db::platform_invitations::{self, PlatformInviteRole};
 use intellipilot_db::platform_settings;
-use intellipilot_db::{audit, login_attempts, password_reset, sessions, users};
+use intellipilot_db::{audit, ldap_settings, login_attempts, password_reset, sessions, users};
 use serde_json::json;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use uuid::Uuid;
@@ -35,6 +35,7 @@ use crate::dto::{
     LoginRequest, PasswordResetConfirmBody, PasswordResetRequestBody, PasswordResetRequestResponse,
     RegisterRequest, TokenResponse,
 };
+use crate::ldap::{LdapAuthenticator, LdapConfig, LdapError, RealLdap};
 use crate::problem::Problem;
 use crate::state::{AppState, AuthContext};
 
@@ -334,6 +335,7 @@ pub async fn register(
 
 #[utoipa::path(post, path = "/api/v1/auth/login", request_body = LoginRequest,
     responses((status = 200, body = TokenResponse), (status = 401)))]
+#[allow(clippy::too_many_lines)]
 pub async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -371,6 +373,111 @@ pub async fn login(
         .await
         .ok()
         .flatten();
+
+    // LDAP routing: when LDAP is enabled, every account EXCEPT a local
+    // superadmin (one that still has a local password — break-glass)
+    // authenticates against the directory.
+    let is_local_superadmin = found
+        .as_ref()
+        .is_some_and(|u| u.user.is_superadmin && u.password_hash.is_some());
+    if let Ok(settings) = ldap_settings::get(&client).await
+        && settings.enabled
+        && !is_local_superadmin
+    {
+        let ua = user_agent(&headers);
+        let result = RealLdap::new(LdapConfig::from(&settings))
+            .authenticate(&req.email, &req.password)
+            .await;
+        return match result {
+            Ok(u) => {
+                let Ok(user) = users::find_or_link_ldap_user(
+                    &client,
+                    &u.email,
+                    &u.username,
+                    &u.display_name,
+                    u.dn.as_deref(),
+                    u.is_superadmin,
+                )
+                .await
+                else {
+                    return internal(&rid);
+                };
+                if !user.is_active {
+                    login_attempts::record(&client, &id_hash, ip, false).await;
+                    return problem(
+                        StatusCode::UNAUTHORIZED,
+                        "invalid_credentials",
+                        "Unauthorized",
+                        Some("account is inactive".to_owned()),
+                        &rid,
+                    );
+                }
+                login_attempts::record(&client, &id_hash, ip, true).await;
+                if users::has_active_2fa(&client, user.id)
+                    .await
+                    .unwrap_or(false)
+                {
+                    let Ok(mfa_token) = issue_mfa_token(&auth.access_key, user.id, MFA_TTL_SECS)
+                    else {
+                        return internal(&rid);
+                    };
+                    audit::record(
+                        &client,
+                        Some(user.id),
+                        "login_mfa_challenge",
+                        Some(ip),
+                        Some(&ua),
+                        &json!({ "via": "ldap" }),
+                    )
+                    .await;
+                    return Json(json!({
+                        "mfa_required": true,
+                        "mfa_token": mfa_token,
+                        "methods": ["totp", "recovery", "passkey"],
+                    }))
+                    .into_response();
+                }
+                issue_session(auth, &client, user.id, &headers, jar, "login_success_ldap").await
+            }
+            Err(LdapError::InvalidCredentials) => {
+                login_attempts::record(&client, &id_hash, ip, false).await;
+                audit::record(
+                    &client,
+                    found.as_ref().map(|u| u.user.id),
+                    "login_failure",
+                    Some(ip),
+                    Some(&ua),
+                    &json!({ "via": "ldap" }),
+                )
+                .await;
+                problem(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_credentials",
+                    "Unauthorized",
+                    Some("invalid email or password".to_owned()),
+                    &rid,
+                )
+            }
+            Err(e) => {
+                audit::record(
+                    &client,
+                    None,
+                    "login_ldap_error",
+                    Some(ip),
+                    Some(&ua),
+                    &json!({ "error": e.to_string() }),
+                )
+                .await;
+                problem(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "ldap_unavailable",
+                    "Service Unavailable",
+                    Some("directory authentication is unavailable".to_owned()),
+                    &rid,
+                )
+            }
+        };
+    }
 
     // Verify with timing parity: when no user/hash, verify against a dummy.
     let verified = if let Some(hash) = found.as_ref().and_then(|u| u.password_hash.as_deref()) {

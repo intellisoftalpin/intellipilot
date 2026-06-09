@@ -43,12 +43,14 @@ fn row_to_user(row: &Row) -> User {
         is_active: row.get("is_active"),
         is_superadmin: row.get("is_superadmin"),
         must_change_password: row.get("must_change_password"),
+        auth_source: row.get("auth_source"),
         created_at: row.get("created_at"),
     }
 }
 
 const USER_COLS: &str = "id, email, username, full_name, lang, timezone, \
-                         is_active, is_superadmin, must_change_password, created_at";
+                         is_active, is_superadmin, must_change_password, \
+                         auth_source, created_at";
 
 /// Insert a new user. Email is normalized before storage.
 pub async fn create(client: &deadpool_postgres::Client, new: &NewUser) -> Result<User, DbError> {
@@ -98,6 +100,21 @@ pub async fn find_by_id(
         )
         .await?;
     Ok(row.as_ref().map(row_to_user))
+}
+
+/// Whether the given user is an active (non-deleted) superadmin.
+pub async fn is_active_superadmin(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+) -> Result<bool, DbError> {
+    let row = client
+        .query_opt(
+            "SELECT 1 FROM users \
+             WHERE id = $1 AND is_superadmin AND is_active AND deleted_at IS NULL",
+            &[&id],
+        )
+        .await?;
+    Ok(row.is_some())
 }
 
 /// Find an active user by exact (normalized) email or username. Used to add an
@@ -458,6 +475,93 @@ pub async fn create_with_flags(
         )
         .await?;
     Ok(row_to_user(&row))
+}
+
+/// Provision or link a local account for an LDAP-authenticated user.
+///
+/// Matches an existing active account by email and links it; otherwise creates
+/// a fresh account with `auth_source = 'ldap'` and no local password.
+/// `is_superadmin` reflects directory group membership and is synced on every
+/// login (the reason this also updates an existing row).
+pub async fn find_or_link_ldap_user(
+    client: &deadpool_postgres::Client,
+    email: &str,
+    username_hint: &str,
+    full_name: &str,
+    ldap_dn: Option<&str>,
+    is_superadmin: bool,
+) -> Result<User, DbError> {
+    let email = normalize_email(email);
+    if let Some(existing) = client
+        .query_opt(
+            &format!("SELECT {USER_COLS} FROM users WHERE email = $1 AND deleted_at IS NULL"),
+            &[&email],
+        )
+        .await?
+    {
+        let id: Uuid = existing.get("id");
+        let row = client
+            .query_one(
+                &format!(
+                    "UPDATE users SET auth_source = 'ldap', ldap_dn = $2, \
+                         is_superadmin = $3, full_name = $4, \
+                         must_change_password = false, is_active = true, \
+                         updated_at = now() \
+                     WHERE id = $1 RETURNING {USER_COLS}"
+                ),
+                &[&id, &ldap_dn, &is_superadmin, &full_name],
+            )
+            .await?;
+        return Ok(row_to_user(&row));
+    }
+
+    let username = free_username(client, username_hint).await?;
+    let row = client
+        .query_one(
+            &format!(
+                "INSERT INTO users \
+                   (email, username, full_name, password_hash, auth_source, \
+                    ldap_dn, is_superadmin, must_change_password) \
+                 VALUES ($1, $2, $3, NULL, 'ldap', $4, $5, false) \
+                 RETURNING {USER_COLS}"
+            ),
+            &[&email, &username, &full_name, &ldap_dn, &is_superadmin],
+        )
+        .await?;
+    Ok(row_to_user(&row))
+}
+
+/// Find a username free of collisions, derived from `hint` (suffixing `2`,
+/// `3`, … as needed). Falls back to the bare base after exhausting attempts,
+/// letting the unique constraint surface a clean error.
+async fn free_username(client: &deadpool_postgres::Client, hint: &str) -> Result<String, DbError> {
+    let base: String = {
+        let cleaned: String = hint
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            .take(60)
+            .collect();
+        if cleaned.is_empty() {
+            "user".to_owned()
+        } else {
+            cleaned
+        }
+    };
+    for n in 0u32..10_000 {
+        let cand = if n == 0 {
+            base.clone()
+        } else {
+            format!("{base}{}", n.saturating_add(1))
+        };
+        let taken = client
+            .query_opt("SELECT 1 FROM users WHERE username = $1", &[&cand])
+            .await?
+            .is_some();
+        if !taken {
+            return Ok(cand);
+        }
+    }
+    Ok(base)
 }
 
 /// Filter / pagination params for the admin user list.

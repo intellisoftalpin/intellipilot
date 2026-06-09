@@ -140,26 +140,32 @@ pub struct ProjectContext {
     pub project: intellipilot_core::project::Project,
     pub actor_id: Uuid,
     pub access: Option<MemberAccess>,
+    /// Platform superadmin: full access to every project regardless of
+    /// membership (and visibility into private projects).
+    pub is_superadmin: bool,
     pub rid: String,
 }
 
 impl ProjectContext {
-    /// Require a specific permission; 403 if the member lacks it.
+    /// Require a specific permission; 403 if the member lacks it. Superadmins
+    /// bypass all per-project permission checks.
     pub fn require(&self, perm: Permission) -> Result<(), Response> {
-        if self.access.as_ref().is_some_and(|a| a.has(perm)) {
+        if self.is_superadmin || self.access.as_ref().is_some_and(|a| a.has(perm)) {
             Ok(())
         } else {
             Err(forbidden(&self.rid))
         }
     }
 
-    /// Whether the actor may view the project (member with view, or the
-    /// project is internal/public).
+    /// Whether the actor may view the project (superadmin, member with view, or
+    /// the project is internal/public).
     #[must_use]
     pub fn can_view(&self) -> bool {
-        self.access
-            .as_ref()
-            .is_some_and(|a| a.has(Permission::ProjectView))
+        self.is_superadmin
+            || self
+                .access
+                .as_ref()
+                .is_some_and(|a| a.has(Permission::ProjectView))
             || self.project.visibility != Visibility::Private
     }
 }
@@ -188,9 +194,13 @@ impl FromRequestParts<AppState> for ProjectContext {
         let access = memdb::access(&client, project_id, user.user_id)
             .await
             .map_err(|_| internal(&rid))?;
+        let is_superadmin = udb::is_active_superadmin(&client, user.user_id)
+            .await
+            .unwrap_or(false);
 
-        // Private projects are hidden from non-members.
-        if project.visibility == Visibility::Private && access.is_none() {
+        // Private projects are hidden from non-members — but a superadmin sees
+        // everything.
+        if project.visibility == Visibility::Private && access.is_none() && !is_superadmin {
             return Err(not_found(&rid));
         }
 
@@ -198,6 +208,7 @@ impl FromRequestParts<AppState> for ProjectContext {
             project,
             actor_id: user.user_id,
             access,
+            is_superadmin,
             rid,
         })
     }
@@ -303,7 +314,16 @@ pub async fn list_projects(
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);
     };
-    match projdb::list_for_member(&client, user.user_id).await {
+    // Superadmins see every project; everyone else sees their memberships.
+    let is_superadmin = udb::is_active_superadmin(&client, user.user_id)
+        .await
+        .unwrap_or(false);
+    let listing = if is_superadmin {
+        projdb::list_all(&client).await
+    } else {
+        projdb::list_for_member(&client, user.user_id).await
+    };
+    match listing {
         Ok(projects) => Json(json!({ "projects": projects })).into_response(),
         Err(_) => internal(&rid),
     }

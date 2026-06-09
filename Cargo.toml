@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -52,6 +52,9 @@ utoipa-scalar = { version = "0.3", features = ["axum"] }
 # `rsa` (RUSTSEC-2023-0071, Marvin Attack). tokio-postgres is the canonical
 # Postgres-only async client with a small, clean dep tree — no unmaintained
 # transitives. Migrations in Phase 1 will use `refinery` (also clean tree).
+# LDAP / directory auth (rustls TLS only — no OpenSSL, consistent with our
+# rustls-everywhere policy). Async client; the blocking `sync` feature is off.
+ldap3 = { version = "0.11", default-features = false, features = ["tls-rustls"] }
 tokio-postgres = { version = "0.7", default-features = false, features = ["with-uuid-1", "with-time-0_3", "with-chrono-0_4", "with-serde_json-1", "runtime"] }
 deadpool-postgres = "0.14"
 tokio-postgres-rustls = { version = "0.13", default-features = false, features = ["ring"] }
