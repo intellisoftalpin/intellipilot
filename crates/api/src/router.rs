@@ -4,7 +4,7 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::http::header;
 use axum::response::Response;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use intellipilot_core::error::DomainError;
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use utoipa_scalar::{Scalar, Servable as ScalarServable};
@@ -15,8 +15,8 @@ use crate::middleware::{rate_limit, request_id, security_headers};
 use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
-    admin, attachments, auth, backlog, catalog, health, me, mfa, milestones, openapi, passkeys,
-    projects, search, taxonomy, wiki,
+    admin, attachments, auth, backlog, branding, catalog, health, me, mfa, milestones, openapi,
+    passkeys, projects, search, taxonomy, wiki,
 };
 
 #[allow(clippy::too_many_lines)] // a flat, readable route table
@@ -40,6 +40,8 @@ pub fn build_router(state: AppState) -> Router {
     if state.auth.is_some() {
         let api_v1 = Router::new()
             .route("/api/v1/auth/config", get(auth::handlers::config))
+            // Public white-label icon (login screen renders it pre-auth).
+            .route("/api/v1/branding/icon", get(branding::get_icon))
             .route("/api/v1/auth/register", post(auth::handlers::register))
             .route("/api/v1/auth/login", post(auth::handlers::login))
             .route("/api/v1/auth/refresh", post(auth::handlers::refresh))
@@ -147,6 +149,16 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/admin/settings",
                 patch(admin::handlers::update_settings),
+            )
+            .route(
+                "/api/v1/admin/branding",
+                patch(admin::handlers::update_branding),
+            )
+            .route(
+                "/api/v1/admin/branding/icon",
+                put(admin::handlers::upload_branding_icon)
+                    .delete(admin::handlers::delete_branding_icon)
+                    .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024)),
             )
             .route(
                 "/api/v1/admin/ldap-settings",

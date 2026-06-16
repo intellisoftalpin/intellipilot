@@ -123,6 +123,15 @@ pub struct PendingInvitation {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PlatformSettingsResponse {
     pub open_registration: bool,
+    /// White-label name override. `null` means the bundled default is in use.
+    pub app_name: Option<String>,
+    /// Optional notice shown to users on the login screen.
+    pub app_message: Option<String>,
+    /// Whether a custom app icon is stored (served from `GET /branding/icon`).
+    pub has_custom_icon: bool,
+    /// When the custom icon was last changed — clients use it for cache-busting.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub app_icon_updated_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
     pub updated_by: Option<Uuid>,
@@ -134,11 +143,24 @@ pub struct UpdateSettingsRequest {
     pub open_registration: bool,
 }
 
+/// White-label branding update. An empty or absent string clears the field,
+/// reverting to the bundled default (name / no message).
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct UpdateBrandingRequest {
+    #[serde(default)]
+    #[garde(length(max = 64))]
+    pub app_name: Option<String>,
+    #[serde(default)]
+    #[garde(length(max = 500))]
+    pub app_message: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // LDAP settings
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, ToSchema)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct LdapSettingsResponse {
     pub enabled: bool,
     pub server_url: String,
@@ -153,6 +175,14 @@ pub struct LdapSettingsResponse {
     pub attr_display_name: String,
     pub attr_username: String,
     pub connection_timeout_secs: i32,
+    /// `direct` or `search`.
+    pub bind_mode: String,
+    pub service_bind_dn: String,
+    /// Whether a service-account password is stored (the value is never returned).
+    pub service_bind_password_set: bool,
+    pub user_search_base: String,
+    pub group_search_base: String,
+    pub group_search_filter: String,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
     pub updated_by: Option<Uuid>,
@@ -186,6 +216,34 @@ pub struct UpdateLdapSettingsRequest {
     pub attr_username: String,
     #[garde(range(min = 1, max = 120))]
     pub connection_timeout_secs: i32,
+    /// `direct` (bind as the user) or `search` (service-account search then bind).
+    #[garde(length(max = 16))]
+    #[serde(default = "default_bind_mode")]
+    pub bind_mode: String,
+    #[garde(length(max = 512))]
+    #[serde(default)]
+    pub service_bind_dn: String,
+    /// Optional — blank/absent keeps the stored service password.
+    #[garde(skip)]
+    #[serde(default)]
+    pub service_bind_password: Option<String>,
+    #[garde(length(max = 512))]
+    #[serde(default)]
+    pub user_search_base: String,
+    #[garde(length(max = 512))]
+    #[serde(default)]
+    pub group_search_base: String,
+    #[garde(length(max = 512))]
+    #[serde(default = "default_group_filter")]
+    pub group_search_filter: String,
+}
+
+fn default_bind_mode() -> String {
+    "direct".to_owned()
+}
+
+fn default_group_filter() -> String {
+    "(member=%s)".to_owned()
 }
 
 /// Request body for the "test connection" endpoint: the (possibly unsaved)

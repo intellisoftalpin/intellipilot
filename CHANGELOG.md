@@ -4,6 +4,34 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.3.2] - 2026-06-16
+
+### Added
+- LDAP **service-account search-then-bind** mode (`bind_mode = "search"`)
+  alongside the existing direct bind. A service account (`service_bind_dn` /
+  `service_bind_password`, write-only) searches `user_search_base` (falls back
+  to `base_dn`) with `user_search_filter` to find the user's DN, then binds as
+  that DN to verify the password. Group membership / superadmin is resolved by a
+  reverse `(member=%s)` search under `group_search_base` (configurable via
+  `group_search_filter`), merged with the user entry's `memberOf` as a fallback.
+  This supports OpenLDAP directories where the login identifier isn't the
+  entry's RDN. New `ldap_settings` columns; direct-bind behaviour is unchanged
+  when `bind_mode = "direct"` (the default). The LDAP "test" endpoint reuses the
+  stored service password when the form leaves it blank.
+
+## [0.3.1] - 2026-06-16
+
+### Added
+- White-label branding (superadmin): `PATCH /api/v1/admin/branding` sets a
+  custom application name and an optional login-screen message; `PUT` and
+  `DELETE /api/v1/admin/branding/icon` upload and reset a custom app icon
+  (image validated by magic bytes, ≤1 MB, stored as `bytea`). The public
+  `GET /api/v1/branding/icon` serves the icon (404 when none is set), and the
+  branding fields (`app_name`, `app_message`, `has_custom_icon`,
+  `app_icon_updated_at`) are now included in `GET /api/v1/auth/config` and
+  `GET /api/v1/admin/settings`. Branding columns folded into the
+  `platform_settings` row; empty values revert to the bundled defaults.
+
 ## [0.3.0] - 2026-06-16
 
 ### Added

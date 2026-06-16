@@ -7,7 +7,7 @@
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use garde::Validate;
@@ -31,7 +31,7 @@ use crate::admin::dto::{
     CreateInvitationRequest, CreateInvitationResponse, CreateUserRequest, CreateUserResponse,
     LdapSettingsResponse, NotificationSettingsResponse, NotificationTestResponse,
     PasswordResetIssuedResponse, PendingInvitation, PlatformSettingsResponse, TestLdapRequest,
-    TestLdapResponse, TestMailRequest, UpdateLdapSettingsRequest,
+    TestLdapResponse, TestMailRequest, UpdateBrandingRequest, UpdateLdapSettingsRequest,
     UpdateNotificationSettingsRequest, UpdateSettingsRequest, UpdateUserRequest, UserListResponse,
 };
 use crate::auth::{SuperadminUser, client_ip, request_id, user_agent};
@@ -668,6 +668,27 @@ pub async fn revoke_invitation(
 // Settings
 // ===========================================================================
 
+/// Largest accepted custom-icon upload. Branding icons are small (a logo PNG);
+/// this caps abuse well below the attachment limit.
+const MAX_ICON_BYTES: usize = 1024 * 1024;
+
+fn settings_response(s: platform_settings::PlatformSettings) -> PlatformSettingsResponse {
+    PlatformSettingsResponse {
+        open_registration: s.open_registration,
+        app_name: s.app_name,
+        app_message: s.app_message,
+        has_custom_icon: s.app_icon_mime.is_some(),
+        app_icon_updated_at: s.app_icon_updated_at,
+        updated_at: s.updated_at,
+        updated_by: s.updated_by,
+    }
+}
+
+/// Normalise an optional, trimmed string: blank → `None` (clears the field).
+fn normalise(value: Option<String>) -> Option<String> {
+    value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/admin/settings",
@@ -685,14 +706,7 @@ pub async fn get_settings(
     };
     platform_settings::get(&client).await.map_or_else(
         |_| internal(&rid),
-        |s| {
-            Json(PlatformSettingsResponse {
-                open_registration: s.open_registration,
-                updated_at: s.updated_at,
-                updated_by: s.updated_by,
-            })
-            .into_response()
-        },
+        |s| Json(settings_response(s)).into_response(),
     )
 }
 
@@ -731,12 +745,196 @@ pub async fn update_settings(
                 &json!({ "open_registration": req.open_registration }),
             )
             .await;
-            Json(PlatformSettingsResponse {
-                open_registration: s.open_registration,
-                updated_at: s.updated_at,
-                updated_by: s.updated_by,
-            })
-            .into_response()
+            Json(settings_response(s)).into_response()
+        }
+        Err(_) => internal(&rid),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Branding (white-label) — superadmin only
+// ---------------------------------------------------------------------------
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/admin/branding",
+    request_body = UpdateBrandingRequest,
+    responses((status = 200, body = PlatformSettingsResponse), (status = 401), (status = 403), (status = 422))
+)]
+pub async fn update_branding(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    body: Result<Json<UpdateBrandingRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let req = match parse_json(body, &rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(report) = req.validate() {
+        return validation_problem(&report, &rid);
+    }
+
+    let app_name = normalise(req.app_name);
+    let app_message = normalise(req.app_message);
+
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    match platform_settings::set_branding(
+        &client,
+        app_name.as_deref(),
+        app_message.as_deref(),
+        admin.user_id,
+    )
+    .await
+    {
+        Ok(s) => {
+            audit::record(
+                &client,
+                Some(admin.user_id),
+                "admin_branding_updated",
+                Some(client_ip(&headers)),
+                Some(&user_agent(&headers)),
+                &json!({ "app_name": app_name, "has_message": app_message.is_some() }),
+            )
+            .await;
+            Json(settings_response(s)).into_response()
+        }
+        Err(_) => internal(&rid),
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/admin/branding/icon",
+    request_body(content = inline(Vec<u8>), description = "multipart/form-data with a single image file field"),
+    responses((status = 200, body = PlatformSettingsResponse), (status = 401), (status = 403), (status = 413), (status = 422))
+)]
+pub async fn upload_branding_icon(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    mut multipart: Multipart,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+
+    // Pull the first file field.
+    let mut data: Option<bytes::Bytes> = None;
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                let is_file = field.file_name().is_some();
+                let Ok(bytes) = field.bytes().await else {
+                    return problem(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "too_large",
+                        "Payload Too Large",
+                        Some(format!("icon exceeds {MAX_ICON_BYTES} bytes")),
+                        &rid,
+                    );
+                };
+                if is_file {
+                    data = Some(bytes);
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => {
+                return problem(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_multipart",
+                    "Invalid multipart body",
+                    None,
+                    &rid,
+                );
+            }
+        }
+    }
+    let Some(bytes) = data else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "no_file",
+            "No file part",
+            Some("expected a file field".to_owned()),
+            &rid,
+        );
+    };
+    if bytes.len() > MAX_ICON_BYTES {
+        return problem(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "too_large",
+            "Payload Too Large",
+            Some(format!("icon exceeds {MAX_ICON_BYTES} bytes")),
+            &rid,
+        );
+    }
+
+    // Derive MIME from magic bytes and require it to be an image; the
+    // client-declared type is ignored.
+    let mime = match infer::get(&bytes) {
+        Some(t) if t.mime_type().starts_with("image/") => t.mime_type().to_owned(),
+        _ => {
+            return problem(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "not_an_image",
+                "Unsupported icon",
+                Some("the uploaded file is not a recognised image".to_owned()),
+                &rid,
+            );
+        }
+    };
+
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    match platform_settings::set_app_icon(&client, &bytes, &mime, admin.user_id).await {
+        Ok(s) => {
+            audit::record(
+                &client,
+                Some(admin.user_id),
+                "admin_branding_icon_set",
+                Some(client_ip(&headers)),
+                Some(&user_agent(&headers)),
+                &json!({ "mime": mime, "bytes": bytes.len() }),
+            )
+            .await;
+            Json(settings_response(s)).into_response()
+        }
+        Err(_) => internal(&rid),
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/branding/icon",
+    responses((status = 200, body = PlatformSettingsResponse), (status = 401), (status = 403))
+)]
+pub async fn delete_branding_icon(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    match platform_settings::clear_app_icon(&client, admin.user_id).await {
+        Ok(s) => {
+            audit::record(
+                &client,
+                Some(admin.user_id),
+                "admin_branding_icon_cleared",
+                Some(client_ip(&headers)),
+                Some(&user_agent(&headers)),
+                &json!({}),
+            )
+            .await;
+            Json(settings_response(s)).into_response()
         }
         Err(_) => internal(&rid),
     }
@@ -761,6 +959,12 @@ fn ldap_response(s: ldap_settings::LdapSettings) -> LdapSettingsResponse {
         attr_display_name: s.attr_display_name,
         attr_username: s.attr_username,
         connection_timeout_secs: s.connection_timeout_secs,
+        bind_mode: s.bind_mode,
+        service_bind_dn: s.service_bind_dn,
+        service_bind_password_set: !s.service_bind_password.is_empty(),
+        user_search_base: s.user_search_base,
+        group_search_base: s.group_search_base,
+        group_search_filter: s.group_search_filter,
         updated_at: s.updated_at,
         updated_by: s.updated_by,
     }
@@ -781,6 +985,12 @@ fn ldap_update_from(req: &UpdateLdapSettingsRequest) -> LdapSettingsUpdate {
         attr_display_name: req.attr_display_name.trim().to_owned(),
         attr_username: req.attr_username.trim().to_owned(),
         connection_timeout_secs: req.connection_timeout_secs,
+        bind_mode: req.bind_mode.trim().to_owned(),
+        service_bind_dn: req.service_bind_dn.trim().to_owned(),
+        service_bind_password: keep_if_blank(req.service_bind_password.clone()),
+        user_search_base: req.user_search_base.trim().to_owned(),
+        group_search_base: req.group_search_base.trim().to_owned(),
+        group_search_filter: req.group_search_filter.trim().to_owned(),
     }
 }
 
@@ -798,6 +1008,12 @@ fn ldap_config_of(u: &LdapSettingsUpdate) -> LdapConfig {
         attr_display_name: u.attr_display_name.clone(),
         attr_username: u.attr_username.clone(),
         connection_timeout_secs: u.connection_timeout_secs,
+        bind_mode: u.bind_mode.clone(),
+        service_bind_dn: u.service_bind_dn.clone(),
+        service_bind_password: u.service_bind_password.clone().unwrap_or_default(),
+        user_search_base: u.user_search_base.clone(),
+        group_search_base: u.group_search_base.clone(),
+        group_search_filter: u.group_search_filter.clone(),
     }
 }
 
@@ -874,7 +1090,7 @@ pub async fn test_ldap_settings(
     body: Result<Json<TestLdapRequest>, JsonRejection>,
 ) -> Response {
     let rid = request_id(&headers);
-    let _auth = state.auth();
+    let auth = state.auth();
     let req = match parse_json(body, &rid) {
         Ok(v) => v,
         Err(r) => return r,
@@ -883,7 +1099,17 @@ pub async fn test_ldap_settings(
         return invalid_settings(&rid);
     }
     let upd = ldap_update_from(&req.settings);
-    let result = RealLdap::new(ldap_config_of(&upd))
+    let mut cfg = ldap_config_of(&upd);
+    // In search mode, fall back to the stored service password when the form
+    // left it blank, so admins can test without re-entering the secret.
+    if cfg.bind_mode.eq_ignore_ascii_case("search")
+        && cfg.service_bind_password.is_empty()
+        && let Ok(client) = auth.db.pool.get().await
+        && let Ok(stored) = ldap_settings::get(&client).await
+    {
+        cfg.service_bind_password = stored.service_bind_password;
+    }
+    let result = RealLdap::new(cfg)
         .authenticate(&req.username, &req.password)
         .await;
     let resp = match result {

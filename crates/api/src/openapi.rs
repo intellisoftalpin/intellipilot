@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.3.0",
+        version = "0.3.2",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -69,6 +69,10 @@ use crate::problem::{FieldErrorView, Problem};
         crate::admin::handlers::revoke_invitation,
         crate::admin::handlers::get_settings,
         crate::admin::handlers::update_settings,
+        crate::admin::handlers::update_branding,
+        crate::admin::handlers::upload_branding_icon,
+        crate::admin::handlers::delete_branding_icon,
+        crate::branding::get_icon,
     ),
     components(schemas(
         LiveResponse,
@@ -149,6 +153,7 @@ use crate::problem::{FieldErrorView, Problem};
         crate::admin::dto::PendingInvitation,
         crate::admin::dto::PlatformSettingsResponse,
         crate::admin::dto::UpdateSettingsRequest,
+        crate::admin::dto::UpdateBrandingRequest,
         crate::admin::dto::NotificationSettingsResponse,
         crate::admin::dto::UpdateNotificationSettingsRequest,
         crate::admin::dto::TestMailRequest,

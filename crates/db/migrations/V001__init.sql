@@ -556,10 +556,18 @@ CREATE TRIGGER comments_search AFTER INSERT OR UPDATE OR DELETE ON comments
 -- platform admin: superadmin settings + invitations
 -- ===========================================================================
 CREATE TABLE platform_settings (
-    id                smallint     PRIMARY KEY CHECK (id = 1),
-    open_registration boolean      NOT NULL DEFAULT false,
-    updated_at        timestamptz  NOT NULL DEFAULT now(),
-    updated_by        uuid         REFERENCES users(id) ON DELETE SET NULL
+    id                  smallint     PRIMARY KEY CHECK (id = 1),
+    open_registration   boolean      NOT NULL DEFAULT false,
+    -- White-label branding. NULL app_name / app_icon means "use the bundled
+    -- defaults" (the "IntelliPilot" name and the app's built-in logo). app_message
+    -- is an optional notice shown on the login screen.
+    app_name            text,
+    app_message         text,
+    app_icon            bytea,
+    app_icon_mime       text,
+    app_icon_updated_at timestamptz,
+    updated_at          timestamptz  NOT NULL DEFAULT now(),
+    updated_by          uuid         REFERENCES users(id) ON DELETE SET NULL
 );
 INSERT INTO platform_settings (id) VALUES (1);
 
@@ -591,6 +599,22 @@ CREATE TABLE ldap_settings (
     attr_display_name       text        NOT NULL DEFAULT 'displayName',
     attr_username           text        NOT NULL DEFAULT 'sAMAccountName',
     connection_timeout_secs integer     NOT NULL DEFAULT 10,
+    -- Bind mode: 'direct' (bind as the logging-in user via bind_dn_format) or
+    -- 'search' (a service account searches for the user's DN, then we bind as
+    -- that DN to verify the password). 'search' suits OpenLDAP where the login
+    -- identifier isn't the entry's RDN.
+    bind_mode               text        NOT NULL DEFAULT 'direct',
+    -- Service/bind account for 'search' mode (full DN, e.g.
+    -- cn=svc-search,dc=example,dc=com).
+    service_bind_dn         text        NOT NULL DEFAULT '',
+    -- Service account password (write-only; never returned by the API).
+    service_bind_password   text        NOT NULL DEFAULT '',
+    -- Base DN for the user search in 'search' mode. Empty falls back to base_dn.
+    user_search_base        text        NOT NULL DEFAULT '',
+    -- Base DN for the reverse group-membership search. Empty disables it.
+    group_search_base       text        NOT NULL DEFAULT '',
+    -- Reverse group search filter; '%s' is replaced with the user's DN.
+    group_search_filter     text        NOT NULL DEFAULT '(member=%s)',
     updated_at              timestamptz NOT NULL DEFAULT now(),
     updated_by              uuid        REFERENCES users(id) ON DELETE SET NULL
 );

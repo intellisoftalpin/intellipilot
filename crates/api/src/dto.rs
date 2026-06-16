@@ -81,6 +81,16 @@ pub struct ChangePasswordRequest {
 pub struct AuthConfigResponse {
     pub open_registration: bool,
     pub password_reset_enabled: bool,
+    /// White-label name override. `null` means the bundled default
+    /// ("IntelliPilot") is in use.
+    pub app_name: Option<String>,
+    /// Optional notice shown to users on the login screen.
+    pub app_message: Option<String>,
+    /// Whether a custom app icon is available at `GET /api/v1/branding/icon`.
+    pub has_custom_icon: bool,
+    /// When the custom icon was last changed — clients use it for cache-busting.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub app_icon_updated_at: Option<time::OffsetDateTime>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]

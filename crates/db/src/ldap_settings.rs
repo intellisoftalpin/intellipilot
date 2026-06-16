@@ -1,6 +1,8 @@
-//! Single-row LDAP configuration (V002), edited by a superadmin via the admin
-//! UI. No bind secret is stored: authentication uses a direct bind as the
-//! logging-in user.
+//! Single-row LDAP configuration (V002), edited by a superadmin via the admin UI.
+//!
+//! Supports two bind modes: a **direct** bind as the logging-in user, or a
+//! service-account **search** that finds the user's DN before binding. The
+//! service password is write-only (stored, never returned by the API).
 
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -22,6 +24,15 @@ pub struct LdapSettings {
     pub attr_display_name: String,
     pub attr_username: String,
     pub connection_timeout_secs: i32,
+    /// `direct` or `search`.
+    pub bind_mode: String,
+    pub service_bind_dn: String,
+    /// Write-only secret — populated from the DB for authentication, but the
+    /// API layer must never serialize it (exposes only a `*_set` boolean).
+    pub service_bind_password: String,
+    pub user_search_base: String,
+    pub group_search_base: String,
+    pub group_search_filter: String,
     pub updated_at: OffsetDateTime,
     pub updated_by: Option<Uuid>,
 }
@@ -42,11 +53,20 @@ pub struct LdapSettingsUpdate {
     pub attr_display_name: String,
     pub attr_username: String,
     pub connection_timeout_secs: i32,
+    pub bind_mode: String,
+    pub service_bind_dn: String,
+    /// `None`/blank keeps the stored password (via `COALESCE`).
+    pub service_bind_password: Option<String>,
+    pub user_search_base: String,
+    pub group_search_base: String,
+    pub group_search_filter: String,
 }
 
 const COLS: &str = "enabled, server_url, use_start_tls, skip_tls_verify, base_dn, \
                     default_domain, bind_dn_format, user_search_filter, superadmin_group, \
                     attr_email, attr_display_name, attr_username, connection_timeout_secs, \
+                    bind_mode, service_bind_dn, service_bind_password, user_search_base, \
+                    group_search_base, group_search_filter, \
                     updated_at, updated_by";
 
 fn row_to_settings(row: &tokio_postgres::Row) -> LdapSettings {
@@ -64,6 +84,12 @@ fn row_to_settings(row: &tokio_postgres::Row) -> LdapSettings {
         attr_display_name: row.get("attr_display_name"),
         attr_username: row.get("attr_username"),
         connection_timeout_secs: row.get("connection_timeout_secs"),
+        bind_mode: row.get("bind_mode"),
+        service_bind_dn: row.get("service_bind_dn"),
+        service_bind_password: row.get("service_bind_password"),
+        user_search_base: row.get("user_search_base"),
+        group_search_base: row.get("group_search_base"),
+        group_search_filter: row.get("group_search_filter"),
         updated_at: row.get("updated_at"),
         updated_by: row.get("updated_by"),
     }
@@ -94,7 +120,10 @@ pub async fn set(
                    base_dn = $5, default_domain = $6, bind_dn_format = $7, \
                    user_search_filter = $8, superadmin_group = $9, attr_email = $10, \
                    attr_display_name = $11, attr_username = $12, connection_timeout_secs = $13, \
-                   updated_at = now(), updated_by = $14 \
+                   bind_mode = $14, service_bind_dn = $15, \
+                   service_bind_password = COALESCE($16, service_bind_password), \
+                   user_search_base = $17, group_search_base = $18, group_search_filter = $19, \
+                   updated_at = now(), updated_by = $20 \
                  WHERE id = 1 RETURNING {COLS}"
             ),
             &[
@@ -111,6 +140,12 @@ pub async fn set(
                 &upd.attr_display_name,
                 &upd.attr_username,
                 &upd.connection_timeout_secs,
+                &upd.bind_mode,
+                &upd.service_bind_dn,
+                &upd.service_bind_password,
+                &upd.user_search_base,
+                &upd.group_search_base,
+                &upd.group_search_filter,
                 &updated_by,
             ],
         )

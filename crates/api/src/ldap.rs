@@ -1,8 +1,13 @@
 //! LDAP / directory authentication.
 //!
-//! Mirrors the reference implementation: a **direct bind** as the logging-in
-//! user (over optional StartTLS), then a search of the user's own entry for
-//! provisioning attributes and group membership. No service account is used.
+//! Two bind modes:
+//! - **direct** — bind as the logging-in user (`bind_dn_format`), then search
+//!   the user's own entry for attributes + `memberOf`. Suits AD where the
+//!   identifier maps to a bindable DN/UPN.
+//! - **search** — bind as a service account, search for the user's DN, then
+//!   bind as that DN to verify the password. Group membership is resolved by a
+//!   reverse `(member=<userDN>)` search (with `memberOf` as a fallback). Suits
+//!   OpenLDAP where the login identifier isn't the entry's RDN.
 //!
 //! The authenticator is behind a trait so the login handler is testable with a
 //! fake (a live directory can't run in CI).
@@ -26,6 +31,29 @@ pub struct LdapConfig {
     pub attr_display_name: String,
     pub attr_username: String,
     pub connection_timeout_secs: i32,
+    /// `search` enables service-account search-then-bind; anything else is
+    /// treated as `direct`.
+    pub bind_mode: String,
+    pub service_bind_dn: String,
+    pub service_bind_password: String,
+    pub user_search_base: String,
+    pub group_search_base: String,
+    pub group_search_filter: String,
+}
+
+impl LdapConfig {
+    fn is_search_mode(&self) -> bool {
+        self.bind_mode.eq_ignore_ascii_case("search")
+    }
+
+    /// Base DN for the user search — `user_search_base` if set, else `base_dn`.
+    fn effective_user_base(&self) -> &str {
+        if self.user_search_base.is_empty() {
+            &self.base_dn
+        } else {
+            &self.user_search_base
+        }
+    }
 }
 
 impl From<&intellipilot_db::ldap_settings::LdapSettings> for LdapConfig {
@@ -43,6 +71,12 @@ impl From<&intellipilot_db::ldap_settings::LdapSettings> for LdapConfig {
             attr_display_name: s.attr_display_name.clone(),
             attr_username: s.attr_username.clone(),
             connection_timeout_secs: s.connection_timeout_secs,
+            bind_mode: s.bind_mode.clone(),
+            service_bind_dn: s.service_bind_dn.clone(),
+            service_bind_password: s.service_bind_password.clone(),
+            user_search_base: s.user_search_base.clone(),
+            group_search_base: s.group_search_base.clone(),
+            group_search_filter: s.group_search_filter.clone(),
         }
     }
 }
@@ -99,13 +133,210 @@ impl RealLdap {
     fn local_part(identifier: &str) -> &str {
         identifier.split('@').next().unwrap_or(identifier)
     }
+
+    /// Search `base` with `filter` and pull provisioning attributes from the
+    /// first matching entry. Returns `(email, display_name, username, dn,
+    /// memberOf)`; the DN is `None` when nothing matched.
+    #[allow(clippy::useless_let_if_seq)]
+    async fn fetch_user(
+        &self,
+        ldap: &mut ldap3::Ldap,
+        base: &str,
+        filter: &str,
+    ) -> (String, String, String, Option<String>, Vec<String>) {
+        let attrs = vec![
+            self.cfg.attr_email.as_str(),
+            self.cfg.attr_display_name.as_str(),
+            self.cfg.attr_username.as_str(),
+            "userPrincipalName",
+            "cn",
+            "memberOf",
+        ];
+        let mut email = String::new();
+        let mut display_name = String::new();
+        let mut username = String::new();
+        let mut dn = None;
+        let mut groups: Vec<String> = Vec::new();
+        if !base.is_empty()
+            && let Ok(res) = ldap.search(base, Scope::Subtree, filter, attrs).await
+            && let Ok((entries, _)) = res.success()
+            && let Some(entry) = entries.into_iter().next()
+        {
+            let se = SearchEntry::construct(entry);
+            dn = Some(se.dn.clone());
+            email = first(&se, &self.cfg.attr_email)
+                .or_else(|| first(&se, "userPrincipalName"))
+                .unwrap_or_default();
+            display_name = first(&se, &self.cfg.attr_display_name)
+                .or_else(|| first(&se, "cn"))
+                .unwrap_or_default();
+            username = first(&se, &self.cfg.attr_username).unwrap_or_default();
+            groups = se.attrs.get("memberOf").cloned().unwrap_or_default();
+        }
+        (email, display_name, username, dn, groups)
+    }
+
+    /// Apply reference-app fallbacks for any attribute the search didn't
+    /// provide, then decide superadmin from the resolved groups.
+    #[allow(clippy::too_many_arguments)]
+    fn build_user(
+        &self,
+        identifier: &str,
+        upn: &str,
+        email: String,
+        display_name: String,
+        username: String,
+        dn: Option<String>,
+        groups: &[String],
+    ) -> LdapUser {
+        let email = if email.is_empty() {
+            if identifier.contains('@') {
+                identifier.to_owned()
+            } else {
+                upn.to_owned()
+            }
+        } else {
+            email
+        };
+        let username = if username.is_empty() {
+            Self::local_part(identifier).to_owned()
+        } else {
+            username
+        };
+        let display_name = if display_name.is_empty() {
+            username.clone()
+        } else {
+            display_name
+        };
+        let is_superadmin = !self.cfg.superadmin_group.is_empty()
+            && groups
+                .iter()
+                .any(|g| group_matches(g, &self.cfg.superadmin_group));
+        LdapUser {
+            email,
+            username,
+            display_name,
+            dn,
+            is_superadmin,
+        }
+    }
+
+    /// Direct bind as the user, then read their own entry for attributes and
+    /// `memberOf`.
+    async fn authenticate_direct(
+        &self,
+        ldap: &mut ldap3::Ldap,
+        identifier: &str,
+        password: &str,
+    ) -> Result<LdapUser, LdapError> {
+        let upn = self.upn(identifier);
+        let bind_dn = self.cfg.bind_dn_format.replace("%s", &upn);
+
+        // A failed bind means bad credentials.
+        ldap.simple_bind(&bind_dn, password)
+            .await
+            .map_err(|e| LdapError::Unavailable(e.to_string()))?
+            .success()
+            .map_err(|_| LdapError::InvalidCredentials)?;
+
+        let local = ldap3::ldap_escape(Self::local_part(identifier)).into_owned();
+        let filter = self.cfg.user_search_filter.replace("%s", &local);
+        let (email, display_name, username, dn, groups) =
+            self.fetch_user(ldap, &self.cfg.base_dn, &filter).await;
+        if let Err(e) = ldap.unbind().await {
+            tracing::debug!("ldap unbind failed: {e}");
+        }
+        Ok(self.build_user(identifier, &upn, email, display_name, username, dn, &groups))
+    }
+
+    /// Service-account search-then-bind: bind as the service account, find the
+    /// user's DN, resolve groups, then bind as that DN to verify the password.
+    async fn authenticate_search(
+        &self,
+        ldap: &mut ldap3::Ldap,
+        identifier: &str,
+        password: &str,
+    ) -> Result<LdapUser, LdapError> {
+        if self.cfg.service_bind_dn.is_empty() {
+            return Err(LdapError::Config("service bind DN is empty".to_owned()));
+        }
+        // 1) Bind as the service account to run the (privileged) searches.
+        ldap.simple_bind(&self.cfg.service_bind_dn, &self.cfg.service_bind_password)
+            .await
+            .map_err(|e| LdapError::Unavailable(e.to_string()))?
+            .success()
+            .map_err(|_| LdapError::Config("service account bind failed".to_owned()))?;
+
+        // 2) Find the user entry (filter matches the full identifier, e.g. UPN).
+        let escaped = ldap3::ldap_escape(identifier).into_owned();
+        let filter = self.cfg.user_search_filter.replace("%s", &escaped);
+        let (email, display_name, username, dn, member_of) = self
+            .fetch_user(ldap, self.cfg.effective_user_base(), &filter)
+            .await;
+        let Some(user_dn) = dn.clone() else {
+            // No matching entry — report as bad credentials (don't disclose).
+            return Err(LdapError::InvalidCredentials);
+        };
+
+        // 3) Reverse group search (with memberOf as a fallback), still bound as
+        //    the service account.
+        let groups = self.resolve_groups(ldap, &user_dn, member_of).await;
+
+        // 4) Verify the password by binding as the discovered DN — done last so
+        //    the privileged searches already ran under the service account.
+        ldap.simple_bind(&user_dn, password)
+            .await
+            .map_err(|e| LdapError::Unavailable(e.to_string()))?
+            .success()
+            .map_err(|_| LdapError::InvalidCredentials)?;
+        if let Err(e) = ldap.unbind().await {
+            tracing::debug!("ldap unbind failed: {e}");
+        }
+
+        let upn = self.upn(identifier);
+        Ok(self.build_user(identifier, &upn, email, display_name, username, dn, &groups))
+    }
+
+    /// Reverse group-membership search: `(member=<userDN>)` under
+    /// `group_search_base`. Results (group DN + CN) are merged with any
+    /// `memberOf` already collected so either source satisfies the match.
+    async fn resolve_groups(
+        &self,
+        ldap: &mut ldap3::Ldap,
+        user_dn: &str,
+        mut groups: Vec<String>,
+    ) -> Vec<String> {
+        if self.cfg.group_search_base.is_empty() || self.cfg.group_search_filter.is_empty() {
+            return groups;
+        }
+        let escaped = ldap3::ldap_escape(user_dn).into_owned();
+        let filter = self.cfg.group_search_filter.replace("%s", &escaped);
+        if let Ok(res) = ldap
+            .search(
+                &self.cfg.group_search_base,
+                Scope::Subtree,
+                &filter,
+                vec!["cn"],
+            )
+            .await
+            && let Ok((entries, _)) = res.success()
+        {
+            for entry in entries {
+                let se = SearchEntry::construct(entry);
+                // A group's own DN matches a configured DN; its cn matches a
+                // bare CN — push both so `group_matches` succeeds either way.
+                groups.push(se.dn.clone());
+                if let Some(cn) = first(&se, "cn") {
+                    groups.push(cn);
+                }
+            }
+        }
+        groups
+    }
 }
 
 #[async_trait::async_trait]
 impl LdapAuthenticator for RealLdap {
-    // Several attributes are late-initialized from the optional search and then
-    // refined by fallbacks — a single let-binding doesn't fit cleanly.
-    #[allow(clippy::useless_let_if_seq)]
     async fn authenticate(&self, identifier: &str, password: &str) -> Result<LdapUser, LdapError> {
         // An empty password yields an unauthenticated (anonymous) bind that
         // many servers accept — always reject it.
@@ -129,84 +360,13 @@ impl LdapAuthenticator for RealLdap {
             .map_err(|e| LdapError::Unavailable(e.to_string()))?;
         ldap3::drive!(conn);
 
-        let upn = self.upn(identifier);
-        let bind_dn = self.cfg.bind_dn_format.replace("%s", &upn);
-
-        // Direct bind as the user — a failed bind means bad credentials.
-        ldap.simple_bind(&bind_dn, password)
-            .await
-            .map_err(|e| LdapError::Unavailable(e.to_string()))?
-            .success()
-            .map_err(|_| LdapError::InvalidCredentials)?;
-
-        // Search the user's entry on the authenticated connection for
-        // provisioning attributes + groups.
-        let local = ldap3::ldap_escape(Self::local_part(identifier)).into_owned();
-        let filter = self.cfg.user_search_filter.replace("%s", &local);
-        let attrs = vec![
-            self.cfg.attr_email.as_str(),
-            self.cfg.attr_display_name.as_str(),
-            self.cfg.attr_username.as_str(),
-            "userPrincipalName",
-            "cn",
-            "memberOf",
-        ];
-
-        let mut email = String::new();
-        let mut display_name = String::new();
-        let mut username = String::new();
-        let mut dn = None;
-        let mut groups: Vec<String> = Vec::new();
-
-        if !self.cfg.base_dn.is_empty()
-            && let Ok(res) = ldap
-                .search(&self.cfg.base_dn, Scope::Subtree, &filter, attrs)
+        if self.cfg.is_search_mode() {
+            self.authenticate_search(&mut ldap, identifier, password)
                 .await
-            && let Ok((entries, _)) = res.success()
-            && let Some(entry) = entries.into_iter().next()
-        {
-            let se = SearchEntry::construct(entry);
-            dn = Some(se.dn.clone());
-            email = first(&se, &self.cfg.attr_email)
-                .or_else(|| first(&se, "userPrincipalName"))
-                .unwrap_or_default();
-            display_name = first(&se, &self.cfg.attr_display_name)
-                .or_else(|| first(&se, "cn"))
-                .unwrap_or_default();
-            username = first(&se, &self.cfg.attr_username).unwrap_or_default();
-            groups = se.attrs.get("memberOf").cloned().unwrap_or_default();
+        } else {
+            self.authenticate_direct(&mut ldap, identifier, password)
+                .await
         }
-        if let Err(e) = ldap.unbind().await {
-            tracing::debug!("ldap unbind failed: {e}");
-        }
-
-        // Fallbacks mirroring the reference app when the search returns little.
-        if email.is_empty() {
-            email = if identifier.contains('@') {
-                identifier.to_owned()
-            } else {
-                upn
-            };
-        }
-        if username.is_empty() {
-            username = Self::local_part(identifier).to_owned();
-        }
-        if display_name.is_empty() {
-            display_name.clone_from(&username);
-        }
-
-        let is_superadmin = !self.cfg.superadmin_group.is_empty()
-            && groups
-                .iter()
-                .any(|g| group_matches(g, &self.cfg.superadmin_group));
-
-        Ok(LdapUser {
-            email,
-            username,
-            display_name,
-            dn,
-            is_superadmin,
-        })
     }
 }
 

@@ -180,9 +180,8 @@ pub async fn config(State(state): State<AppState>, headers: HeaderMap) -> Respon
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);
     };
-    let open_registration = match platform_settings::get(&client).await {
-        Ok(s) => s.open_registration,
-        Err(_) => return internal(&rid),
+    let Ok(settings) = platform_settings::get(&client).await else {
+        return internal(&rid);
     };
     // Email reset is available when an outbound mail channel is configured.
     let password_reset_enabled = intellipilot_db::notification_settings::get(&client)
@@ -190,8 +189,12 @@ pub async fn config(State(state): State<AppState>, headers: HeaderMap) -> Respon
         .map(|s| crate::notify::mail_ready(&s))
         .unwrap_or(false);
     Json(AuthConfigResponse {
-        open_registration,
+        open_registration: settings.open_registration,
         password_reset_enabled,
+        app_name: settings.app_name,
+        app_message: settings.app_message,
+        has_custom_icon: settings.app_icon_mime.is_some(),
+        app_icon_updated_at: settings.app_icon_updated_at,
     })
     .into_response()
 }

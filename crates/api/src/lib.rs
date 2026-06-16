@@ -11,6 +11,7 @@ pub mod admin;
 pub mod attachments;
 pub mod auth;
 pub mod backlog;
+pub mod branding;
 pub mod catalog;
 pub mod dto;
 pub mod health;
