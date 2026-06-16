@@ -54,6 +54,7 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/me", get(me::get_me))
             .route("/api/v1/me", patch(me::patch_me))
             .route("/api/v1/me", delete(me::delete_me))
+            .route("/api/v1/me/password", post(me::change_password))
             .route("/api/v1/me/export", get(me::export_me))
             // Two-factor: TOTP + recovery
             .route("/api/v1/auth/2fa/verify", post(mfa::two_factor_verify))

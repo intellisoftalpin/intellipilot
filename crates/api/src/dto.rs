@@ -60,6 +60,17 @@ pub struct ProfileUpdateRequest {
     pub timezone: Option<String>,
 }
 
+/// Self-service password change for the logged-in user. Local accounts only;
+/// LDAP-backed accounts are rejected (their password lives in the directory).
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct ChangePasswordRequest {
+    #[garde(length(min = 1, max = 1024))]
+    pub current_password: String,
+    /// Strength (length + zxcvbn) is enforced in the handler, not here.
+    #[garde(length(min = 1, max = 1024))]
+    pub new_password: String,
+}
+
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct PasswordResetRequestBody {
     #[garde(email, length(max = 254))]

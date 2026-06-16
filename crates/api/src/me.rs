@@ -10,13 +10,14 @@ use axum::extract::rejection::JsonRejection;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use garde::Validate;
+use intellipilot_auth::password::{check_strength, hash_password, verify_password};
 use intellipilot_core::user::ProfileUpdate;
 use intellipilot_db::{audit, sessions, users};
 use serde_json::json;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 use crate::auth::{AuthUser, client_ip, request_id, user_agent};
-use crate::dto::ProfileUpdateRequest;
+use crate::dto::{ChangePasswordRequest, ProfileUpdateRequest};
 use crate::problem::Problem;
 use crate::state::AppState;
 
@@ -44,6 +45,26 @@ fn internal(rid: &str) -> Response {
 
 fn not_found(rid: &str) -> Response {
     problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, rid)
+}
+
+/// A 422 carrying a single field error. Used for self-service password change,
+/// where a wrong current password or a weak new password is an input problem —
+/// returning 401 there would wrongly trip the client's token-refresh retry.
+fn validation_field(rid: &str, field: &str, message: &str) -> Response {
+    use intellipilot_core::error::FieldError;
+    Problem::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "validation_failed",
+        "Validation failed",
+        None,
+        rid,
+    )
+    .with_errors(vec![FieldError {
+        field: field.to_owned(),
+        code: "invalid".to_owned(),
+        message: message.to_owned(),
+    }])
+    .into_response_with_status(StatusCode::UNPROCESSABLE_ENTITY)
 }
 
 /// `GET /api/v1/me`
@@ -116,6 +137,102 @@ pub async fn patch_me(
         Ok(None) => not_found(&rid),
         Err(_) => internal(&rid),
     }
+}
+
+/// `POST /api/v1/me/password` — change own password.
+///
+/// Local accounts only: LDAP-backed users are rejected (409) since their
+/// password is managed by the directory. Requires the current password,
+/// enforces strength on the new one, then revokes ALL sessions (the client
+/// must log in again) and clears any pending `must_change_password` flag.
+#[utoipa::path(post, path = "/api/v1/me/password", request_body = ChangePasswordRequest,
+    responses((status = 204), (status = 401), (status = 409), (status = 422)))]
+pub async fn change_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    body: Result<Json<ChangePasswordRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(Json(req)) = body else {
+        return problem(
+            StatusCode::BAD_REQUEST,
+            "invalid_body",
+            "Invalid Request Body",
+            None,
+            &rid,
+        );
+    };
+    if req.validate().is_err() {
+        return validation_field(&rid, "new_password", "password is required");
+    }
+
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+
+    let found = match users::find_by_id_with_secret(&client, user.user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return not_found(&rid),
+        Err(_) => return internal(&rid),
+    };
+
+    // LDAP accounts have no local password to change.
+    if found.user.auth_source != "local" {
+        return problem(
+            StatusCode::CONFLICT,
+            "password_managed_externally",
+            "Conflict",
+            Some("password is managed by your directory and cannot be changed here".to_owned()),
+            &rid,
+        );
+    }
+
+    // Re-verify the current password.
+    let current_ok = found.password_hash.as_deref().is_some_and(|h| {
+        verify_password(&req.current_password, h, auth.pepper_bytes()).unwrap_or(false)
+    });
+    if !current_ok {
+        return validation_field(&rid, "current_password", "current password is incorrect");
+    }
+
+    // Enforce strength on the new password (length + zxcvbn).
+    if check_strength(
+        &req.new_password,
+        &[&found.user.email, &found.user.username],
+    )
+    .is_err()
+    {
+        return validation_field(&rid, "new_password", "password is too weak");
+    }
+
+    let Ok(hash) = hash_password(&req.new_password, auth.pepper_bytes()) else {
+        return internal(&rid);
+    };
+    if client
+        .execute(
+            "UPDATE users SET password_hash = $2, must_change_password = false WHERE id = $1",
+            &[&user.user_id, &hash],
+        )
+        .await
+        .is_err()
+    {
+        return internal(&rid);
+    }
+    // Revoke every session after a password change; the user re-authenticates.
+    sessions::revoke_all_for_user(&client, user.user_id, "password_changed").await;
+    audit::record(
+        &client,
+        Some(user.user_id),
+        "password_changed",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({ "self_service": true }),
+    )
+    .await;
+
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// `DELETE /api/v1/me` — GDPR erase (soft, with grace period).

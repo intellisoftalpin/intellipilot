@@ -3,13 +3,13 @@
 use utoipa::OpenApi;
 
 use crate::dto::{
-    AcceptInviteRequest, AddMemberRequest, ChangeMemberRoleRequest, CreateProjectRequest,
-    CreateRoleRequest, CreateTaxonomyItemRequest, InviteRequest, InviteResponse, LoginRequest,
-    MoveTaxonomyItemRequest, PasskeyAuthStartRequest, PasskeyFinishRequest,
-    PasswordResetConfirmBody, PasswordResetRequestBody, PasswordResetRequestResponse,
-    ProfileUpdateRequest, RecoveryCodesResponse, RegisterRequest, TokenResponse,
-    TotpConfirmRequest, TotpStartResponse, TwoFactorVerifyRequest, UpdateProjectRequest,
-    UpdateRoleRequest, UpdateTaxonomyItemRequest,
+    AcceptInviteRequest, AddMemberRequest, ChangeMemberRoleRequest, ChangePasswordRequest,
+    CreateProjectRequest, CreateRoleRequest, CreateTaxonomyItemRequest, InviteRequest,
+    InviteResponse, LoginRequest, MoveTaxonomyItemRequest, PasskeyAuthStartRequest,
+    PasskeyFinishRequest, PasswordResetConfirmBody, PasswordResetRequestBody,
+    PasswordResetRequestResponse, ProfileUpdateRequest, RecoveryCodesResponse, RegisterRequest,
+    TokenResponse, TotpConfirmRequest, TotpStartResponse, TwoFactorVerifyRequest,
+    UpdateProjectRequest, UpdateRoleRequest, UpdateTaxonomyItemRequest,
 };
 use crate::health::{LiveResponse, ReadyResponse, VersionResponse};
 use crate::problem::{FieldErrorView, Problem};
@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.2.5",
+        version = "0.2.7",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -39,6 +39,7 @@ use crate::problem::{FieldErrorView, Problem};
         crate::me::get_me,
         crate::me::patch_me,
         crate::me::delete_me,
+        crate::me::change_password,
         crate::me::export_me,
         crate::mfa::two_factor_verify,
         crate::mfa::totp_start,
@@ -78,6 +79,7 @@ use crate::problem::{FieldErrorView, Problem};
         LoginRequest,
         TokenResponse,
         ProfileUpdateRequest,
+        ChangePasswordRequest,
         PasswordResetRequestBody,
         PasswordResetRequestResponse,
         PasswordResetConfirmBody,

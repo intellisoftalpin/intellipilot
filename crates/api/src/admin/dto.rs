@@ -69,6 +69,7 @@ pub struct PasswordResetIssuedResponse {
     /// Production sends it by email instead and this field is omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset_token: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
 }
 
@@ -95,6 +96,7 @@ pub struct CreateInvitationResponse {
     pub invitation_id: Uuid,
     pub email: String,
     pub role: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
     /// Raw token, returned ONLY when the mailer is not configured (dev mode).
     /// The admin UI uses this to display a copy-paste link.
@@ -108,7 +110,9 @@ pub struct PendingInvitation {
     pub email: String,
     pub role: String,
     pub invited_by: Option<Uuid>,
+    #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -119,6 +123,7 @@ pub struct PendingInvitation {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PlatformSettingsResponse {
     pub open_registration: bool,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
     pub updated_by: Option<Uuid>,
 }
@@ -148,6 +153,7 @@ pub struct LdapSettingsResponse {
     pub attr_display_name: String,
     pub attr_username: String,
     pub connection_timeout_secs: i32,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
     pub updated_by: Option<Uuid>,
 }

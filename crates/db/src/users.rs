@@ -88,6 +88,28 @@ pub async fn find_by_email_with_secret(
     }))
 }
 
+/// Find an active (non-deleted) user by id, including the password hash.
+/// For self-service password changes, where the caller is already
+/// authenticated and must re-verify the current password.
+pub async fn find_by_id_with_secret(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+) -> Result<Option<UserWithSecret>, DbError> {
+    let row = client
+        .query_opt(
+            &format!(
+                "SELECT {USER_COLS}, password_hash FROM users \
+                 WHERE id = $1 AND deleted_at IS NULL"
+            ),
+            &[&id],
+        )
+        .await?;
+    Ok(row.map(|r| UserWithSecret {
+        password_hash: r.get("password_hash"),
+        user: row_to_user(&r),
+    }))
+}
+
 /// Find an active user by id.
 pub async fn find_by_id(
     client: &deadpool_postgres::Client,
