@@ -159,6 +159,29 @@ pub async fn find_active_by_identifier(
     Ok(row.as_ref().map(row_to_user))
 }
 
+/// Find an active user by exact (normalized) email OR username, including the
+/// password hash. Used by login so users can sign in with either identifier.
+pub async fn find_by_identifier_with_secret(
+    client: &deadpool_postgres::Client,
+    identifier: &str,
+) -> Result<Option<UserWithSecret>, DbError> {
+    let email = normalize_email(identifier);
+    let uname = identifier.trim();
+    let row = client
+        .query_opt(
+            &format!(
+                "SELECT {USER_COLS}, password_hash FROM users \
+                 WHERE (email = $1 OR username = $2) AND deleted_at IS NULL LIMIT 1"
+            ),
+            &[&email, &uname],
+        )
+        .await?;
+    Ok(row.map(|r| UserWithSecret {
+        password_hash: r.get("password_hash"),
+        user: row_to_user(&r),
+    }))
+}
+
 /// Update mutable profile fields. Returns the updated user, or `None` if no
 /// such active user.
 pub async fn update_profile(

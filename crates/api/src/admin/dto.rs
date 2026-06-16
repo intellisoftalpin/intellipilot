@@ -210,3 +210,127 @@ pub struct TestLdapResponse {
     pub display_name: Option<String>,
     pub would_be_superadmin: Option<bool>,
 }
+
+// ---------------------------------------------------------------------------
+// Notification settings (email: SMTP/Mailgun, Matrix, Telegram)
+// ---------------------------------------------------------------------------
+
+/// Current notification config. Secrets are never returned — only `*_set`
+/// booleans indicate whether a value is stored.
+#[derive(Debug, Serialize, ToSchema)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct NotificationSettingsResponse {
+    pub mail_enabled: bool,
+    pub mail_provider: String,
+    pub mail_from_address: String,
+    pub mail_from_name: String,
+    pub smtp_host: String,
+    pub smtp_port: i32,
+    pub smtp_username: String,
+    pub smtp_password_set: bool,
+    pub smtp_use_starttls: bool,
+    pub smtp_skip_tls_verify: bool,
+    pub mailgun_api_key_set: bool,
+    pub mailgun_domain: String,
+    pub mailgun_base_url: String,
+    pub matrix_enabled: bool,
+    pub matrix_homeserver: String,
+    pub matrix_room_id: String,
+    pub matrix_access_token_set: bool,
+    pub telegram_enabled: bool,
+    pub telegram_bot_token_set: bool,
+    pub telegram_chat_id: String,
+    pub mail_on_login: bool,
+    pub mail_on_issue_created: bool,
+    pub mail_on_issue_resolved: bool,
+    pub mail_on_daily_report: bool,
+    pub msg_on_login: bool,
+    pub msg_on_issue_created: bool,
+    pub msg_on_issue_resolved: bool,
+    pub msg_on_daily_report: bool,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+    pub updated_by: Option<Uuid>,
+}
+
+/// Update payload. Secret fields are optional — an empty/absent value keeps the
+/// currently-stored secret.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct UpdateNotificationSettingsRequest {
+    #[garde(skip)]
+    pub mail_enabled: bool,
+    /// `smtp` | `mailgun`.
+    #[garde(length(max = 16))]
+    pub mail_provider: String,
+    #[garde(length(max = 254))]
+    pub mail_from_address: String,
+    #[garde(length(max = 128))]
+    pub mail_from_name: String,
+    #[garde(length(max = 255))]
+    pub smtp_host: String,
+    #[garde(range(min = 1, max = 65535))]
+    pub smtp_port: i32,
+    #[garde(length(max = 255))]
+    pub smtp_username: String,
+    #[garde(skip)]
+    #[serde(default)]
+    pub smtp_password: Option<String>,
+    #[garde(skip)]
+    pub smtp_use_starttls: bool,
+    #[garde(skip)]
+    pub smtp_skip_tls_verify: bool,
+    #[garde(skip)]
+    #[serde(default)]
+    pub mailgun_api_key: Option<String>,
+    #[garde(length(max = 255))]
+    pub mailgun_domain: String,
+    #[garde(length(max = 255))]
+    pub mailgun_base_url: String,
+    #[garde(skip)]
+    pub matrix_enabled: bool,
+    #[garde(length(max = 512))]
+    pub matrix_homeserver: String,
+    #[garde(length(max = 255))]
+    pub matrix_room_id: String,
+    #[garde(skip)]
+    #[serde(default)]
+    pub matrix_access_token: Option<String>,
+    #[garde(skip)]
+    pub telegram_enabled: bool,
+    #[garde(skip)]
+    #[serde(default)]
+    pub telegram_bot_token: Option<String>,
+    #[garde(length(max = 64))]
+    pub telegram_chat_id: String,
+    #[garde(skip)]
+    pub mail_on_login: bool,
+    #[garde(skip)]
+    pub mail_on_issue_created: bool,
+    #[garde(skip)]
+    pub mail_on_issue_resolved: bool,
+    #[garde(skip)]
+    pub mail_on_daily_report: bool,
+    #[garde(skip)]
+    pub msg_on_login: bool,
+    #[garde(skip)]
+    pub msg_on_issue_created: bool,
+    #[garde(skip)]
+    pub msg_on_issue_resolved: bool,
+    #[garde(skip)]
+    pub msg_on_daily_report: bool,
+}
+
+/// Send a test email to `to` using the saved configuration.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct TestMailRequest {
+    #[garde(email, length(max = 254))]
+    pub to: String,
+}
+
+/// Result of a "send test" action for any channel.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NotificationTestResponse {
+    pub ok: bool,
+    pub message: String,
+}

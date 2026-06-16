@@ -596,6 +596,58 @@ CREATE TABLE ldap_settings (
 );
 INSERT INTO ldap_settings (id) VALUES (1);
 
+-- Single-row outbound notification configuration, edited by a superadmin via
+-- the admin UI. Two independent channels: email (SMTP or Mailgun, mutually
+-- exclusive) and Matrix. Secrets are stored here and never returned by the API
+-- (write-only: the response exposes only "is set" booleans).
+CREATE TABLE notification_settings (
+    id                   smallint    PRIMARY KEY CHECK (id = 1),
+    -- Email channel ------------------------------------------------------
+    mail_enabled         boolean     NOT NULL DEFAULT false,
+    -- 'smtp' | 'mailgun' — only one transport is active at a time.
+    mail_provider        text        NOT NULL DEFAULT 'smtp',
+    mail_from_address    text        NOT NULL DEFAULT '',
+    mail_from_name       text        NOT NULL DEFAULT 'IntelliPilot',
+    -- SMTP transport
+    smtp_host            text        NOT NULL DEFAULT '',
+    smtp_port            integer     NOT NULL DEFAULT 587,
+    smtp_username        text        NOT NULL DEFAULT '',
+    smtp_password        text        NOT NULL DEFAULT '',
+    -- Negotiate StartTLS after connecting (port 587). When false, an implicit
+    -- TLS connection is used (port 465).
+    smtp_use_starttls    boolean     NOT NULL DEFAULT true,
+    smtp_skip_tls_verify boolean     NOT NULL DEFAULT false,
+    -- Mailgun HTTP API transport
+    mailgun_api_key      text        NOT NULL DEFAULT '',
+    mailgun_domain       text        NOT NULL DEFAULT '',
+    -- Region base URL; EU is https://api.eu.mailgun.net
+    mailgun_base_url     text        NOT NULL DEFAULT 'https://api.mailgun.net',
+    -- Matrix channel -----------------------------------------------------
+    matrix_enabled       boolean     NOT NULL DEFAULT false,
+    -- e.g. https://chat.example.com
+    matrix_homeserver    text        NOT NULL DEFAULT '',
+    -- e.g. !room:chat.example.com
+    matrix_room_id       text        NOT NULL DEFAULT '',
+    matrix_access_token  text        NOT NULL DEFAULT '',
+    -- Telegram channel ---------------------------------------------------
+    telegram_enabled     boolean     NOT NULL DEFAULT false,
+    telegram_bot_token   text        NOT NULL DEFAULT '',
+    telegram_chat_id     text        NOT NULL DEFAULT '',
+    -- Per-event toggles. Each event can be delivered over email and/or the
+    -- messenger channels (Matrix + Telegram) independently.
+    mail_on_login            boolean NOT NULL DEFAULT false,
+    mail_on_issue_created    boolean NOT NULL DEFAULT false,
+    mail_on_issue_resolved   boolean NOT NULL DEFAULT false,
+    mail_on_daily_report     boolean NOT NULL DEFAULT false,
+    msg_on_login             boolean NOT NULL DEFAULT false,
+    msg_on_issue_created     boolean NOT NULL DEFAULT false,
+    msg_on_issue_resolved    boolean NOT NULL DEFAULT false,
+    msg_on_daily_report      boolean NOT NULL DEFAULT false,
+    updated_at           timestamptz NOT NULL DEFAULT now(),
+    updated_by           uuid        REFERENCES users(id) ON DELETE SET NULL
+);
+INSERT INTO notification_settings (id) VALUES (1);
+
 CREATE TABLE platform_invitations (
     id           uuid         PRIMARY KEY DEFAULT uuidv7(),
     email        text         NOT NULL,

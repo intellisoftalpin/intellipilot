@@ -33,6 +33,8 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
+    # quoted_printable (via lettre) — BSD Zero Clause, public-domain-equivalent.
+    "0BSD",
     # webpki-roots and a few sibling crates bundle Mozilla's CA trust store
     # under this Community Data License (permissive, OSI-style).
     "CDLA-Permissive-2.0",

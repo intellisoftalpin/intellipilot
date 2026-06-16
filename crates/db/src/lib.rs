@@ -17,6 +17,7 @@ pub mod login_attempts;
 pub mod memberships;
 pub mod migrations;
 pub mod milestones;
+pub mod notification_settings;
 pub mod password_reset;
 pub mod platform_invitations;
 pub mod platform_settings;

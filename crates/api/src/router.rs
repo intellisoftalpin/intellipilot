@@ -39,6 +39,7 @@ pub fn build_router(state: AppState) -> Router {
     // (so monitoring probes are never throttled).
     if state.auth.is_some() {
         let api_v1 = Router::new()
+            .route("/api/v1/auth/config", get(auth::handlers::config))
             .route("/api/v1/auth/register", post(auth::handlers::register))
             .route("/api/v1/auth/login", post(auth::handlers::login))
             .route("/api/v1/auth/refresh", post(auth::handlers::refresh))
@@ -154,6 +155,23 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/admin/ldap-settings/test",
                 post(admin::handlers::test_ldap_settings),
+            )
+            .route(
+                "/api/v1/admin/notification-settings",
+                get(admin::handlers::get_notification_settings)
+                    .put(admin::handlers::update_notification_settings),
+            )
+            .route(
+                "/api/v1/admin/notification-settings/test-mail",
+                post(admin::handlers::test_mail),
+            )
+            .route(
+                "/api/v1/admin/notification-settings/test-matrix",
+                post(admin::handlers::test_matrix),
+            )
+            .route(
+                "/api/v1/admin/notification-settings/test-telegram",
+                post(admin::handlers::test_telegram),
             )
             // Taxonomy (generic, per kind)
             .route(

@@ -3,9 +3,9 @@
 use utoipa::OpenApi;
 
 use crate::dto::{
-    AcceptInviteRequest, AddMemberRequest, ChangeMemberRoleRequest, ChangePasswordRequest,
-    CreateProjectRequest, CreateRoleRequest, CreateTaxonomyItemRequest, InviteRequest,
-    InviteResponse, LoginRequest, MoveTaxonomyItemRequest, PasskeyAuthStartRequest,
+    AcceptInviteRequest, AddMemberRequest, AuthConfigResponse, ChangeMemberRoleRequest,
+    ChangePasswordRequest, CreateProjectRequest, CreateRoleRequest, CreateTaxonomyItemRequest,
+    InviteRequest, InviteResponse, LoginRequest, MoveTaxonomyItemRequest, PasskeyAuthStartRequest,
     PasskeyFinishRequest, PasswordResetConfirmBody, PasswordResetRequestBody,
     PasswordResetRequestResponse, ProfileUpdateRequest, RecoveryCodesResponse, RegisterRequest,
     TokenResponse, TotpConfirmRequest, TotpStartResponse, TwoFactorVerifyRequest,
@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.2.7",
+        version = "0.3.0",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -30,6 +30,7 @@ use crate::problem::{FieldErrorView, Problem};
         crate::health::live,
         crate::health::ready,
         crate::health::version,
+        crate::auth::handlers::config,
         crate::auth::handlers::register,
         crate::auth::handlers::login,
         crate::auth::handlers::refresh,
@@ -80,6 +81,7 @@ use crate::problem::{FieldErrorView, Problem};
         TokenResponse,
         ProfileUpdateRequest,
         ChangePasswordRequest,
+        AuthConfigResponse,
         PasswordResetRequestBody,
         PasswordResetRequestResponse,
         PasswordResetConfirmBody,
@@ -147,6 +149,10 @@ use crate::problem::{FieldErrorView, Problem};
         crate::admin::dto::PendingInvitation,
         crate::admin::dto::PlatformSettingsResponse,
         crate::admin::dto::UpdateSettingsRequest,
+        crate::admin::dto::NotificationSettingsResponse,
+        crate::admin::dto::UpdateNotificationSettingsRequest,
+        crate::admin::dto::TestMailRequest,
+        crate::admin::dto::NotificationTestResponse,
     ))
 )]
 pub struct ApiDoc;

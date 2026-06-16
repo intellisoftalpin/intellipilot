@@ -71,6 +71,18 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+/// Public auth configuration for unauthenticated UIs.
+///
+/// Lets the login / register / forgot-password pages adapt: whether
+/// self-service signup is open, and whether email-based password reset is
+/// available (a mailer is configured). Invitation links work regardless of
+/// `open_registration`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AuthConfigResponse {
+    pub open_registration: bool,
+    pub password_reset_enabled: bool,
+}
+
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct PasswordResetRequestBody {
     #[garde(email, length(max = 254))]

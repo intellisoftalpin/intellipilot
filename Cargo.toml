@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.7"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -103,6 +103,7 @@ mime = "0.3"
 infer = "0.16"
 url = { version = "2", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 percent-encoding = "2"
 regex = "1"
 

@@ -20,6 +20,7 @@ pub mod me;
 pub mod mfa;
 pub mod middleware;
 pub mod milestones;
+pub mod notify;
 pub mod openapi;
 pub mod passkeys;
 pub mod problem;

@@ -15,6 +15,7 @@ use intellipilot_auth::password::hash_password;
 use intellipilot_auth::refresh;
 use intellipilot_core::user::{NewUser, NewUserWithFlags};
 use intellipilot_db::ldap_settings::{self, LdapSettingsUpdate};
+use intellipilot_db::notification_settings::{self, NotificationSettingsUpdate};
 use intellipilot_db::platform_invitations::{self, PlatformInviteRole};
 use intellipilot_db::platform_settings;
 use intellipilot_db::users::{self, AdminUpdateOutcome, ListFilter};
@@ -28,9 +29,10 @@ use uuid::Uuid;
 
 use crate::admin::dto::{
     CreateInvitationRequest, CreateInvitationResponse, CreateUserRequest, CreateUserResponse,
-    LdapSettingsResponse, PasswordResetIssuedResponse, PendingInvitation, PlatformSettingsResponse,
-    TestLdapRequest, TestLdapResponse, UpdateLdapSettingsRequest, UpdateSettingsRequest,
-    UpdateUserRequest, UserListResponse,
+    LdapSettingsResponse, NotificationSettingsResponse, NotificationTestResponse,
+    PasswordResetIssuedResponse, PendingInvitation, PlatformSettingsResponse, TestLdapRequest,
+    TestLdapResponse, TestMailRequest, UpdateLdapSettingsRequest,
+    UpdateNotificationSettingsRequest, UpdateSettingsRequest, UpdateUserRequest, UserListResponse,
 };
 use crate::auth::{SuperadminUser, client_ip, request_id, user_agent};
 use crate::ldap::{LdapAuthenticator, LdapConfig, LdapError, RealLdap};
@@ -914,6 +916,227 @@ pub async fn test_ldap_settings(
 }
 
 // Re-export the symbols the router needs.
+// ---------------------------------------------------------------------------
+// Notification settings (superadmin only)
+// ---------------------------------------------------------------------------
+
+fn notification_response(
+    s: notification_settings::NotificationSettings,
+) -> NotificationSettingsResponse {
+    NotificationSettingsResponse {
+        mail_enabled: s.mail_enabled,
+        mail_provider: s.mail_provider,
+        mail_from_address: s.mail_from_address,
+        mail_from_name: s.mail_from_name,
+        smtp_host: s.smtp_host,
+        smtp_port: s.smtp_port,
+        smtp_username: s.smtp_username,
+        smtp_password_set: !s.smtp_password.is_empty(),
+        smtp_use_starttls: s.smtp_use_starttls,
+        smtp_skip_tls_verify: s.smtp_skip_tls_verify,
+        mailgun_api_key_set: !s.mailgun_api_key.is_empty(),
+        mailgun_domain: s.mailgun_domain,
+        mailgun_base_url: s.mailgun_base_url,
+        matrix_enabled: s.matrix_enabled,
+        matrix_homeserver: s.matrix_homeserver,
+        matrix_room_id: s.matrix_room_id,
+        matrix_access_token_set: !s.matrix_access_token.is_empty(),
+        telegram_enabled: s.telegram_enabled,
+        telegram_bot_token_set: !s.telegram_bot_token.is_empty(),
+        telegram_chat_id: s.telegram_chat_id,
+        mail_on_login: s.mail_on_login,
+        mail_on_issue_created: s.mail_on_issue_created,
+        mail_on_issue_resolved: s.mail_on_issue_resolved,
+        mail_on_daily_report: s.mail_on_daily_report,
+        msg_on_login: s.msg_on_login,
+        msg_on_issue_created: s.msg_on_issue_created,
+        msg_on_issue_resolved: s.msg_on_issue_resolved,
+        msg_on_daily_report: s.msg_on_daily_report,
+        updated_at: s.updated_at,
+        updated_by: s.updated_by,
+    }
+}
+
+/// Map a secret field: an empty/absent value means "keep the stored secret".
+fn keep_if_blank(v: Option<String>) -> Option<String> {
+    v.filter(|s| !s.is_empty())
+}
+
+fn notification_update_from(req: UpdateNotificationSettingsRequest) -> NotificationSettingsUpdate {
+    NotificationSettingsUpdate {
+        mail_enabled: req.mail_enabled,
+        mail_provider: req.mail_provider.trim().to_owned(),
+        mail_from_address: req.mail_from_address.trim().to_owned(),
+        mail_from_name: req.mail_from_name.trim().to_owned(),
+        smtp_host: req.smtp_host.trim().to_owned(),
+        smtp_port: req.smtp_port,
+        smtp_username: req.smtp_username.trim().to_owned(),
+        smtp_password: keep_if_blank(req.smtp_password),
+        smtp_use_starttls: req.smtp_use_starttls,
+        smtp_skip_tls_verify: req.smtp_skip_tls_verify,
+        mailgun_api_key: keep_if_blank(req.mailgun_api_key),
+        mailgun_domain: req.mailgun_domain.trim().to_owned(),
+        mailgun_base_url: req.mailgun_base_url.trim().to_owned(),
+        matrix_enabled: req.matrix_enabled,
+        matrix_homeserver: req.matrix_homeserver.trim().to_owned(),
+        matrix_room_id: req.matrix_room_id.trim().to_owned(),
+        matrix_access_token: keep_if_blank(req.matrix_access_token),
+        telegram_enabled: req.telegram_enabled,
+        telegram_bot_token: keep_if_blank(req.telegram_bot_token),
+        telegram_chat_id: req.telegram_chat_id.trim().to_owned(),
+        mail_on_login: req.mail_on_login,
+        mail_on_issue_created: req.mail_on_issue_created,
+        mail_on_issue_resolved: req.mail_on_issue_resolved,
+        mail_on_daily_report: req.mail_on_daily_report,
+        msg_on_login: req.msg_on_login,
+        msg_on_issue_created: req.msg_on_issue_created,
+        msg_on_issue_resolved: req.msg_on_issue_resolved,
+        msg_on_daily_report: req.msg_on_daily_report,
+    }
+}
+
+/// `GET /api/v1/admin/notification-settings`
+pub async fn get_notification_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    notification_settings::get(&client).await.map_or_else(
+        |_| internal(&rid),
+        |s| Json(notification_response(s)).into_response(),
+    )
+}
+
+/// `PUT /api/v1/admin/notification-settings`
+pub async fn update_notification_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    body: Result<Json<UpdateNotificationSettingsRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let req = match parse_json(body, &rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if req.validate().is_err() {
+        return invalid_settings(&rid);
+    }
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let upd = notification_update_from(req);
+    match notification_settings::set(&client, &upd, admin.user_id).await {
+        Ok(s) => {
+            audit::record(
+                &client,
+                Some(admin.user_id),
+                "notification_settings_updated",
+                Some(client_ip(&headers)),
+                Some(&user_agent(&headers)),
+                &json!({
+                    "mail_enabled": s.mail_enabled,
+                    "mail_provider": s.mail_provider,
+                    "matrix_enabled": s.matrix_enabled,
+                    "telegram_enabled": s.telegram_enabled,
+                }),
+            )
+            .await;
+            Json(notification_response(s)).into_response()
+        }
+        Err(_) => internal(&rid),
+    }
+}
+
+fn test_outcome(result: Result<(), String>) -> Response {
+    let resp = match result {
+        Ok(()) => NotificationTestResponse {
+            ok: true,
+            message: "Test message sent.".to_owned(),
+        },
+        Err(e) => NotificationTestResponse {
+            ok: false,
+            message: e,
+        },
+    };
+    Json(resp).into_response()
+}
+
+/// `POST /api/v1/admin/notification-settings/test-mail` — send a test email to
+/// the given recipient using the saved configuration.
+pub async fn test_mail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+    body: Result<Json<TestMailRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let req = match parse_json(body, &rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if req.validate().is_err() {
+        return invalid_settings(&rid);
+    }
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let Ok(settings) = notification_settings::get(&client).await else {
+        return internal(&rid);
+    };
+    let result = crate::notify::send_email(
+        &settings,
+        &req.to,
+        "IntelliPilot test notification",
+        "<html><body><b>Test message</b> from IntelliPilot.</body></html>",
+    )
+    .await;
+    test_outcome(result)
+}
+
+/// `POST /api/v1/admin/notification-settings/test-matrix`
+pub async fn test_matrix(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let Ok(settings) = notification_settings::get(&client).await else {
+        return internal(&rid);
+    };
+    let result = crate::notify::send_matrix(&settings, "IntelliPilot test notification").await;
+    test_outcome(result)
+}
+
+/// `POST /api/v1/admin/notification-settings/test-telegram`
+pub async fn test_telegram(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let Ok(settings) = notification_settings::get(&client).await else {
+        return internal(&rid);
+    };
+    let result = crate::notify::send_telegram(&settings, "IntelliPilot test notification").await;
+    test_outcome(result)
+}
+
 #[allow(unused_imports)]
 pub use {
     create_invitation as create_invitation_handler, create_user as create_user_handler,

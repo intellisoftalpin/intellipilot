@@ -32,8 +32,8 @@ use uuid::Uuid;
 
 use crate::auth::{client_ip, lockout_delay, request_id, sha256_hex, user_agent};
 use crate::dto::{
-    LoginRequest, PasswordResetConfirmBody, PasswordResetRequestBody, PasswordResetRequestResponse,
-    RegisterRequest, TokenResponse,
+    AuthConfigResponse, LoginRequest, PasswordResetConfirmBody, PasswordResetRequestBody,
+    PasswordResetRequestResponse, RegisterRequest, TokenResponse,
 };
 use crate::ldap::{LdapAuthenticator, LdapConfig, LdapError, RealLdap};
 use crate::problem::Problem;
@@ -164,6 +164,36 @@ fn token_response(access: String, dev_refresh: Option<String>) -> TokenResponse 
         expires_in: ACCESS_TTL_SECS,
         refresh_token: dev_refresh,
     }
+}
+
+// --------------------------------------------------------------------------
+// GET /api/v1/auth/config
+// --------------------------------------------------------------------------
+
+/// `GET /api/v1/auth/config` — public. Tells unauthenticated UIs whether
+/// self-service signup is open and whether email password reset is available.
+#[utoipa::path(get, path = "/api/v1/auth/config",
+    responses((status = 200, body = AuthConfigResponse)))]
+pub async fn config(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let open_registration = match platform_settings::get(&client).await {
+        Ok(s) => s.open_registration,
+        Err(_) => return internal(&rid),
+    };
+    // Email reset is available when an outbound mail channel is configured.
+    let password_reset_enabled = intellipilot_db::notification_settings::get(&client)
+        .await
+        .map(|s| crate::notify::mail_ready(&s))
+        .unwrap_or(false);
+    Json(AuthConfigResponse {
+        open_registration,
+        password_reset_enabled,
+    })
+    .into_response()
 }
 
 // --------------------------------------------------------------------------
@@ -369,7 +399,8 @@ pub async fn login(
         tokio::time::sleep(delay).await;
     }
 
-    let found = users::find_by_email_with_secret(&client, &req.email)
+    // Accept either an email or a username as the login identifier.
+    let found = users::find_by_identifier_with_secret(&client, &req.email)
         .await
         .ok()
         .flatten();
