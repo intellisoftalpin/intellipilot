@@ -2,11 +2,21 @@
 #![allow(unexpected_cfgs)]
 
 use garde::Validate;
+use intellipilot_core::activity::ActivityEvent;
 use intellipilot_core::user::User;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
+
+/// Paginated activity-log response (superadmin).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ActivityListResponse {
+    pub items: Vec<ActivityEvent>,
+    pub total: i64,
+    pub limit: u32,
+    pub offset: u32,
+}
 
 // ---------------------------------------------------------------------------
 // Users

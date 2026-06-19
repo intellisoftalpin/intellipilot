@@ -609,3 +609,64 @@ async fn superadmin_sees_and_opens_all_projects() {
         .await;
     assert_eq!(opened.status, 200, "superadmin opens any project");
 }
+
+// ---------------------------------------------------------------------------
+// activity log (auth events)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn activity_log_records_auth_events_and_lists_them() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    // First successful login → records `login_success` + `login_first`.
+    let token = register_and_login(&app, "act@example.com", "actadmin").await;
+    promote_to_superadmin(&app, "act@example.com").await;
+
+    // A wrong-password attempt → `login_failure` with reason `bad_password`.
+    let bad = app.login("act@example.com", "wrong password value").await;
+    assert_eq!(bad.status, 401);
+
+    // Superadmin can read the activity log.
+    let all = app
+        .send(get_with_bearer("/api/v1/admin/activity", &token))
+        .await;
+    assert_eq!(all.status, 200, "{:?}", all.json);
+    let items = all.json["items"].as_array().unwrap();
+    let actions: Vec<&str> = items
+        .iter()
+        .map(|i| i["action"].as_str().unwrap())
+        .collect();
+    assert!(actions.contains(&"login_success"), "{actions:?}");
+    assert!(actions.contains(&"login_first"), "{actions:?}");
+    assert!(actions.contains(&"login_failure"), "{actions:?}");
+
+    // The failure carries a machine-readable reason in metadata.
+    let failure = items
+        .iter()
+        .find(|i| i["action"] == "login_failure")
+        .unwrap();
+    assert_eq!(failure["metadata"]["reason"], "bad_password");
+    assert_eq!(failure["metadata"]["identifier"], "act@example.com");
+
+    // The action filter narrows the result set.
+    let filtered = app
+        .send(get_with_bearer(
+            "/api/v1/admin/activity?action=login_failure",
+            &token,
+        ))
+        .await;
+    let filtered_items = filtered.json["items"].as_array().unwrap();
+    assert!(!filtered_items.is_empty());
+    assert!(
+        filtered_items
+            .iter()
+            .all(|i| i["action"] == "login_failure")
+    );
+
+    // Non-superadmin is forbidden.
+    let plain = register_and_login(&app, "plain@example.com", "plainuser").await;
+    let forbidden = app
+        .send(get_with_bearer("/api/v1/admin/activity", &plain))
+        .await;
+    assert_eq!(forbidden.status, 403);
+}

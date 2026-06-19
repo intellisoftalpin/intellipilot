@@ -438,6 +438,15 @@ pub async fn login(
                 };
                 if !user.is_active {
                     login_attempts::record(&client, &id_hash, ip, false).await;
+                    audit::record(
+                        &client,
+                        Some(user.id),
+                        "login_failure",
+                        Some(ip),
+                        Some(&ua),
+                        &json!({ "reason": "account_inactive", "identifier": req.email, "via": "ldap" }),
+                    )
+                    .await;
                     return problem(
                         StatusCode::UNAUTHORIZED,
                         "invalid_credentials",
@@ -481,7 +490,7 @@ pub async fn login(
                     "login_failure",
                     Some(ip),
                     Some(&ua),
-                    &json!({ "via": "ldap" }),
+                    &json!({ "reason": "invalid_credentials", "identifier": req.email, "via": "ldap" }),
                 )
                 .await;
                 problem(
@@ -525,13 +534,22 @@ pub async fn login(
     if !verified || !active {
         login_attempts::record(&client, &id_hash, ip, false).await;
         let actor = found.as_ref().map(|u| u.user.id);
+        // Internal-only reason (this is an admin audit log, not the client
+        // response, which stays deliberately vague).
+        let reason = if found.is_none() {
+            "unknown_user"
+        } else if !verified {
+            "bad_password"
+        } else {
+            "account_inactive"
+        };
         audit::record(
             &client,
             actor,
             "login_failure",
             Some(ip),
             Some(&user_agent(&headers)),
-            &json!({}),
+            &json!({ "reason": reason, "identifier": req.email, "via": "password" }),
         )
         .await;
         return problem(
@@ -609,15 +627,38 @@ pub(crate) async fn issue_session(
     let Ok(access) = issue_access_token(&auth.access_key, user_id, ACCESS_TTL_SECS) else {
         return internal(&rid);
     };
+    // Detect the user's first-ever successful login (across password + LDAP)
+    // BEFORE recording this success, then emit a one-time `login_first` event.
+    let is_first_login =
+        audit::count_for_actor_actions(client, user_id, &["login_success", "login_success_ldap"])
+            .await
+            .unwrap_or(1)
+            == 0;
+    let via = if audit_action.contains("ldap") {
+        "ldap"
+    } else {
+        "password"
+    };
     audit::record(
         client,
         Some(user_id),
         audit_action,
         Some(ip),
         Some(&ua),
-        &json!({}),
+        &json!({ "via": via }),
     )
     .await;
+    if is_first_login {
+        audit::record(
+            client,
+            Some(user_id),
+            "login_first",
+            Some(ip),
+            Some(&ua),
+            &json!({ "via": via }),
+        )
+        .await;
+    }
 
     let dev_refresh = auth.config.env.is_dev().then(|| new_refresh.raw.clone());
     let jar = set_refresh_cookie(jar, &new_refresh.raw, auth);

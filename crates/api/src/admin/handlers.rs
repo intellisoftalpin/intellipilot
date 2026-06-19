@@ -172,6 +172,49 @@ pub struct ListUsersQuery {
     pub offset: Option<u32>,
 }
 
+/// Query params for the activity log.
+#[derive(Debug, Deserialize)]
+pub struct ListActivityQuery {
+    /// Optional exact `action` filter (e.g. `login_failure`).
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+/// `GET /api/v1/admin/activity` — universal activity log (auth attempts and
+/// other recorded events), newest first. Superadmin only.
+pub async fn list_activity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+    Query(q): Query<ListActivityQuery>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let offset = q.offset.unwrap_or(0);
+    let action = q.action.filter(|s| !s.is_empty());
+    let action_ref = action.as_deref();
+    let Ok(items) = audit::list(&client, action_ref, i64::from(limit), i64::from(offset)).await
+    else {
+        return internal(&rid);
+    };
+    let total = audit::count(&client, action_ref).await.unwrap_or(0);
+    Json(crate::admin::dto::ActivityListResponse {
+        items,
+        total,
+        limit,
+        offset,
+    })
+    .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/admin/users",
@@ -1063,6 +1106,28 @@ pub async fn update_ldap_settings(
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);
     };
+    // LDAP settings are read-only for accounts signed in via LDAP: only a
+    // superadmin who signs in with a local password may change them. This
+    // prevents tampering and, in particular, an LDAP-authenticated admin
+    // disabling LDAP and locking themselves out (LDAP accounts have no local
+    // password). The frontend enforces the same as a read-only view.
+    match users::find_by_id(&client, admin.user_id).await {
+        Ok(Some(me)) if me.auth_source.eq_ignore_ascii_case("ldap") => {
+            return problem(
+                StatusCode::FORBIDDEN,
+                "ldap_readonly",
+                "LDAP settings are read-only",
+                Some(
+                    "You are signed in via LDAP. LDAP settings can only be changed by a \
+                     superadmin who signs in with a local password."
+                        .to_owned(),
+                ),
+                &rid,
+            );
+        }
+        Ok(_) => {}
+        Err(_) => return internal(&rid),
+    }
     let upd = ldap_update_from(&req);
     match ldap_settings::set(&client, &upd, admin.user_id).await {
         Ok(s) => {
@@ -1124,6 +1189,17 @@ pub async fn test_ldap_settings(
         Err(LdapError::InvalidCredentials) => TestLdapResponse {
             ok: false,
             message: "Bind failed: invalid username or password.".to_owned(),
+            email: None,
+            username: None,
+            display_name: None,
+            would_be_superadmin: None,
+        },
+        // A misconfiguration (e.g. wrong service bind DN/password) is not a
+        // connectivity problem — label it accordingly so admins look in the
+        // right place.
+        Err(LdapError::Config(msg)) => TestLdapResponse {
+            ok: false,
+            message: format!("Configuration error: {msg}"),
             email: None,
             username: None,
             display_name: None,

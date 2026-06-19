@@ -4,6 +4,33 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.4.3] - 2026-06-19
+
+### Added
+- **Activity log (superadmin)** — `GET /api/v1/admin/activity` (paginated,
+  filterable by `action`) over the universal `audit_log`. New auth events are
+  recorded: successful logins (`login_success`, with `via: password|ldap`),
+  failed logins (`login_failure`, with a `reason` — `bad_password` /
+  `unknown_user` / `account_inactive` / `invalid_credentials` — and the attempted
+  `identifier`), first-ever login per user (`login_first`), and the existing
+  `password_changed`. The log is universal: new event types need only a new
+  `action` string, no schema change.
+
+### Changed
+- **LDAP login accepts both a bare username and a `user@domain` UPN** — the user
+  search now ORs the configured filter over the local part and the UPN form, so
+  it works whether the filter targets `sAMAccountName` or `userPrincipalName`
+  (set Default domain to expand a bare name to a UPN).
+- **LDAP settings are read-only for an LDAP-authenticated superadmin** — any
+  change returns `403 ldap_readonly`; only a superadmin signed in with a local
+  password may modify them (prevents tampering and self-lockout by disabling
+  LDAP).
+
+### Fixed
+- LDAP bind failures are now logged with the real directory error (`WARN`) and
+  surfaced in the test dialog with the result code; a rejected bind is reported
+  as a "Configuration error", not a misleading "Connection error".
+
 ## [0.4.2] - 2026-06-19
 
 ### Security

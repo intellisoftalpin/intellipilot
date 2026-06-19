@@ -232,3 +232,69 @@ async fn ldap_provisioning_and_superadmin_sync() {
     assert_ne!(u4.id, u1.id);
     assert_ne!(u4.username, u1.username);
 }
+
+/// LDAP settings are read-only for an LDAP-authenticated superadmin (so they
+/// can't tamper or lock themselves out by disabling LDAP); a local superadmin
+/// can change them.
+#[tokio::test]
+async fn ldap_authed_superadmin_cannot_change_ldap_settings() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let token = register_and_login(&app, "ldapadmin@example.com", "ldapadmin").await;
+    promote_to_superadmin(&app, "ldapadmin@example.com").await;
+
+    // Enable LDAP first (still a local account → allowed).
+    let enable = app
+        .send(req(
+            "PUT",
+            "/api/v1/admin/ldap-settings",
+            Some(&token),
+            &[],
+            Some(&settings_body(true, "ldap://dc.example.com:389")),
+        ))
+        .await;
+    assert_eq!(enable.status, 200, "{:?}", enable.json);
+
+    // Mark this superadmin as LDAP-sourced.
+    let set_source = |src: &'static str| {
+        let app = &app;
+        async move {
+            let client = app.db.pool.get().await.unwrap();
+            client
+                .execute(
+                    "UPDATE users SET auth_source = $1 WHERE email = 'ldapadmin@example.com'",
+                    &[&src],
+                )
+                .await
+                .unwrap();
+        }
+    };
+    set_source("ldap").await;
+
+    // Disabling LDAP is now blocked for this LDAP-authed superadmin.
+    let blocked = app
+        .send(req(
+            "PUT",
+            "/api/v1/admin/ldap-settings",
+            Some(&token),
+            &[],
+            Some(&settings_body(false, "ldap://dc.example.com:389")),
+        ))
+        .await;
+    assert_eq!(blocked.status, 403, "{:?}", blocked.json);
+    assert_eq!(blocked.json["code"], "ldap_readonly");
+
+    // Back as a local superadmin → disabling is allowed.
+    set_source("local").await;
+    let ok = app
+        .send(req(
+            "PUT",
+            "/api/v1/admin/ldap-settings",
+            Some(&token),
+            &[],
+            Some(&settings_body(false, "ldap://dc.example.com:389")),
+        ))
+        .await;
+    assert_eq!(ok.status, 200, "{:?}", ok.json);
+    assert_eq!(ok.json["enabled"], false);
+}

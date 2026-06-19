@@ -125,6 +125,7 @@ pub fn build_router(state: AppState) -> Router {
             )
             .route("/api/v1/invitations/accept", post(projects::accept_invitation))
             // Platform admin (V011) — all gated by SuperadminUser inside handlers
+            .route("/api/v1/admin/activity", get(admin::handlers::list_activity))
             .route("/api/v1/admin/users", get(admin::handlers::list_users))
             .route("/api/v1/admin/users", post(admin::handlers::create_user))
             .route("/api/v1/admin/users/{id}", patch(admin::handlers::update_user))

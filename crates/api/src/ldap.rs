@@ -134,6 +134,25 @@ impl RealLdap {
         identifier.split('@').next().unwrap_or(identifier)
     }
 
+    /// Build the user-search filter so a login works whether the user typed a
+    /// bare username or a `user@domain` UPN, and regardless of whether the
+    /// configured filter targets a bare attribute (`sAMAccountName`, `uid`) or
+    /// a UPN-style one (`userPrincipalName`, `mail`). We substitute `%s` with
+    /// both the local part and the UPN form and OR them together. (Forming the
+    /// UPN from a bare name needs `default_domain` to be set.)
+    fn build_user_filter(&self, identifier: &str) -> String {
+        let tmpl = &self.cfg.user_search_filter;
+        let local = ldap3::ldap_escape(Self::local_part(identifier)).into_owned();
+        let upn = ldap3::ldap_escape(self.upn(identifier)).into_owned();
+        let by_local = tmpl.replace("%s", &local);
+        if local == upn {
+            by_local
+        } else {
+            let by_upn = tmpl.replace("%s", &upn);
+            format!("(|{by_local}{by_upn})")
+        }
+    }
+
     /// Search `base` with `filter` and pull provisioning attributes from the
     /// first matching entry. Returns `(email, display_name, username, dn,
     /// memberOf)`; the DN is `None` when nothing matched.
@@ -239,8 +258,7 @@ impl RealLdap {
             .success()
             .map_err(|_| LdapError::InvalidCredentials)?;
 
-        let local = ldap3::ldap_escape(Self::local_part(identifier)).into_owned();
-        let filter = self.cfg.user_search_filter.replace("%s", &local);
+        let filter = self.build_user_filter(identifier);
         let (email, display_name, username, dn, groups) =
             self.fetch_user(ldap, &self.cfg.base_dn, &filter).await;
         if let Err(e) = ldap.unbind().await {
@@ -261,15 +279,31 @@ impl RealLdap {
             return Err(LdapError::Config("service bind DN is empty".to_owned()));
         }
         // 1) Bind as the service account to run the (privileged) searches.
+        tracing::debug!(dn = %self.cfg.service_bind_dn, "ldap: binding as service account");
         ldap.simple_bind(&self.cfg.service_bind_dn, &self.cfg.service_bind_password)
             .await
-            .map_err(|e| LdapError::Unavailable(e.to_string()))?
+            .map_err(|e| {
+                tracing::warn!(
+                    dn = %self.cfg.service_bind_dn,
+                    error = %e,
+                    "ldap: could not reach directory for service-account bind",
+                );
+                LdapError::Unavailable(e.to_string())
+            })?
             .success()
-            .map_err(|_| LdapError::Config("service account bind failed".to_owned()))?;
+            .map_err(|e| {
+                // Server reached but the bind was rejected — almost always a
+                // wrong service DN or password (e.g. rc=49 invalidCredentials).
+                tracing::warn!(
+                    dn = %self.cfg.service_bind_dn,
+                    error = %e,
+                    "ldap: service-account bind rejected by the directory",
+                );
+                LdapError::Config(format!("service account bind failed ({e})"))
+            })?;
 
-        // 2) Find the user entry (filter matches the full identifier, e.g. UPN).
-        let escaped = ldap3::ldap_escape(identifier).into_owned();
-        let filter = self.cfg.user_search_filter.replace("%s", &escaped);
+        // 2) Find the user entry — match both bare-username and UPN inputs.
+        let filter = self.build_user_filter(identifier);
         let (email, display_name, username, dn, member_of) = self
             .fetch_user(ldap, self.cfg.effective_user_base(), &filter)
             .await;
