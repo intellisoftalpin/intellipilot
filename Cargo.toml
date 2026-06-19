@@ -7,13 +7,14 @@ members = [
     "crates/core",
     "crates/db",
     "crates/auth",
+    "crates/git",
     "crates/storage",
     "crates/mailer",
     "crates/testkit",
 ]
 
 [workspace.package]
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -88,6 +89,14 @@ webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"]
 totp-rs = { version = "5", features = ["qr", "otpauth", "gen_secret"] }
 base32 = "0.5"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
+# SSH key generation (Ed25519) for the per-project git credential vault.
+ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "alloc", "std", "rand_core"] }
+
+# Git transport (libgit2). Vendored so the build is self-contained and the
+# decrypted private key can be supplied in-memory (ssh_key_from_memory) — it
+# never touches disk. Only the SSH transport is needed.
+git2 = { version = "0.19", default-features = false, features = ["ssh", "ssh_key_from_memory", "vendored-libgit2", "vendored-openssl"] }
+base64 = "0.22"
 
 # Markdown + sanitization
 comrak = { version = "0.31", default-features = false }

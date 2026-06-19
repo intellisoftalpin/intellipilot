@@ -57,7 +57,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(url) => {
             // Apply any pending refinery migrations before opening the pool —
             // bootstrap and identity code below assumes the schema is current.
-            let report = intellipilot_db::migrations::apply(&url).await?;
+            //
+            // Log failures via the error's Display (one concise line) and exit,
+            // rather than returning the error to `main` — a returned `Err` is
+            // Debug-printed by the runtime, and refinery's Debug embeds the
+            // full migration SQL, dumping the entire schema into the logs.
+            let report = match intellipilot_db::migrations::apply(&url).await {
+                Ok(report) => report,
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "database migration failed; refusing to start. If the \
+                         single V001 migration changed after this database was \
+                         created, the schema must be reset or reconciled."
+                    );
+                    std::process::exit(1);
+                }
+            };
             tracing::info!(
                 applied = report.applied_migrations().len(),
                 "db migrations applied"

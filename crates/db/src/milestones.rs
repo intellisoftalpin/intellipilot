@@ -172,8 +172,8 @@ pub async fn is_closed(
 
 /// Sprint stats over the issues assigned to a milestone.
 ///
-/// Point totals (via each issue's `points_id` → taxonomy value) and issue
-/// counts, with "completed" meaning a closed status. `total_tasks` /
+/// Size-ordinal totals (via each issue's `size_id` → taxonomy `value`) and
+/// issue counts, with "completed" meaning a closed status. `total_tasks` /
 /// `completed_tasks` count issues in the sprint (the unified work item).
 pub async fn stats(
     client: &deadpool_postgres::Client,
@@ -189,7 +189,7 @@ pub async fn stats(
                count(*)::int8 AS total_tasks, \
                count(*) FILTER (WHERE st.is_closed)::int8 AS done_tasks \
              FROM issues i \
-             LEFT JOIN taxonomy_items pt ON pt.id = i.points_id \
+             LEFT JOIN taxonomy_items pt ON pt.id = i.size_id \
              LEFT JOIN taxonomy_items st ON st.id = i.status_id \
              WHERE i.project_id = $1 AND i.milestone_id = $2 AND i.deleted_at IS NULL",
             &[&project_id, &milestone_id],

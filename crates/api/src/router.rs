@@ -15,8 +15,8 @@ use crate::middleware::{rate_limit, request_id, security_headers};
 use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
-    admin, attachments, auth, backlog, branding, catalog, health, me, mfa, milestones, openapi,
-    passkeys, projects, search, taxonomy, wiki,
+    admin, attachments, auth, backlog, branding, catalog, customers, health, issue_relations, me,
+    mfa, milestones, openapi, passkeys, projects, releases, repositories, search, taxonomy, wiki,
 };
 
 #[allow(clippy::too_many_lines)] // a flat, readable route table
@@ -237,6 +237,49 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/components", post(catalog::create_component))
             .route("/api/v1/projects/{project_id}/components/{component_id}", patch(catalog::update_component))
             .route("/api/v1/projects/{project_id}/components/{component_id}", delete(catalog::delete_component))
+            // Git integration: SSH keys (per-project credential vault)
+            .route("/api/v1/projects/{project_id}/ssh-keys", get(repositories::list_ssh_keys))
+            .route("/api/v1/projects/{project_id}/ssh-keys", post(repositories::create_ssh_key))
+            .route("/api/v1/projects/{project_id}/ssh-keys/{key_id}", patch(repositories::update_ssh_key))
+            .route("/api/v1/projects/{project_id}/ssh-keys/{key_id}", delete(repositories::delete_ssh_key))
+            // Git integration: repositories
+            .route("/api/v1/projects/{project_id}/repositories", get(repositories::list_repositories))
+            .route("/api/v1/projects/{project_id}/repositories", post(repositories::create_repository))
+            .route("/api/v1/projects/{project_id}/repositories/branches", post(repositories::preview_branches))
+            .route("/api/v1/projects/{project_id}/repositories/{repository_id}", patch(repositories::update_repository))
+            .route("/api/v1/projects/{project_id}/repositories/{repository_id}", delete(repositories::delete_repository))
+            .route("/api/v1/projects/{project_id}/repositories/{repository_id}/branches", get(repositories::repository_branches))
+            // Git integration: component <-> repository links
+            .route("/api/v1/projects/{project_id}/components/{component_id}/repositories", get(repositories::list_component_repositories))
+            .route("/api/v1/projects/{project_id}/components/{component_id}/repositories", post(repositories::link_component_repository))
+            .route("/api/v1/projects/{project_id}/components/{component_id}/repositories/{repository_id}", patch(repositories::update_component_repository))
+            .route("/api/v1/projects/{project_id}/components/{component_id}/repositories/{repository_id}", delete(repositories::unlink_component_repository))
+            // Customers (per-project registry)
+            .route("/api/v1/projects/{project_id}/customers", get(customers::list))
+            .route("/api/v1/projects/{project_id}/customers", post(customers::create))
+            .route("/api/v1/projects/{project_id}/customers/{customer_id}", patch(customers::update))
+            .route("/api/v1/projects/{project_id}/customers/{customer_id}", delete(customers::delete))
+            // Releases + versions
+            .route("/api/v1/projects/{project_id}/releases", get(releases::list_releases))
+            .route("/api/v1/projects/{project_id}/releases", post(releases::create_release))
+            .route("/api/v1/projects/{project_id}/release-versions/for-components", post(releases::versions_for_components))
+            .route("/api/v1/projects/{project_id}/releases/{release_id}", patch(releases::update_release))
+            .route("/api/v1/projects/{project_id}/releases/{release_id}", delete(releases::delete_release))
+            .route("/api/v1/projects/{project_id}/releases/{release_id}/versions", get(releases::list_versions))
+            .route("/api/v1/projects/{project_id}/releases/{release_id}/versions", post(releases::create_version))
+            .route("/api/v1/projects/{project_id}/releases/{release_id}/versions/{version_id}", patch(releases::update_version))
+            .route("/api/v1/projects/{project_id}/releases/{release_id}/versions/{version_id}", delete(releases::delete_version))
+            // Component <-> release links
+            .route("/api/v1/projects/{project_id}/components/{component_id}/releases", get(releases::list_component_releases))
+            .route("/api/v1/projects/{project_id}/components/{component_id}/releases", post(releases::link_component_release))
+            .route("/api/v1/projects/{project_id}/components/{component_id}/releases/{release_id}", delete(releases::unlink_component_release))
+            // Issue relationships + watchers
+            .route("/api/v1/projects/{project_id}/issues/{id}/links", get(issue_relations::list_links))
+            .route("/api/v1/projects/{project_id}/issues/{id}/links", post(issue_relations::create_link))
+            .route("/api/v1/projects/{project_id}/issues/{id}/links/{link_id}", delete(issue_relations::delete_link))
+            .route("/api/v1/projects/{project_id}/issues/{id}/watchers", get(issue_relations::list_watchers))
+            .route("/api/v1/projects/{project_id}/issues/{id}/watchers", post(issue_relations::add_watcher))
+            .route("/api/v1/projects/{project_id}/issues/{id}/watchers/{user_id}", delete(issue_relations::remove_watcher))
             // Milestones / sprints
             .route("/api/v1/projects/{project_id}/milestones", get(milestones::list))
             .route("/api/v1/projects/{project_id}/milestones", post(milestones::create))

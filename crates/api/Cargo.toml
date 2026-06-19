@@ -21,6 +21,7 @@ path = "src/lib.rs"
 intellipilot-core = { path = "../core" }
 intellipilot-db = { path = "../db" }
 intellipilot-auth = { path = "../auth" }
+intellipilot-git = { path = "../git" }
 intellipilot-storage = { path = "../storage" }
 intellipilot-mailer = { path = "../mailer" }
 

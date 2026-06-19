@@ -218,15 +218,7 @@ pub async fn create_component(
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
     };
-    match compdb::create(
-        &client,
-        ctx.project.id,
-        &req.name,
-        &req.color,
-        req.git_repository.as_deref(),
-    )
-    .await
-    {
+    match compdb::create(&client, ctx.project.id, &req.name, &req.color).await {
         Ok(c) => (StatusCode::CREATED, Json(c)).into_response(),
         Err(e) if e.is_unique_violation() => conflict(&ctx.rid),
         Err(_) => internal(&ctx.rid),
@@ -250,8 +242,6 @@ pub async fn update_component(
         Ok(v) => v,
         Err(r) => return r,
     };
-    // Map double-option to the repo's Option<Option<&str>> shape.
-    let git = req.git_repository.as_ref().map(|inner| inner.as_deref());
     let auth = state.auth();
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
@@ -262,7 +252,6 @@ pub async fn update_component(
         id,
         req.name.as_deref(),
         req.color.as_deref(),
-        git,
     )
     .await
     {

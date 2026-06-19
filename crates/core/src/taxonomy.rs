@@ -1,9 +1,11 @@
-//! Per-project taxonomy: statuses, issue types, priorities, severities, points.
+//! Per-project taxonomy: statuses, issue types, priorities, sizes.
 //!
 //! All kinds share one storage shape (`taxonomy_items`) with kind-specific
 //! fields left `None` where not applicable. With the unified backlog there is
 //! a single `issue_status` workflow shared by every issue (Story/Task/Bug);
-//! the issue *type* is itself a taxonomy (`issue_type`).
+//! the issue *type* is itself a taxonomy (`issue_type`). Estimation uses
+//! `size` (T-shirt XS–XXL) whose numeric `value` is an ordinal (1–6) the UI
+//! uses to scale the size badge.
 
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -17,8 +19,7 @@ pub enum TaxonomyKind {
     IssueStatus,
     IssueType,
     Priority,
-    Severity,
-    Point,
+    Size,
 }
 
 impl TaxonomyKind {
@@ -28,8 +29,7 @@ impl TaxonomyKind {
             Self::IssueStatus => "issue_status",
             Self::IssueType => "issue_type",
             Self::Priority => "priority",
-            Self::Severity => "severity",
-            Self::Point => "point",
+            Self::Size => "size",
         }
     }
 
@@ -39,8 +39,7 @@ impl TaxonomyKind {
             "issue_status" => Self::IssueStatus,
             "issue_type" => Self::IssueType,
             "priority" => Self::Priority,
-            "severity" => Self::Severity,
-            "point" => Self::Point,
+            "size" => Self::Size,
             _ => return None,
         })
     }
@@ -51,10 +50,10 @@ impl TaxonomyKind {
         matches!(self, Self::IssueStatus)
     }
 
-    /// Whether this kind carries a numeric `value` (points only).
+    /// Whether this kind carries a numeric `value` (size ordinal only).
     #[must_use]
     pub const fn has_value(self) -> bool {
-        matches!(self, Self::Point)
+        matches!(self, Self::Size)
     }
 }
 
@@ -90,7 +89,7 @@ pub struct DefaultTaxonomyItem {
 /// The default taxonomy seeded on project creation.
 #[must_use]
 pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
-    use TaxonomyKind::{IssueStatus, IssueType, Point, Priority, Severity};
+    use TaxonomyKind::{IssueStatus, IssueType, Priority, Size};
 
     let status = |kind: TaxonomyKind,
                   name: &'static str,
@@ -117,13 +116,15 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
                 value: None,
             }
         };
-    let point = |name: &'static str, slug: &'static str, value: Option<f64>| DefaultTaxonomyItem {
-        kind: Point,
-        name,
-        slug,
-        color: "",
-        is_closed: None,
-        value,
+    let size = |name: &'static str, slug: &'static str, color: &'static str, ordinal: f64| {
+        DefaultTaxonomyItem {
+            kind: Size,
+            name,
+            slug,
+            color,
+            is_closed: None,
+            value: Some(ordinal),
+        }
     };
 
     vec![
@@ -146,28 +147,20 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
         plain(IssueType, "Bug", "bug", "#cc0000"),
         plain(IssueType, "Enhancement", "enhancement", "#9dce0a"),
         plain(IssueType, "Question", "question", "#0079bc"),
-        // Priorities
+        // Priority (merged from the old priority + severity into one scale)
         plain(Priority, "Low", "low", "#999999"),
-        plain(Priority, "Normal", "normal", "#ffcc00"),
-        plain(Priority, "High", "high", "#cc0000"),
-        // Severities
-        plain(Severity, "Wishlist", "wishlist", "#999999"),
-        plain(Severity, "Minor", "minor", "#0079bc"),
-        plain(Severity, "Normal", "normal", "#669900"),
-        plain(Severity, "Important", "important", "#ffcc00"),
-        plain(Severity, "Critical", "critical", "#cc0000"),
-        // Points
-        point("?", "unset", None),
-        point("0", "0", Some(0.0)),
-        point("1/2", "half", Some(0.5)),
-        point("1", "1", Some(1.0)),
-        point("2", "2", Some(2.0)),
-        point("3", "3", Some(3.0)),
-        point("5", "5", Some(5.0)),
-        point("8", "8", Some(8.0)),
-        point("13", "13", Some(13.0)),
-        point("20", "20", Some(20.0)),
-        point("40", "40", Some(40.0)),
+        plain(Priority, "Medium", "medium", "#ffcc00"),
+        plain(Priority, "High", "high", "#ff7518"),
+        plain(Priority, "Critical", "critical", "#cc0000"),
+        plain(Priority, "Blocker", "blocker", "#5c3566"),
+        // Size (T-shirt estimation; `value` is the ordinal used to scale the
+        // size badge in the UI)
+        size("XS", "xs", "#9dce0a", 1.0),
+        size("S", "s", "#669900", 2.0),
+        size("M", "m", "#ffcc00", 3.0),
+        size("L", "l", "#ff7518", 4.0),
+        size("XL", "xl", "#cc0000", 5.0),
+        size("XXL", "xxl", "#990000", 6.0),
     ]
 }
 
@@ -178,18 +171,12 @@ mod tests {
 
     #[test]
     fn kind_round_trips() {
-        for s in [
-            "issue_status",
-            "issue_type",
-            "priority",
-            "severity",
-            "point",
-        ] {
+        for s in ["issue_status", "issue_type", "priority", "size"] {
             assert_eq!(TaxonomyKind::parse(s).unwrap().as_str(), s);
         }
         assert!(TaxonomyKind::parse("nope").is_none());
-        assert!(TaxonomyKind::parse("us_status").is_none());
-        assert!(TaxonomyKind::parse("task_status").is_none());
+        assert!(TaxonomyKind::parse("severity").is_none());
+        assert!(TaxonomyKind::parse("point").is_none());
     }
 
     #[test]
@@ -216,8 +203,8 @@ mod tests {
                 assert!(d.is_closed.is_some(), "{} must set is_closed", d.slug);
             }
             if d.kind.has_value() {
-                // points carry a value (except the "?" sentinel)
-                assert!(d.value.is_some() || d.slug == "unset");
+                // every size carries its ordinal value
+                assert!(d.value.is_some(), "{} must set value", d.slug);
             }
         }
     }

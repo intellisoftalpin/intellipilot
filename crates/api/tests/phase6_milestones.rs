@@ -224,25 +224,27 @@ async fn milestone_stats_from_fixture() {
         .await;
     let mid = m.json["id"].as_str().unwrap().to_owned();
 
-    let p5 = tax_id(&app, &token, &pid, "point", "5").await;
-    let p3 = tax_id(&app, &token, &pid, "point", "3").await;
+    // Sizes carry an ordinal `value`: XL=5, M=3 (sums kept the same as the old
+    // 5/3 point estimates so the assertions below are unchanged).
+    let p5 = tax_id(&app, &token, &pid, "size", "XL").await;
+    let p3 = tax_id(&app, &token, &pid, "size", "M").await;
     let st_done = tax_id(&app, &token, &pid, "issue_status", "Done").await; // closed
     let st_new = tax_id(&app, &token, &pid, "issue_status", "New").await; // open
 
-    // Issue 1: 5 points, closed status, in the sprint.
+    // Issue 1: size XL (5), closed status, in the sprint.
     let _ = app
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/issues"),
             &token,
-            &json!({ "subject": "I1", "milestone_id": mid, "points_id": p5, "status_id": st_done }),
+            &json!({ "subject": "I1", "milestone_id": mid, "size_id": p5, "status_id": st_done }),
         ))
         .await;
-    // Issue 2: 3 points, open status, in the sprint.
+    // Issue 2: size M (3), open status, in the sprint.
     let _ = app
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/issues"),
             &token,
-            &json!({ "subject": "I2", "milestone_id": mid, "points_id": p3, "status_id": st_new }),
+            &json!({ "subject": "I2", "milestone_id": mid, "size_id": p3, "status_id": st_new }),
         ))
         .await;
 

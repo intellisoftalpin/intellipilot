@@ -368,7 +368,7 @@ pub struct UpdateEpicRequest {
 ///
 /// `type_id` (an `issue_type` taxonomy item) picks Story / Task / Bug;
 /// `parent_id` makes it a sub-task; `epic_id` groups it under an epic;
-/// `milestone_id` assigns a sprint; `points_id` is the estimate.
+/// `milestone_id` assigns a sprint; `size_id` is the T-shirt estimate.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct CreateIssueRequest {
     #[garde(length(min = 1, max = 500))]
@@ -387,10 +387,7 @@ pub struct CreateIssueRequest {
     pub priority_id: Option<Uuid>,
     #[garde(skip)]
     #[serde(default)]
-    pub severity_id: Option<Uuid>,
-    #[garde(skip)]
-    #[serde(default)]
-    pub points_id: Option<Uuid>,
+    pub size_id: Option<Uuid>,
     #[garde(skip)]
     #[serde(default)]
     pub epic_id: Option<Uuid>,
@@ -403,6 +400,29 @@ pub struct CreateIssueRequest {
     #[garde(skip)]
     #[serde(default)]
     pub assigned_to: Option<Uuid>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub category: Option<intellipilot_core::backlog::IssueCategory>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub customer_id: Option<Uuid>,
+    #[garde(skip)]
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::option")]
+    pub start_date: Option<time::Date>,
+    #[garde(skip)]
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::option")]
+    pub due_date: Option<time::Date>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub resolution: Option<intellipilot_core::backlog::Resolution>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub release_version_id: Option<Uuid>,
+    #[garde(length(max = 100))]
+    #[serde(default)]
+    pub release_text: Option<String>,
     #[garde(length(max = 50))]
     #[serde(default)]
     pub labels: Vec<Uuid>,
@@ -425,9 +445,7 @@ pub struct UpdateIssueRequest {
     #[serde(default, with = "serde_with::rust::double_option")]
     pub priority_id: Option<Option<Uuid>>,
     #[serde(default, with = "serde_with::rust::double_option")]
-    pub severity_id: Option<Option<Uuid>>,
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub points_id: Option<Option<Uuid>>,
+    pub size_id: Option<Option<Uuid>>,
     #[serde(default, with = "serde_with::rust::double_option")]
     pub epic_id: Option<Option<Uuid>>,
     #[serde(default, with = "serde_with::rust::double_option")]
@@ -436,6 +454,24 @@ pub struct UpdateIssueRequest {
     pub milestone_id: Option<Option<Uuid>>,
     #[serde(default, with = "serde_with::rust::double_option")]
     pub assigned_to: Option<Option<Uuid>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub category: Option<Option<intellipilot_core::backlog::IssueCategory>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub customer_id: Option<Option<Uuid>>,
+    /// Absent leaves the date unchanged (clearing is not supported, matching
+    /// milestones).
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::option")]
+    pub start_date: Option<time::Date>,
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::option")]
+    pub due_date: Option<time::Date>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub resolution: Option<Option<intellipilot_core::backlog::Resolution>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub release_version_id: Option<Option<Uuid>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub release_text: Option<Option<String>>,
     /// Full replacement of the issue's labels when present.
     #[serde(default)]
     pub labels: Option<Vec<Uuid>>,
@@ -494,9 +530,6 @@ pub struct CreateComponentRequest {
     #[garde(length(max = 16))]
     #[serde(default)]
     pub color: String,
-    #[garde(length(max = 2000))]
-    #[serde(default)]
-    pub git_repository: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -507,10 +540,6 @@ pub struct UpdateComponentRequest {
     #[garde(length(max = 16))]
     #[serde(default)]
     pub color: Option<String>,
-    /// `null` clears the link; absent leaves it unchanged.
-    #[garde(skip)]
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub git_repository: Option<Option<String>>,
 }
 
 // --- Phase 8: wiki --------------------------------------------------------

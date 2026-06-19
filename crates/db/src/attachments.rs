@@ -122,6 +122,23 @@ pub async fn soft_delete(
     Ok(n > 0)
 }
 
+/// Soft-delete every attachment hanging off a target (e.g. all of a comment's
+/// attachments when the comment is deleted). Best-effort; returns the count.
+pub async fn soft_delete_for_target(
+    client: &deadpool_postgres::Client,
+    target_type: &str,
+    target_id: Uuid,
+) -> Result<u64, DbError> {
+    let n = client
+        .execute(
+            "UPDATE attachments SET deleted_at=now() \
+             WHERE target_type=$1 AND target_id=$2 AND deleted_at IS NULL",
+            &[&target_type, &target_id],
+        )
+        .await?;
+    Ok(n)
+}
+
 /// Hard-delete expired soft-deleted rows; return now-orphaned storage keys.
 ///
 /// Returns the keys that no surviving row references. Because storage is

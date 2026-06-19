@@ -13,7 +13,7 @@
 
 mod common;
 
-use common::{TestApp, get_with_bearer, multipart_upload, post_json_bearer, req};
+use common::{TestApp, delete_bearer, get_with_bearer, multipart_upload, post_json_bearer, req};
 use serde_json::json;
 use time::{Duration, OffsetDateTime};
 
@@ -319,4 +319,42 @@ async fn delete_then_gc_purges_object() {
     )
     .await;
     assert_eq!(again, 0);
+}
+
+#[tokio::test]
+async fn comment_attachments_upload_and_cleanup() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid, iid) = project_with_issue(&app).await;
+
+    // Create a comment on the issue, then attach a file to that comment.
+    let c = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/issues/{iid}/comments"),
+            &token,
+            &json!({ "body": "see attached" }),
+        ))
+        .await;
+    assert_eq!(c.status, 201, "{:?}", c.json);
+    let cmt = c.json["id"].as_str().unwrap().to_owned();
+    let base = format!("/api/v1/projects/{pid}/comments/{cmt}/attachments");
+
+    let up = app
+        .send(multipart_upload(&base, &token, "note.png", PNG))
+        .await;
+    assert_eq!(up.status, 201, "{:?}", up.json);
+
+    let list = app.send(get_with_bearer(&base, &token)).await;
+    assert_eq!(list.json["attachments"].as_array().unwrap().len(), 1);
+
+    // Deleting the comment soft-deletes its attachments.
+    let del = app
+        .send(delete_bearer(
+            &format!("/api/v1/projects/{pid}/issues/{iid}/comments/{cmt}"),
+            &token,
+        ))
+        .await;
+    assert_eq!(del.status, 204);
+    let after = app.send(get_with_bearer(&base, &token)).await;
+    assert_eq!(after.json["attachments"].as_array().unwrap().len(), 0);
 }

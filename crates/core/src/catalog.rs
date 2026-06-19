@@ -17,16 +17,14 @@ pub struct Label {
     pub created_at: OffsetDateTime,
 }
 
-/// A component (name + color + optional git repository), managed per project,
-/// many-to-many with issues.
+/// A component (name + color), managed per project, many-to-many with issues.
+/// Git repositories are linked separately via [`crate::repo`].
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Component {
     pub id: Uuid,
     pub project_id: Uuid,
     pub name: String,
     pub color: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub git_repository: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }

@@ -304,13 +304,25 @@ CREATE TABLE issues (
     status_id           uuid             REFERENCES taxonomy_items(id) ON DELETE SET NULL,
     type_id             uuid             REFERENCES taxonomy_items(id) ON DELETE SET NULL,
     priority_id         uuid             REFERENCES taxonomy_items(id) ON DELETE SET NULL,
-    severity_id         uuid             REFERENCES taxonomy_items(id) ON DELETE SET NULL,
-    points_id           uuid             REFERENCES taxonomy_items(id) ON DELETE SET NULL,
+    size_id             uuid             REFERENCES taxonomy_items(id) ON DELETE SET NULL,
     epic_id             uuid             REFERENCES epics(id) ON DELETE SET NULL,
     parent_id           uuid             REFERENCES issues(id) ON DELETE SET NULL,
     milestone_id        uuid             REFERENCES milestones(id) ON DELETE SET NULL,
     owner_id            uuid             REFERENCES users(id) ON DELETE SET NULL,
     assigned_to         uuid             REFERENCES users(id) ON DELETE SET NULL,
+    -- Business-driver category (fixed enum, see core::backlog::IssueCategory).
+    category            varchar(32),
+    -- Requesting customer (FK added at end of file once `customers` exists).
+    customer_id         uuid,
+    start_date          date,
+    due_date            date,
+    -- Resolution (fixed enum) + system-managed close timestamp.
+    resolution          varchar(32),
+    resolved_at         timestamptz,
+    -- Fix version: structured (FK added at end once `release_versions` exists)
+    -- or free text. At most one is set (enforced in the API).
+    release_version_id  uuid,
+    release_text        varchar(100),
     "order"             double precision NOT NULL DEFAULT 1.0,
     version             integer          NOT NULL DEFAULT 1,
     created_at          timestamptz      NOT NULL DEFAULT now(),
@@ -323,6 +335,7 @@ CREATE INDEX issues_project_idx ON issues (project_id) WHERE deleted_at IS NULL;
 CREATE INDEX issues_epic_idx ON issues (epic_id) WHERE deleted_at IS NULL;
 CREATE INDEX issues_parent_idx ON issues (parent_id) WHERE deleted_at IS NULL;
 CREATE INDEX issues_milestone_idx ON issues (milestone_id) WHERE deleted_at IS NULL;
+CREATE INDEX issues_due_date_idx ON issues (due_date) WHERE deleted_at IS NULL;
 CREATE TRIGGER issues_set_modified_at BEFORE UPDATE ON issues
     FOR EACH ROW EXECUTE FUNCTION set_modified_at();
 
@@ -386,7 +399,6 @@ CREATE TABLE components (
     project_id      uuid            NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name            varchar(64)     NOT NULL,
     color           varchar(16)     NOT NULL DEFAULT '',
-    git_repository  text,
     created_at      timestamptz     NOT NULL DEFAULT now(),
     UNIQUE (project_id, name)
 );
@@ -403,6 +415,147 @@ CREATE TABLE issue_components (
     component_id  uuid NOT NULL REFERENCES components(id) ON DELETE CASCADE,
     PRIMARY KEY (issue_id, component_id)
 );
+
+-- ===========================================================================
+-- Git integration: per-project SSH credential vault, repositories, and
+-- component<->repository links (each pinned to a branch). Underpins the future
+-- "clone & analyze" feature.
+-- ===========================================================================
+CREATE TABLE ssh_keys (
+    id               uuid         PRIMARY KEY DEFAULT uuidv7(),
+    project_id       uuid         NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name             varchar(64)  NOT NULL,
+    -- true = read-only deploy key; false = read/write.
+    read_only        boolean      NOT NULL DEFAULT true,
+    key_type         varchar(32)  NOT NULL DEFAULT 'ed25519',
+    public_key       text         NOT NULL,
+    -- Private key encrypted at rest (ChaCha20-Poly1305, key from server
+    -- pepper). NEVER selected into API responses.
+    private_key_enc  bytea        NOT NULL,
+    fingerprint      text         NOT NULL,
+    created_at       timestamptz  NOT NULL DEFAULT now(),
+    created_by       uuid         REFERENCES users(id) ON DELETE SET NULL,
+    UNIQUE (project_id, name)
+);
+CREATE INDEX ssh_keys_project_idx ON ssh_keys (project_id);
+
+CREATE TABLE repositories (
+    id               uuid         PRIMARY KEY DEFAULT uuidv7(),
+    project_id       uuid         NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name             varchar(128) NOT NULL,
+    ssh_url          text         NOT NULL,
+    -- Deleting a key detaches it from its repositories (ON DELETE SET NULL):
+    -- the repos remain but need a new key assigned before they are reachable.
+    ssh_key_id       uuid         REFERENCES ssh_keys(id) ON DELETE SET NULL,
+    default_branch   varchar(255),
+    host_fingerprint text,
+    created_at       timestamptz  NOT NULL DEFAULT now(),
+    created_by       uuid         REFERENCES users(id) ON DELETE SET NULL,
+    UNIQUE (project_id, ssh_url)
+);
+CREATE INDEX repositories_project_idx ON repositories (project_id);
+CREATE INDEX repositories_ssh_key_idx ON repositories (ssh_key_id);
+
+CREATE TABLE component_repositories (
+    component_id   uuid         NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+    repository_id  uuid         NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    -- The specific branch linked (customizable; need not be the repo default).
+    branch         varchar(255) NOT NULL,
+    created_at     timestamptz  NOT NULL DEFAULT now(),
+    PRIMARY KEY (component_id, repository_id)
+);
+CREATE INDEX component_repositories_repo_idx ON component_repositories (repository_id);
+
+-- ===========================================================================
+-- Customers (per-project) — who requested a feature. Linked from issues whose
+-- category is 'customer_request'.
+-- ===========================================================================
+CREATE TABLE customers (
+    id            uuid         PRIMARY KEY DEFAULT uuidv7(),
+    project_id    uuid         NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name          varchar(200) NOT NULL,
+    company_name  varchar(200),
+    contact_email varchar(254),
+    phone         varchar(64),
+    notes         text,
+    created_at    timestamptz  NOT NULL DEFAULT now(),
+    created_by    uuid         REFERENCES users(id) ON DELETE SET NULL,
+    modified_at   timestamptz  NOT NULL DEFAULT now(),
+    UNIQUE (project_id, name)
+);
+CREATE INDEX customers_project_idx ON customers (project_id);
+CREATE TRIGGER customers_set_modified_at BEFORE UPDATE ON customers
+    FOR EACH ROW EXECUTE FUNCTION set_modified_at();
+
+-- ===========================================================================
+-- Releases (a named product / release line) + their versions. A version may
+-- map to a git tag on a linked repository; releases may be linked to
+-- components, and an issue's fix-version points at a specific version.
+-- ===========================================================================
+CREATE TABLE releases (
+    id          uuid         PRIMARY KEY DEFAULT uuidv7(),
+    project_id  uuid         NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name        varchar(128) NOT NULL,
+    description text,
+    created_at  timestamptz  NOT NULL DEFAULT now(),
+    created_by  uuid         REFERENCES users(id) ON DELETE SET NULL,
+    UNIQUE (project_id, name)
+);
+CREATE INDEX releases_project_idx ON releases (project_id);
+
+CREATE TABLE release_versions (
+    id            uuid             PRIMARY KEY DEFAULT uuidv7(),
+    release_id    uuid             NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+    version       varchar(64)      NOT NULL,
+    status        varchar(16)      NOT NULL DEFAULT 'planned',
+    target_date   date,
+    released_at   timestamptz,
+    notes         text             NOT NULL DEFAULT '',
+    repository_id uuid             REFERENCES repositories(id) ON DELETE SET NULL,
+    git_tag       varchar(255),
+    "order"       double precision NOT NULL DEFAULT 1.0,
+    created_at    timestamptz      NOT NULL DEFAULT now(),
+    UNIQUE (release_id, version)
+);
+CREATE INDEX release_versions_release_idx ON release_versions (release_id);
+
+CREATE TABLE component_releases (
+    component_id uuid        NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+    release_id   uuid        NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (component_id, release_id)
+);
+CREATE INDEX component_releases_release_idx ON component_releases (release_id);
+
+-- ===========================================================================
+-- Issue relationships + watchers
+-- ===========================================================================
+CREATE TABLE issue_links (
+    id              uuid        PRIMARY KEY DEFAULT uuidv7(),
+    project_id      uuid        NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source_issue_id uuid        NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    target_issue_id uuid        NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    type            varchar(16) NOT NULL,  -- 'blocks' | 'relates' | 'duplicates'
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (source_issue_id, target_issue_id, type),
+    CHECK (source_issue_id <> target_issue_id)
+);
+CREATE INDEX issue_links_source_idx ON issue_links (source_issue_id);
+CREATE INDEX issue_links_target_idx ON issue_links (target_issue_id);
+
+CREATE TABLE issue_watchers (
+    issue_id   uuid        NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    user_id    uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (issue_id, user_id)
+);
+
+-- Deferred FKs on `issues` (targets defined above).
+ALTER TABLE issues
+    ADD CONSTRAINT issues_customer_fk
+        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+    ADD CONSTRAINT issues_release_version_fk
+        FOREIGN KEY (release_version_id) REFERENCES release_versions(id) ON DELETE SET NULL;
 
 -- ===========================================================================
 -- attachments (polymorphic over 'epic' | 'issue' | 'wiki')

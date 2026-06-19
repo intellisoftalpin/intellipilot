@@ -4,6 +4,82 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.4.0] - 2026-06-18
+
+### Added
+- **Issue fields overhaul.**
+  - **Size** estimation (T-shirt XS–XXL) replaces story points — the `point`
+    taxonomy kind was renamed to `size` and reseeded XS–XXL, each carrying a
+    numeric ordinal (1–6) the UI uses to scale a size badge.
+  - **Category** (fixed enum): `customer_request`, `compliance`, `security`,
+    `roadmap`, `technical_debt`, `operational`, `research_discovery`, `other`.
+  - **Customer** link (`issues.customer_id`) for customer-requested work, backed
+    by a new per-project **customers** registry
+    (`/api/v1/projects/{id}/customers`, CRUD: name, company, email, phone, notes).
+  - **Start / due dates** with overdue indication.
+  - **Resolution** (fixed enum: `fixed`, `wont_do`, `duplicate`,
+    `cannot_reproduce`) plus a system-managed `resolved_at` that is set when an
+    issue enters a closed status and cleared on reopen.
+  - **Issue relationships** (`/api/v1/projects/{id}/issues/{id}/links`):
+    `blocks` / `relates` / `duplicates`, with inverse directions rendered.
+  - **Watchers** (`/api/v1/projects/{id}/issues/{id}/watchers`).
+- **Releases** — a two-level model: a named **release** (e.g. "PSBP") with
+  separate **versions** (1.0, 1.1, …). Versions carry a status
+  (`planned`/`in_progress`/`released`), target/actual dates, notes, and an
+  optional repository + git tag. Releases link to components
+  (`/api/v1/projects/{id}/components/{cid}/releases`); an issue's fix-version
+  points at a specific version (`release_version_id`) chosen from its
+  components' linked releases, or a free-text `release_text` fallback.
+  Endpoints under `/api/v1/projects/{id}/releases[/{rid}/versions]` and
+  `/release-versions/for-components`.
+- **Comment attachments**: the attachment endpoints now accept a `comment`
+  target (`/api/v1/projects/{id}/comments/{comment_id}/attachments`); a
+  comment's attachments are soft-deleted when the comment is deleted.
+- **Git repositories, SSH credential vault, and component linking** — the
+  foundation for the upcoming "clone & analyze" feature.
+  - **Per-project SSH keys** (`/api/v1/projects/{id}/ssh-keys`): server-generated
+    Ed25519 keypairs. The private key is encrypted at rest (ChaCha20-Poly1305,
+    keyed by the server pepper) and **never returned**; the public key + SHA256
+    fingerprint are exposed so it can be registered as a deploy key. Keys carry a
+    name and a read-only/read-write flag, and report how many repositories use
+    them. Generation requires a configured server pepper.
+  - **Repositories** (`/api/v1/projects/{id}/repositories`): an SSH URL (validated
+    as `git@host:path` / `ssh://…`), an optional linked key (existing or created
+    inline), an optional default branch, and the captured host-key fingerprint.
+    One key can serve many repositories. Deleting a key **detaches** it from its
+    repositories (`ON DELETE SET NULL`) rather than deleting them.
+  - **Basic git integration** (new `intellipilot-git` crate over libgit2): lists a
+    remote's branches over SSH using the in-memory decrypted key (never written to
+    disk), captures the host fingerprint (TOFU), bounds concurrency and enforces a
+    timeout. Surfaced via `POST …/repositories/branches` (preview an unsaved repo)
+    and `GET …/repositories/{id}/branches` (live). Adding/re-keying a repository
+    checks reachability best-effort.
+  - **Component ↔ repository links**
+    (`/api/v1/projects/{id}/components/{cid}/repositories`): a component may link
+    many repositories, each pinned to a specific branch (validated against the
+    live remote when reachable).
+  - SSH key create/delete are recorded in the audit log; per-project caps bound
+    growth.
+
+### Changed
+- **Priority and severity merged** into a single `priority` taxonomy with the
+  scale Low / Medium / High / Critical / Blocker; the `severity` taxonomy kind
+  and `issues.severity_id` were removed.
+- Story **points → size**: `issues.points_id` renamed to `size_id`; milestone
+  "points" totals now sum the size ordinal.
+- Components no longer carry the free-text `git_repository` field — repositories
+  are now first-class, structured, and linked per branch. (Pre-release schema
+  changes folded into the single `V001` migration.)
+
+## [0.3.3] - 2026-06-17
+
+### Fixed
+- A failed database migration now logs a single concise line and exits, instead
+  of letting the error propagate to `main` where the runtime Debug-prints it —
+  refinery's Debug output embeds the full migration SQL, which dumped the entire
+  schema into the logs on every restart. The message also hints that a changed
+  single-V001 migration requires resetting or reconciling the database.
+
 ## [0.3.2] - 2026-06-16
 
 ### Added

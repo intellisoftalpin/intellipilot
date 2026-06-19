@@ -9,9 +9,9 @@
 //! concurrency via a `version` column, soft-delete, and fractional ordering.
 #![allow(clippy::too_many_arguments)]
 
-use intellipilot_core::backlog::{Epic, Issue};
+use intellipilot_core::backlog::{Epic, Issue, IssueCategory, Resolution};
 use intellipilot_core::ordering::{normalized_ranks, rank_between};
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 use tokio_postgres::Row;
 use uuid::Uuid;
 
@@ -199,8 +199,9 @@ pub async fn epic_in_project(
 // ==========================================================================
 
 const ISSUE_COLS: &str = "id, project_id, ref, subject, description, status_id, type_id, \
-     priority_id, severity_id, points_id, epic_id, parent_id, milestone_id, owner_id, \
-     assigned_to, \"order\", version, created_at, modified_at";
+     priority_id, size_id, epic_id, parent_id, milestone_id, owner_id, assigned_to, \
+     category, customer_id, start_date, due_date, resolution, resolved_at, \
+     release_version_id, release_text, \"order\", version, created_at, modified_at";
 
 fn row_to_issue(r: &Row) -> Issue {
     Issue {
@@ -212,21 +213,71 @@ fn row_to_issue(r: &Row) -> Issue {
         status_id: r.get("status_id"),
         type_id: r.get("type_id"),
         priority_id: r.get("priority_id"),
-        severity_id: r.get("severity_id"),
-        points_id: r.get("points_id"),
+        size_id: r.get("size_id"),
         epic_id: r.get("epic_id"),
         parent_id: r.get("parent_id"),
         milestone_id: r.get("milestone_id"),
         owner_id: r.get("owner_id"),
         assigned_to: r.get("assigned_to"),
+        category: r
+            .get::<_, Option<String>>("category")
+            .and_then(|s| IssueCategory::parse(&s)),
+        customer_id: r.get("customer_id"),
+        start_date: r.get("start_date"),
+        due_date: r.get("due_date"),
+        resolution: r
+            .get::<_, Option<String>>("resolution")
+            .and_then(|s| Resolution::parse(&s)),
+        resolved_at: r.get("resolved_at"),
+        release_version_id: r.get("release_version_id"),
+        release_text: r.get("release_text"),
         // Filled by the caller from the junction tables.
         labels: Vec::new(),
         components: Vec::new(),
+        watchers: Vec::new(),
         order: r.get("order"),
         version: r.get("version"),
         created_at: r.get("created_at"),
         modified_at: r.get("modified_at"),
     }
+}
+
+/// User ids watching an issue.
+pub async fn issue_watcher_ids(
+    client: &deadpool_postgres::Client,
+    issue_id: Uuid,
+) -> Result<Vec<Uuid>, DbError> {
+    let rows = client
+        .query(
+            "SELECT user_id FROM issue_watchers WHERE issue_id = $1 ORDER BY user_id",
+            &[&issue_id],
+        )
+        .await?;
+    Ok(rows.iter().map(|r| r.get("user_id")).collect())
+}
+
+/// Column values for creating/updating an issue (the full-replace set). The
+/// `resolved_at` timestamp is system-managed in SQL from the (new) status, so
+/// it is intentionally absent here.
+#[derive(Debug, Default)]
+pub struct IssueWrite<'a> {
+    pub subject: &'a str,
+    pub description: &'a str,
+    pub status_id: Option<Uuid>,
+    pub type_id: Option<Uuid>,
+    pub priority_id: Option<Uuid>,
+    pub size_id: Option<Uuid>,
+    pub epic_id: Option<Uuid>,
+    pub parent_id: Option<Uuid>,
+    pub milestone_id: Option<Uuid>,
+    pub assigned_to: Option<Uuid>,
+    pub category: Option<&'a str>,
+    pub customer_id: Option<Uuid>,
+    pub start_date: Option<Date>,
+    pub due_date: Option<Date>,
+    pub resolution: Option<&'a str>,
+    pub release_version_id: Option<Uuid>,
+    pub release_text: Option<&'a str>,
 }
 
 /// Label ids attached to an issue.
@@ -305,17 +356,7 @@ pub async fn create_issue(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
     owner_id: Uuid,
-    subject: &str,
-    description: &str,
-    status_id: Option<Uuid>,
-    type_id: Option<Uuid>,
-    priority_id: Option<Uuid>,
-    severity_id: Option<Uuid>,
-    points_id: Option<Uuid>,
-    epic_id: Option<Uuid>,
-    parent_id: Option<Uuid>,
-    milestone_id: Option<Uuid>,
-    assigned_to: Option<Uuid>,
+    w: &IssueWrite<'_>,
 ) -> Result<Issue, DbError> {
     let reference = alloc_ref(client, project_id).await?;
     let order = next_order(client, "issues", project_id).await?;
@@ -323,25 +364,36 @@ pub async fn create_issue(
         .query_one(
             &format!(
                 "INSERT INTO issues (project_id, ref, subject, description, status_id, type_id, \
-                   priority_id, severity_id, points_id, epic_id, parent_id, milestone_id, \
-                   owner_id, assigned_to, \"order\") \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING {ISSUE_COLS}"
+                   priority_id, size_id, epic_id, parent_id, milestone_id, owner_id, assigned_to, \
+                   category, customer_id, start_date, due_date, resolution, release_version_id, \
+                   release_text, \"order\", resolved_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, \
+                   CASE WHEN $5::uuid IS NOT NULL \
+                          AND (SELECT is_closed FROM taxonomy_items WHERE id = $5::uuid) IS TRUE \
+                        THEN now() END) \
+                 RETURNING {ISSUE_COLS}"
             ),
             &[
                 &project_id,
                 &reference,
-                &subject,
-                &description,
-                &status_id,
-                &type_id,
-                &priority_id,
-                &severity_id,
-                &points_id,
-                &epic_id,
-                &parent_id,
-                &milestone_id,
+                &w.subject,
+                &w.description,
+                &w.status_id,
+                &w.type_id,
+                &w.priority_id,
+                &w.size_id,
+                &w.epic_id,
+                &w.parent_id,
+                &w.milestone_id,
                 &owner_id,
-                &assigned_to,
+                &w.assigned_to,
+                &w.category,
+                &w.customer_id,
+                &w.start_date,
+                &w.due_date,
+                &w.resolution,
+                &w.release_version_id,
+                &w.release_text,
                 &order,
             ],
         )
@@ -366,6 +418,7 @@ pub async fn get_issue(
             let mut issue = row_to_issue(&r);
             issue.labels = issue_label_ids(client, issue.id).await?;
             issue.components = issue_component_ids(client, issue.id).await?;
+            issue.watchers = issue_watcher_ids(client, issue.id).await?;
             Ok(Some(issue))
         }
     }
@@ -386,6 +439,7 @@ pub async fn list_issues(
         let mut issue = row_to_issue(r);
         issue.labels = issue_label_ids(client, issue.id).await?;
         issue.components = issue_component_ids(client, issue.id).await?;
+        issue.watchers = issue_watcher_ids(client, issue.id).await?;
         issues.push(issue);
     }
     Ok(issues)
@@ -396,24 +450,19 @@ pub async fn update_issue(
     project_id: Uuid,
     id: Uuid,
     expected_version: i32,
-    subject: &str,
-    description: &str,
-    status_id: Option<Uuid>,
-    type_id: Option<Uuid>,
-    priority_id: Option<Uuid>,
-    severity_id: Option<Uuid>,
-    points_id: Option<Uuid>,
-    epic_id: Option<Uuid>,
-    parent_id: Option<Uuid>,
-    milestone_id: Option<Uuid>,
-    assigned_to: Option<Uuid>,
+    w: &IssueWrite<'_>,
 ) -> Result<UpdateOutcome<Issue>, DbError> {
     let row = client
         .query_opt(
             &format!(
                 "UPDATE issues SET subject=$4, description=$5, status_id=$6, type_id=$7, \
-                   priority_id=$8, severity_id=$9, points_id=$10, epic_id=$11, parent_id=$12, \
-                   milestone_id=$13, assigned_to=$14, version=version+1 \
+                   priority_id=$8, size_id=$9, epic_id=$10, parent_id=$11, milestone_id=$12, \
+                   assigned_to=$13, category=$14, customer_id=$15, start_date=$16, due_date=$17, \
+                   resolution=$18, release_version_id=$19, release_text=$20, \
+                   resolved_at = CASE WHEN $6::uuid IS NOT NULL \
+                          AND (SELECT is_closed FROM taxonomy_items WHERE id = $6::uuid) IS TRUE \
+                        THEN COALESCE(resolved_at, now()) ELSE NULL END, \
+                   version=version+1 \
                  WHERE id=$1 AND project_id=$2 AND version=$3 AND deleted_at IS NULL \
                  RETURNING {ISSUE_COLS}"
             ),
@@ -421,17 +470,23 @@ pub async fn update_issue(
                 &id,
                 &project_id,
                 &expected_version,
-                &subject,
-                &description,
-                &status_id,
-                &type_id,
-                &priority_id,
-                &severity_id,
-                &points_id,
-                &epic_id,
-                &parent_id,
-                &milestone_id,
-                &assigned_to,
+                &w.subject,
+                &w.description,
+                &w.status_id,
+                &w.type_id,
+                &w.priority_id,
+                &w.size_id,
+                &w.epic_id,
+                &w.parent_id,
+                &w.milestone_id,
+                &w.assigned_to,
+                &w.category,
+                &w.customer_id,
+                &w.start_date,
+                &w.due_date,
+                &w.resolution,
+                &w.release_version_id,
+                &w.release_text,
             ],
         )
         .await?;
@@ -476,6 +531,7 @@ pub async fn issues_in_milestone(
         let mut issue = row_to_issue(r);
         issue.labels = issue_label_ids(client, issue.id).await?;
         issue.components = issue_component_ids(client, issue.id).await?;
+        issue.watchers = issue_watcher_ids(client, issue.id).await?;
         issues.push(issue);
     }
     Ok(issues)
@@ -608,8 +664,7 @@ pub async fn taxonomy_reference_count(
             "SELECT \
                (SELECT count(*) FROM epics WHERE status_id=$1) \
              + (SELECT count(*) FROM issues \
-                  WHERE status_id=$1 OR type_id=$1 OR priority_id=$1 \
-                     OR severity_id=$1 OR points_id=$1) \
+                  WHERE status_id=$1 OR type_id=$1 OR priority_id=$1 OR size_id=$1) \
              AS n",
             &[&item_id],
         )

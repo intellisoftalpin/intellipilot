@@ -8,12 +8,15 @@
 pub mod attachment;
 pub mod backlog;
 pub mod catalog;
+pub mod customer;
 pub mod error;
 pub mod ids;
 pub mod milestone;
 pub mod ordering;
 pub mod perms;
 pub mod project;
+pub mod release;
+pub mod repo;
 pub mod search;
 pub mod serde_date;
 pub mod taxonomy;

@@ -1,17 +1,90 @@
-# IntelliPilot
+# IntelliPilot — Free, Self-Hosted Jira Alternative with Built-In LDAP & Active Directory SSO
 
-A multi-tenant project-management platform (epics, user stories, tasks, issues,
-milestones, wiki, comments, attachments) built as a Rust workspace.
+> **Open-source project management and issue tracking you run on your own servers — with Active Directory and OpenLDAP single sign-on included for free, not locked behind an "enterprise" tier.**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Built with Rust](https://img.shields.io/badge/Backend-Rust-orange.svg)
+![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL%2018-336791.svg)
+![Flutter client](https://img.shields.io/badge/Client-Flutter-02569B.svg)
+![Self-hosted](https://img.shields.io/badge/Deploy-Self--hosted-success.svg)
+![LDAP & Active Directory](https://img.shields.io/badge/Auth-LDAP%20%2B%20Active%20Directory-brightgreen.svg)
+
+**IntelliPilot** is a lightweight, **self-hosted Jira alternative** for agile and
+scrum teams: epics, user stories, tasks and issues on a **Kanban board**, sprints
+and **milestones**, a project **wiki**, comments, attachments, and fine-grained
+**roles and permissions**. It authenticates users against **LDAP and Active
+Directory** directories out of the box — both Active-Directory-style direct bind
+*and* **OpenLDAP** service-account search-then-bind — so your team gets directory
+**single sign-on (SSO)** with no paid plan and no per-seat SSO surcharge.
+
+It is **free and open source (MIT)**, ships a fast Rust + PostgreSQL backend and a
+cross-platform [Flutter web/desktop/mobile client](https://github.com/intellisoftalpin/intellipilot),
+and is designed to run **on-premise** — including air-gapped networks — via a
+single hardened Docker image.
+
+> Website: [intellisoftalpin.com](https://intellisoftalpin.com) · License: [MIT](LICENSE)
+
+---
+
+## Why IntelliPilot — the free LDAP / Active Directory niche
+
+Most free and self-hosted project-management tools make you pay for directory
+authentication: LDAP, Active Directory, and SAML/SSO are almost always
+"enterprise" upsells. IntelliPilot is built the other way around.
+
+- 🟢 **LDAP & Active Directory SSO for free.** Sign in against your existing
+  directory — Microsoft Active Directory *or* OpenLDAP — with group-based
+  superadmin mapping. No enterprise tier, no SSO tax, no per-user fee.
+- 🟢 **Both bind modes.** *Direct bind* for Active Directory (`user@domain`), and
+  *service-account search-then-bind* for OpenLDAP where the login name isn't the
+  entry's RDN. Reverse `(member=…)` group search with a `memberOf` fallback.
+- 🟢 **Truly self-hosted.** Your data stays on your infrastructure — on-premise,
+  private cloud, or air-gapped. No telemetry, no phone-home.
+- 🟢 **Free and open source (MIT).** No seat limits, no paywalled features.
+- 🟢 **Modern security baseline.** Argon2id, PASETO v4 tokens, TOTP 2FA, and
+  FIDO2 / passkeys — included, not gated.
+
+A **free, self-hosted Jira / Taiga / Redmine / OpenProject / YouTrack
+alternative** with directory single sign-on that doesn't cost extra is a rare
+combination — that's the gap IntelliPilot fills.
+
+---
+
+## Features
+
+- **Agile backlog** — epics, user stories, tasks and issues with fractional-index
+  reordering; short references like `PROJ-42`.
+- **Kanban board & sprints** — board view, milestones/sprints with scope and stats.
+- **Project wiki** — Markdown pages with revisions, diff and restore.
+- **Collaboration** — comments, attachments (signed downloads), per-entity history.
+- **Roles & permissions** — fine-grained, per-project membership and invitations.
+- **Directory SSO** — **LDAP / Active Directory / OpenLDAP** authentication with
+  group-to-superadmin mapping (see [the niche above](#why-intellipilot--the-free-ldap--active-directory-niche)).
+- **Strong auth** — Argon2id password hashing, PASETO v4 access tokens with
+  family-rotated refresh tokens, **TOTP 2FA**, and **FIDO2 / passkeys / WebAuthn**.
+- **Notifications** — email (SMTP or Mailgun), **Matrix**, and **Telegram**, with
+  per-event delivery toggles.
+- **White-label / branding** — override the app name, icon and login message.
+- **Privacy & compliance** — GDPR-friendly soft-delete with grace period, data
+  export, and an append-only audit log.
+- **Self-hosted & hardened** — distroless, non-root, read-only Docker image;
+  OpenAPI docs via Swagger UI and Scalar.
+
+---
+
+## Tech stack
 
 - **Language / edition**: Rust 1.88, edition 2024
 - **HTTP**: [axum](https://docs.rs/axum) 0.8 + [tower](https://docs.rs/tower) / [tower-http](https://docs.rs/tower-http)
 - **Database**: PostgreSQL 18 via [tokio-postgres](https://docs.rs/tokio-postgres) + [deadpool-postgres](https://docs.rs/deadpool-postgres)
-- **Migrations**: [refinery](https://docs.rs/refinery) (plain SQL, `V001..V009`)
+- **Migrations**: [refinery](https://docs.rs/refinery) (plain SQL)
 - **Auth**: Argon2id passwords, PASETO v4 access tokens with family-rotated
   refresh tokens, TOTP (RFC 6238), FIDO2 / passkeys via
-  [webauthn-rs](https://docs.rs/webauthn-rs)
+  [webauthn-rs](https://docs.rs/webauthn-rs), and LDAP / Active Directory via
+  [ldap3](https://docs.rs/ldap3)
+- **Client**: [Flutter](https://github.com/intellisoftalpin/intellipilot) (web, macOS, Linux, Windows, Android, iOS)
 - **API docs**: OpenAPI (utoipa) served by Swagger UI and Scalar
-- **License**: MIT — internal product (`publish = false`)
+- **License**: [MIT](LICENSE)
 
 ---
 
@@ -360,6 +433,50 @@ Project-specific patterns:
 
 ---
 
+## FAQ
+
+### Is IntelliPilot a free, open-source Jira alternative?
+Yes. IntelliPilot is MIT-licensed, free, and self-hosted. It covers the core of
+what teams use Jira for — backlog, Kanban board, sprints/milestones, issues, and
+a wiki — without seat limits or paywalled features.
+
+### Does IntelliPilot support Active Directory and OpenLDAP?
+Yes — both, and it's included for free. Active Directory works via direct bind
+(`user@domain`); OpenLDAP works via a service account that searches for the
+user's DN and then binds as it. Superadmin can be granted by directory group
+membership.
+
+### Do I have to pay extra for LDAP / SSO?
+No. Directory authentication (LDAP / Active Directory / OpenLDAP) is a built-in
+feature, not an "enterprise" upsell. There is no SSO tax and no per-seat fee.
+
+### Can I self-host it on-premise or in an air-gapped network?
+Yes. IntelliPilot ships as a single hardened Docker image (distroless, non-root,
+read-only) plus PostgreSQL. There is no telemetry or phone-home, so it runs fully
+offline / on-premise.
+
+### What can I use instead of Jira, Taiga, Redmine, OpenProject or YouTrack?
+IntelliPilot is a self-hosted alternative to those tools, with first-class LDAP /
+Active Directory single sign-on included at no cost.
+
+### What's the tech stack?
+A Rust (axum) + PostgreSQL backend with an OpenAPI-documented REST API, and a
+cross-platform Flutter client (web, desktop, mobile).
+
+---
+
+## Keywords
+
+Self-hosted Jira alternative · free open-source project management · issue
+tracker · Kanban board · agile / scrum · sprint & backlog management ·
+**LDAP authentication** · **Active Directory SSO** · **OpenLDAP** · single
+sign-on · on-premise · Rust · PostgreSQL · Flutter · MIT license · Taiga /
+Redmine / OpenProject / YouTrack alternative.
+
+---
+
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [`LICENSE`](LICENSE). Free for personal and commercial use.
+
+Built by [IntelliSoftAlpin](https://intellisoftalpin.com).

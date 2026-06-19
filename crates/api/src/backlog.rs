@@ -28,8 +28,8 @@ use intellipilot_core::backlog::{EntityKind, etag};
 use intellipilot_core::perms::Permission;
 use intellipilot_db::backlog::UpdateOutcome;
 use intellipilot_db::{
-    backlog as bl, comments as cdb, components as compdb, history, idempotency, labels as ldb,
-    milestones as msdb,
+    attachments as adb, backlog as bl, comments as cdb, components as compdb, customers as custdb,
+    history, idempotency, labels as ldb, milestones as msdb, release_versions as rvdb,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -542,6 +542,76 @@ async fn validate_issue_associations(
     validate_milestone_assignment(client, project_id, milestone_id, rid).await
 }
 
+/// Build the DB write-set from a create request (borrows from `req`).
+fn write_from_create(req: &CreateIssueRequest) -> bl::IssueWrite<'_> {
+    bl::IssueWrite {
+        subject: &req.subject,
+        description: &req.description,
+        status_id: req.status_id,
+        type_id: req.type_id,
+        priority_id: req.priority_id,
+        size_id: req.size_id,
+        epic_id: req.epic_id,
+        parent_id: req.parent_id,
+        milestone_id: req.milestone_id,
+        assigned_to: req.assigned_to,
+        category: req
+            .category
+            .map(intellipilot_core::backlog::IssueCategory::as_str),
+        customer_id: req.customer_id,
+        start_date: req.start_date,
+        due_date: req.due_date,
+        resolution: req
+            .resolution
+            .map(intellipilot_core::backlog::Resolution::as_str),
+        release_version_id: req.release_version_id,
+        release_text: req.release_text.as_deref(),
+    }
+}
+
+/// Validate the fix-version (mutually-exclusive) plus the optional customer /
+/// release-version references against the project.
+async fn validate_issue_extras(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    customer_id: Option<Uuid>,
+    release_version_id: Option<Uuid>,
+    release_text: Option<&str>,
+    rid: &str,
+) -> Result<(), Response> {
+    let has_text = release_text.is_some_and(|t| !t.trim().is_empty());
+    if release_version_id.is_some() && has_text {
+        return Err(unprocessable(
+            rid,
+            "invalid_fix_version",
+            "set either release_version_id or release_text, not both",
+        ));
+    }
+    if let Some(cid) = customer_id
+        && !custdb::in_project(client, project_id, cid)
+            .await
+            .unwrap_or(false)
+    {
+        return Err(unprocessable(
+            rid,
+            "invalid_association",
+            "customer not found in this project",
+        ));
+    }
+    if let Some(vid) = release_version_id
+        && !rvdb::in_project(client, project_id, vid)
+            .await
+            .unwrap_or(false)
+    {
+        return Err(unprocessable(
+            rid,
+            "invalid_association",
+            "release version not found in this project",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn create_issue(
     State(state): State<AppState>,
     ctx: ProjectContext,
@@ -584,6 +654,18 @@ pub async fn create_issue(
     {
         return r;
     }
+    if let Err(r) = validate_issue_extras(
+        &client,
+        ctx.project.id,
+        req.customer_id,
+        req.release_version_id,
+        req.release_text.as_deref(),
+        &ctx.rid,
+    )
+    .await
+    {
+        return r;
+    }
     let key = idem_key(&headers);
     let path = format!("/projects/{}/issues", ctx.project.id);
     if let Some(r) = replay(auth, &client, ctx.actor_id, &key, "POST", &path).await {
@@ -593,17 +675,7 @@ pub async fn create_issue(
         &client,
         ctx.project.id,
         ctx.actor_id,
-        &req.subject,
-        &req.description,
-        req.status_id,
-        req.type_id,
-        req.priority_id,
-        req.severity_id,
-        req.points_id,
-        req.epic_id,
-        req.parent_id,
-        req.milestone_id,
-        req.assigned_to,
+        &write_from_create(&req),
     )
     .await;
     let i = match created {
@@ -690,6 +762,18 @@ pub async fn bulk_create_issues(
         {
             return r;
         }
+        if let Err(r) = validate_issue_extras(
+            &client,
+            ctx.project.id,
+            item.customer_id,
+            item.release_version_id,
+            item.release_text.as_deref(),
+            &ctx.rid,
+        )
+        .await
+        {
+            return r;
+        }
     }
     let mut created = Vec::with_capacity(req.items.len());
     for item in &req.items {
@@ -697,17 +781,7 @@ pub async fn bulk_create_issues(
             &client,
             ctx.project.id,
             ctx.actor_id,
-            &item.subject,
-            &item.description,
-            item.status_id,
-            item.type_id,
-            item.priority_id,
-            item.severity_id,
-            item.points_id,
-            item.epic_id,
-            item.parent_id,
-            item.milestone_id,
-            item.assigned_to,
+            &write_from_create(item),
         )
         .await
         {
@@ -929,12 +1003,19 @@ pub async fn update_issue(
     let status_id = patch.status_id.unwrap_or(old.status_id);
     let type_id = patch.type_id.unwrap_or(old.type_id);
     let priority_id = patch.priority_id.unwrap_or(old.priority_id);
-    let severity_id = patch.severity_id.unwrap_or(old.severity_id);
-    let points_id = patch.points_id.unwrap_or(old.points_id);
+    let size_id = patch.size_id.unwrap_or(old.size_id);
     let epic_id = patch.epic_id.unwrap_or(old.epic_id);
     let parent_id = patch.parent_id.unwrap_or(old.parent_id);
     let milestone_id = patch.milestone_id.unwrap_or(old.milestone_id);
     let assigned_to = patch.assigned_to.unwrap_or(old.assigned_to);
+    let category = patch.category.unwrap_or(old.category);
+    let customer_id = patch.customer_id.unwrap_or(old.customer_id);
+    // Dates: absent leaves unchanged (no clear), matching milestones.
+    let start_date = patch.start_date.or(old.start_date);
+    let due_date = patch.due_date.or(old.due_date);
+    let resolution = patch.resolution.unwrap_or(old.resolution);
+    let release_version_id = patch.release_version_id.unwrap_or(old.release_version_id);
+    let release_text = patch.release_text.unwrap_or(old.release_text.clone());
 
     // Validate only associations that actually changed.
     let epic_changed = epic_id != old.epic_id;
@@ -966,7 +1047,20 @@ pub async fn update_issue(
             "an issue cannot be its own parent",
         );
     }
+    if let Err(r) = validate_issue_extras(
+        &client,
+        ctx.project.id,
+        customer_id,
+        release_version_id,
+        release_text.as_deref(),
+        &ctx.rid,
+    )
+    .await
+    {
+        return r;
+    }
 
+    let date_str = |d: Option<time::Date>| json!(d.map(|v| v.to_string()));
     let mut diff = serde_json::Map::new();
     diff_field(&mut diff, "subject", &json!(old.subject), &json!(subject));
     diff_field(
@@ -988,18 +1082,7 @@ pub async fn update_issue(
         &json!(old.priority_id),
         &json!(priority_id),
     );
-    diff_field(
-        &mut diff,
-        "severity_id",
-        &json!(old.severity_id),
-        &json!(severity_id),
-    );
-    diff_field(
-        &mut diff,
-        "points_id",
-        &json!(old.points_id),
-        &json!(points_id),
-    );
+    diff_field(&mut diff, "size_id", &json!(old.size_id), &json!(size_id));
     diff_field(&mut diff, "epic_id", &json!(old.epic_id), &json!(epic_id));
     diff_field(
         &mut diff,
@@ -1019,26 +1102,69 @@ pub async fn update_issue(
         &json!(old.assigned_to),
         &json!(assigned_to),
     );
+    diff_field(
+        &mut diff,
+        "category",
+        &json!(old.category),
+        &json!(category),
+    );
+    diff_field(
+        &mut diff,
+        "customer_id",
+        &json!(old.customer_id),
+        &json!(customer_id),
+    );
+    diff_field(
+        &mut diff,
+        "start_date",
+        &date_str(old.start_date),
+        &date_str(start_date),
+    );
+    diff_field(
+        &mut diff,
+        "due_date",
+        &date_str(old.due_date),
+        &date_str(due_date),
+    );
+    diff_field(
+        &mut diff,
+        "resolution",
+        &json!(old.resolution),
+        &json!(resolution),
+    );
+    diff_field(
+        &mut diff,
+        "release_version_id",
+        &json!(old.release_version_id),
+        &json!(release_version_id),
+    );
+    diff_field(
+        &mut diff,
+        "release_text",
+        &json!(old.release_text),
+        &json!(release_text),
+    );
 
-    match bl::update_issue(
-        &client,
-        ctx.project.id,
-        id,
-        old.version,
-        &subject,
-        &description,
+    let write = bl::IssueWrite {
+        subject: &subject,
+        description: &description,
         status_id,
         type_id,
         priority_id,
-        severity_id,
-        points_id,
+        size_id,
         epic_id,
         parent_id,
         milestone_id,
         assigned_to,
-    )
-    .await
-    {
+        category: category.map(intellipilot_core::backlog::IssueCategory::as_str),
+        customer_id,
+        start_date,
+        due_date,
+        resolution: resolution.map(intellipilot_core::backlog::Resolution::as_str),
+        release_version_id,
+        release_text: release_text.as_deref(),
+    };
+    match bl::update_issue(&client, ctx.project.id, id, old.version, &write).await {
         Ok(UpdateOutcome::Updated(e)) => {
             // Apply label/component replacements if the patch included them.
             if let Some(labels) = &new_labels {
@@ -1226,7 +1352,16 @@ pub async fn delete_comment(
         return r;
     }
     match cdb::soft_delete(&client, comment_id).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(true) => {
+            // Best-effort: tidy up any attachments hanging off the comment.
+            if adb::soft_delete_for_target(&client, "comment", comment_id)
+                .await
+                .is_err()
+            {
+                tracing::warn!(%comment_id, "failed to soft-delete comment attachments");
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(false) => not_found(&ctx.rid),
         Err(_) => internal(&ctx.rid),
     }

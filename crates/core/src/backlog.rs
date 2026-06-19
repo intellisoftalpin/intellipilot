@@ -62,7 +62,7 @@ pub struct Epic {
 ///
 /// `type_id` (an `issue_type` taxonomy item) tells Story from Task from Bug;
 /// `parent_id` nests sub-tasks; `epic_id` groups under an epic; `milestone_id`
-/// assigns to a sprint; `points_id` is the estimate.
+/// assigns to a sprint; `size_id` is the T-shirt estimate.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Issue {
     pub id: Uuid,
@@ -74,23 +74,123 @@ pub struct Issue {
     pub status_id: Option<Uuid>,
     pub type_id: Option<Uuid>,
     pub priority_id: Option<Uuid>,
-    pub severity_id: Option<Uuid>,
-    pub points_id: Option<Uuid>,
+    /// T-shirt size estimate (taxonomy `size`).
+    pub size_id: Option<Uuid>,
     pub epic_id: Option<Uuid>,
     pub parent_id: Option<Uuid>,
     pub milestone_id: Option<Uuid>,
     pub owner_id: Option<Uuid>,
     pub assigned_to: Option<Uuid>,
+    /// Business-driver category (fixed enum).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<IssueCategory>,
+    /// Requesting customer (meaningful when `category = customer_request`).
+    pub customer_id: Option<Uuid>,
+    #[serde(with = "crate::serde_date::option")]
+    pub start_date: Option<time::Date>,
+    #[serde(with = "crate::serde_date::option")]
+    pub due_date: Option<time::Date>,
+    /// Why the issue was closed (fixed enum); user-set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<Resolution>,
+    /// When the issue entered a closed status; system-managed.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub resolved_at: Option<OffsetDateTime>,
+    /// Fix version (a specific `release_versions` row) when chosen structurally.
+    pub release_version_id: Option<Uuid>,
+    /// Free-text fix version when no structured release applies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_text: Option<String>,
     /// Label ids attached to this issue.
     pub labels: Vec<Uuid>,
     /// Component ids attached to this issue.
     pub components: Vec<Uuid>,
+    /// User ids watching this issue.
+    pub watchers: Vec<Uuid>,
     pub order: f64,
     pub version: i32,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub modified_at: OffsetDateTime,
+}
+
+/// Business-driver category for an issue (why we're doing it). Fixed set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueCategory {
+    CustomerRequest,
+    Compliance,
+    Security,
+    Roadmap,
+    TechnicalDebt,
+    Operational,
+    ResearchDiscovery,
+    Other,
+}
+
+impl IssueCategory {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CustomerRequest => "customer_request",
+            Self::Compliance => "compliance",
+            Self::Security => "security",
+            Self::Roadmap => "roadmap",
+            Self::TechnicalDebt => "technical_debt",
+            Self::Operational => "operational",
+            Self::ResearchDiscovery => "research_discovery",
+            Self::Other => "other",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "customer_request" => Self::CustomerRequest,
+            "compliance" => Self::Compliance,
+            "security" => Self::Security,
+            "roadmap" => Self::Roadmap,
+            "technical_debt" => Self::TechnicalDebt,
+            "operational" => Self::Operational,
+            "research_discovery" => Self::ResearchDiscovery,
+            "other" => Self::Other,
+            _ => return None,
+        })
+    }
+}
+
+/// Resolution (why an issue was closed). Fixed set; distinct from status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Resolution {
+    Fixed,
+    WontDo,
+    Duplicate,
+    CannotReproduce,
+}
+
+impl Resolution {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::WontDo => "wont_do",
+            Self::Duplicate => "duplicate",
+            Self::CannotReproduce => "cannot_reproduce",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "fixed" => Self::Fixed,
+            "wont_do" => Self::WontDo,
+            "duplicate" => Self::Duplicate,
+            "cannot_reproduce" => Self::CannotReproduce,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -103,6 +203,54 @@ pub struct Comment {
     pub body_html: String,
     #[serde(with = "time::serde::rfc3339::option")]
     pub edited_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+/// Relationship type between two issues. Inverses (*is-blocked-by*,
+/// *duplicated-by*) are rendered from the stored direction, not stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkType {
+    Blocks,
+    Relates,
+    Duplicates,
+}
+
+impl LinkType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocks => "blocks",
+            Self::Relates => "relates",
+            Self::Duplicates => "duplicates",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "blocks" => Self::Blocks,
+            "relates" => Self::Relates,
+            "duplicates" => Self::Duplicates,
+            _ => return None,
+        })
+    }
+}
+
+/// A relationship from one issue to another, as returned for a given issue.
+/// `direction` tells whether the queried issue is the source (`outgoing`) or
+/// the target (`incoming`) of the stored link.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct IssueLink {
+    pub id: Uuid,
+    /// The other issue in the relationship.
+    pub other_issue_id: Uuid,
+    pub other_ref: i64,
+    pub other_subject: String,
+    pub link_type: LinkType,
+    /// `outgoing` or `incoming` relative to the queried issue.
+    pub direction: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }

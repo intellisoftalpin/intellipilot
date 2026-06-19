@@ -527,9 +527,15 @@ async fn labels_and_components_crud() {
         .await;
     assert_eq!(dup.status, 409);
 
-    let comp = app.send(post_json_bearer(&format!("/api/v1/projects/{pid}/components"), &token, &json!({ "name": "api", "color": "#669900", "git_repository": "https://git.example/api.git" }))).await;
+    let comp = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/components"),
+            &token,
+            &json!({ "name": "api", "color": "#669900" }),
+        ))
+        .await;
     assert_eq!(comp.status, 201, "{:?}", comp.json);
-    assert_eq!(comp.json["git_repository"], "https://git.example/api.git");
+    assert_eq!(comp.json["name"], "api");
 
     let labels = app
         .send(get_with_bearer(

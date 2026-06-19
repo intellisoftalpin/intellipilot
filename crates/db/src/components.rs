@@ -1,4 +1,5 @@
-//! Component persistence (project-level, optional git repository).
+//! Component persistence (project-level). Git repositories link to components
+//! separately — see [`crate::component_repositories`].
 
 use intellipilot_core::catalog::Component;
 use tokio_postgres::Row;
@@ -6,7 +7,7 @@ use uuid::Uuid;
 
 use crate::DbError;
 
-const COLS: &str = "id, project_id, name, color, git_repository, created_at";
+const COLS: &str = "id, project_id, name, color, created_at";
 
 fn row_to_component(r: &Row) -> Component {
     Component {
@@ -14,7 +15,6 @@ fn row_to_component(r: &Row) -> Component {
         project_id: r.get("project_id"),
         name: r.get("name"),
         color: r.get("color"),
-        git_repository: r.get("git_repository"),
         created_at: r.get("created_at"),
     }
 }
@@ -37,15 +37,14 @@ pub async fn create(
     project_id: Uuid,
     name: &str,
     color: &str,
-    git_repository: Option<&str>,
 ) -> Result<Component, DbError> {
     let row = client
         .query_one(
             &format!(
-                "INSERT INTO components (project_id, name, color, git_repository) \
-                 VALUES ($1,$2,$3,$4) RETURNING {COLS}"
+                "INSERT INTO components (project_id, name, color) \
+                 VALUES ($1,$2,$3) RETURNING {COLS}"
             ),
-            &[&project_id, &name, &color, &git_repository],
+            &[&project_id, &name, &color],
         )
         .await?;
     Ok(row_to_component(&row))
@@ -57,19 +56,14 @@ pub async fn update(
     id: Uuid,
     name: Option<&str>,
     color: Option<&str>,
-    git_repository: Option<Option<&str>>,
 ) -> Result<Option<Component>, DbError> {
-    // `git_repository`: None = unchanged, Some(None) = clear, Some(Some(v)) = set.
-    let (set_git, git_val): (bool, Option<&str>) =
-        git_repository.map_or((false, None), |v| (true, v));
     let row = client
         .query_opt(
             &format!(
-                "UPDATE components SET name=COALESCE($3,name), color=COALESCE($4,color), \
-                   git_repository = CASE WHEN $5 THEN $6 ELSE git_repository END \
+                "UPDATE components SET name=COALESCE($3,name), color=COALESCE($4,color) \
                  WHERE id=$1 AND project_id=$2 RETURNING {COLS}"
             ),
-            &[&id, &project_id, &name, &color, &set_git, &git_val],
+            &[&id, &project_id, &name, &color],
         )
         .await?;
     Ok(row.as_ref().map(row_to_component))

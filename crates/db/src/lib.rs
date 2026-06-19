@@ -7,10 +7,15 @@ pub mod attachments;
 pub mod audit;
 pub mod backlog;
 pub mod comments;
+pub mod component_releases;
+pub mod component_repositories;
 pub mod components;
+pub mod customers;
 pub mod history;
 pub mod idempotency;
 pub mod invitations;
+pub mod issue_links;
+pub mod issue_watchers;
 pub mod labels;
 pub mod ldap_settings;
 pub mod login_attempts;
@@ -23,9 +28,13 @@ pub mod platform_invitations;
 pub mod platform_settings;
 pub mod projects;
 pub mod recovery;
+pub mod release_versions;
+pub mod releases;
+pub mod repositories;
 pub mod roles;
 pub mod search;
 pub mod sessions;
+pub mod ssh_keys;
 pub mod taxonomy;
 pub mod users;
 pub mod webauthn;
@@ -55,6 +64,12 @@ impl DbError {
     #[must_use]
     pub fn is_unique_violation(&self) -> bool {
         matches!(self, Self::Postgres(e) if e.code() == Some(&SqlState::UNIQUE_VIOLATION))
+    }
+
+    /// True when the error is a foreign-key violation (SQLSTATE 23503).
+    #[must_use]
+    pub fn is_foreign_key_violation(&self) -> bool {
+        matches!(self, Self::Postgres(e) if e.code() == Some(&SqlState::FOREIGN_KEY_VIOLATION))
     }
 }
 

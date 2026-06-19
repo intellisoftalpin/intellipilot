@@ -62,15 +62,21 @@ impl TestDb {
             .batch_execute(&format!("CREATE SCHEMA \"{schema}\""))
             .await
             .expect("create test schema");
-        // Pre-create the (database-global) pg_trgm extension under an advisory
-        // lock so concurrent per-schema migrations don't race on creating it.
-        // After this, the migration's `CREATE EXTENSION IF NOT EXISTS` is a
-        // no-op and never contends.
+        // Pre-create the (database-global) pg_trgm extension under a
+        // transaction-scoped advisory lock so concurrent per-schema migrations
+        // don't race on creating it. A *session* lock would be released by the
+        // explicit unlock before the implicit transaction commits, leaving a
+        // window where another session acquires the lock but its snapshot can't
+        // yet see the just-created (uncommitted) extension — it then tries to
+        // insert and dies on the catalog's unique index. `pg_advisory_xact_lock`
+        // is held until commit, after the extension is visible, so the
+        // following `CREATE EXTENSION IF NOT EXISTS` is always a true no-op.
         admin
             .batch_execute(
-                "SELECT pg_advisory_lock(424242); \
+                "BEGIN; \
+                 SELECT pg_advisory_xact_lock(424242); \
                  CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public; \
-                 SELECT pg_advisory_unlock(424242);",
+                 COMMIT;",
             )
             .await
             .expect("ensure pg_trgm");

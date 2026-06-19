@@ -89,7 +89,7 @@ expression: rows
   ],
   [
     "priority",
-    "normal",
+    "medium",
     "#ffcc00",
     null,
     null
@@ -97,120 +97,64 @@ expression: rows
   [
     "priority",
     "high",
-    "#cc0000",
+    "#ff7518",
     null,
     null
   ],
   [
-    "severity",
-    "wishlist",
-    "#999999",
-    null,
-    null
-  ],
-  [
-    "severity",
-    "minor",
-    "#0079bc",
-    null,
-    null
-  ],
-  [
-    "severity",
-    "normal",
-    "#669900",
-    null,
-    null
-  ],
-  [
-    "severity",
-    "important",
-    "#ffcc00",
-    null,
-    null
-  ],
-  [
-    "severity",
+    "priority",
     "critical",
     "#cc0000",
     null,
     null
   ],
   [
-    "point",
-    "unset",
-    "",
+    "priority",
+    "blocker",
+    "#5c3566",
     null,
     null
   ],
   [
-    "point",
-    "0",
-    "",
-    null,
-    0.0
-  ],
-  [
-    "point",
-    "half",
-    "",
-    null,
-    0.5
-  ],
-  [
-    "point",
-    "1",
-    "",
+    "size",
+    "xs",
+    "#9dce0a",
     null,
     1.0
   ],
   [
-    "point",
-    "2",
-    "",
+    "size",
+    "s",
+    "#669900",
     null,
     2.0
   ],
   [
-    "point",
-    "3",
-    "",
+    "size",
+    "m",
+    "#ffcc00",
     null,
     3.0
   ],
   [
-    "point",
-    "5",
-    "",
+    "size",
+    "l",
+    "#ff7518",
+    null,
+    4.0
+  ],
+  [
+    "size",
+    "xl",
+    "#cc0000",
     null,
     5.0
   ],
   [
-    "point",
-    "8",
-    "",
+    "size",
+    "xxl",
+    "#990000",
     null,
-    8.0
-  ],
-  [
-    "point",
-    "13",
-    "",
-    null,
-    13.0
-  ],
-  [
-    "point",
-    "20",
-    "",
-    null,
-    20.0
-  ],
-  [
-    "point",
-    "40",
-    "",
-    null,
-    40.0
+    6.0
   ]
 ]

@@ -68,6 +68,7 @@ fn entity_target(params: &HashMap<String, String>) -> Option<(&'static str, Uuid
         "epics" => Some("epic"),
         "issues" => Some("issue"),
         "wiki" => Some("wiki"),
+        "comments" => Some("comment"),
         _ => None,
     })?;
     let id = params.get("id").and_then(|s| Uuid::parse_str(s).ok())?;
@@ -77,7 +78,8 @@ fn entity_target(params: &HashMap<String, String>) -> Option<(&'static str, Uuid
 fn view_perm(target_type: &str) -> Option<Permission> {
     Some(match target_type {
         "epic" => Permission::EpicView,
-        "issue" => Permission::IssueView,
+        // Comment attachments are gated like the issues they hang off.
+        "issue" | "comment" => Permission::IssueView,
         "wiki" => Permission::WikiView,
         _ => return None,
     })

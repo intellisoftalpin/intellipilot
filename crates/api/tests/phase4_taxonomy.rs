@@ -66,18 +66,18 @@ async fn defaults_are_seeded_on_project_creation() {
             &token,
         ))
         .await;
-    assert_eq!(prio.json["items"].as_array().unwrap().len(), 3);
+    assert_eq!(prio.json["items"].as_array().unwrap().len(), 5);
 
-    let points = app
+    let sizes = app
         .send(get_with_bearer(
-            &format!("/api/v1/projects/{pid}/taxonomy/point"),
+            &format!("/api/v1/projects/{pid}/taxonomy/size"),
             &token,
         ))
         .await;
-    assert_eq!(points.json["items"].as_array().unwrap().len(), 11);
-    // A status carries is_closed; a point carries a value.
+    assert_eq!(sizes.json["items"].as_array().unwrap().len(), 6);
+    // A status carries is_closed; a size carries its ordinal value.
     assert!(us.json["items"][0].get("is_closed").is_some());
-    assert!(points.json["items"][1].get("value").is_some());
+    assert!(sizes.json["items"][1].get("value").is_some());
 }
 
 #[tokio::test]
@@ -160,10 +160,13 @@ async fn reorder_moves_item_to_front() {
 
     let before = app.send(get_with_bearer(&base, &token)).await;
     let items = before.json["items"].as_array().unwrap();
-    assert_eq!(names(&before.json), vec!["Low", "Normal", "High"]);
+    assert_eq!(
+        names(&before.json),
+        vec!["Low", "Medium", "High", "Critical", "Blocker"]
+    );
     let high_id = items[2]["id"].as_str().unwrap().to_owned();
 
-    // Move "High" to the front (before "Low", after = nothing).
+    // Move "High" to the front (before "Low").
     let mv = app
         .send(post_json_bearer(
             &format!("{base}/{high_id}/move"),
@@ -174,7 +177,10 @@ async fn reorder_moves_item_to_front() {
     assert_eq!(mv.status, 204, "{:?}", mv.json);
 
     let after = app.send(get_with_bearer(&base, &token)).await;
-    assert_eq!(names(&after.json), vec!["High", "Low", "Normal"]);
+    assert_eq!(
+        names(&after.json),
+        vec!["High", "Low", "Medium", "Critical", "Blocker"]
+    );
 }
 
 #[tokio::test]

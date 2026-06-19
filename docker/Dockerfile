@@ -9,6 +9,11 @@
 # Base image must match (or exceed) the rust-toolchain.toml pin so cargo-chef
 # is built against the same cargo that will compile our workspace.
 FROM rust:1.88-bookworm AS chef
+# cmake + perl are required to build the vendored libgit2 / OpenSSL that the
+# `git2` crate compiles from source (in-memory SSH credentials).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cmake perl \
+    && rm -rf /var/lib/apt/lists/*
 RUN cargo install --locked cargo-chef@0.1.71
 WORKDIR /work
 
