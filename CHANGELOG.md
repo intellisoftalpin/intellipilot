@@ -4,12 +4,19 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
-## [0.4.1] - 2026-06-19
+## [0.4.2] - 2026-06-19
 
 ### Security
 - Upgraded `git2` 0.19 → 0.21 (libgit2-sys 0.18) to clear RUSTSEC-2026-0183 and
   RUSTSEC-2026-0184 (unsound null-pointer handling in `Remote::list()` /
   `BlameHunk` signatures). No API impact for our usage.
+
+### Fixed
+- Container failed to start with `libz.so.1: cannot open shared object file` on
+  the distroless runtime: libgit2 dynamically linked the system zlib, which the
+  minimal image doesn't ship. Now statically link zlib-ng via git2's
+  `zlib-ng-compat` feature (arch-independent; needs `cmake` at build time, which
+  the Docker builder and CI already provide).
 
 ## [0.4.0] - 2026-06-18
 

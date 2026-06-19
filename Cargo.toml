@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -95,7 +95,10 @@ ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "a
 # Git transport (libgit2). Vendored so the build is self-contained and the
 # decrypted private key can be supplied in-memory (ssh_key_from_memory) — it
 # never touches disk. Only the SSH transport is needed.
-git2 = { version = "0.21", default-features = false, features = ["ssh", "vendored-libgit2", "vendored-openssl"] }
+# `zlib-ng-compat` statically links zlib-ng so the binary has no runtime
+# `libz.so.1` dependency — required for the minimal distroless runtime image
+# (and arch-independent, unlike copying the system libz).
+git2 = { version = "0.21", default-features = false, features = ["ssh", "vendored-libgit2", "vendored-openssl", "zlib-ng-compat"] }
 base64 = "0.22"
 
 # Markdown + sanitization
