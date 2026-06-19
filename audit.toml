@@ -6,4 +6,16 @@
 # an upstream fix tracker, and be reviewed at every dependency bump.
 
 [advisories]
-ignore = []
+ignore = [
+    # RUSTSEC-2023-0071 — `rsa` Marvin timing side-channel.
+    # Justification: `rsa` is an UNUSED, OPTIONAL dependency of `ssh-key`
+    # (pulled only behind ssh-key's `rsa` feature, which we do NOT enable — we
+    # use `ssh-key` solely for Ed25519 keygen/encoding). It is never compiled
+    # into any binary: `cargo tree -i rsa --target all` resolves to nothing,
+    # and `cargo deny check advisories` (which IS dependency-graph aware) passes
+    # clean. `cargo audit` flags it only because it scans Cargo.lock without
+    # feature resolution. No fixed upstream release exists (the Marvin fix is
+    # still open). Re-evaluate when ssh-key drops the optional rsa dep or a
+    # fixed rsa ships. Upstream: https://github.com/RustCrypto/RSA/issues/19
+    "RUSTSEC-2023-0071",
+]

@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -95,7 +95,7 @@ ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "a
 # Git transport (libgit2). Vendored so the build is self-contained and the
 # decrypted private key can be supplied in-memory (ssh_key_from_memory) — it
 # never touches disk. Only the SSH transport is needed.
-git2 = { version = "0.19", default-features = false, features = ["ssh", "ssh_key_from_memory", "vendored-libgit2", "vendored-openssl"] }
+git2 = { version = "0.21", default-features = false, features = ["ssh", "vendored-libgit2", "vendored-openssl"] }
 base64 = "0.22"
 
 # Markdown + sanitization

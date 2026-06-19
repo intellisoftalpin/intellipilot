@@ -4,6 +4,13 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.4.1] - 2026-06-19
+
+### Security
+- Upgraded `git2` 0.19 → 0.21 (libgit2-sys 0.18) to clear RUSTSEC-2026-0183 and
+  RUSTSEC-2026-0184 (unsound null-pointer handling in `Remote::list()` /
+  `BlameHunk` signatures). No API impact for our usage.
+
 ## [0.4.0] - 2026-06-18
 
 ### Added

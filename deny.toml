@@ -66,7 +66,10 @@ deny = [
     # for X.509 attestation verification, which is a different (and
     # required) use case.
     { crate = "native-tls", reason = "use rustls-ring" },
-    { crate = "git2", reason = "not needed; would pull libgit2 C dep" },
+    # NOTE: git2 (libgit2) is now an intentional dependency of the
+    # `intellipilot-git` crate — it powers SSH remote operations with an
+    # in-memory key (the git repositories feature). Vendored + statically
+    # linked; the earlier ban is therefore lifted.
 ]
 skip = []
 skip-tree = []

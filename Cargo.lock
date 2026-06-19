@@ -1555,9 +1555,9 @@ dependencies = [
 
 [[package]]
 name = "git2"
-version = "0.19.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b903b73e45dc0c6c596f2d37eccece7c1c8bb6e4407b001096387c63d0d93724"
+checksum = "ddddbf932745a6be37109b6112d3ee09696106f848449069d3a57bba937ab82e"
 dependencies = [
  "bitflags",
  "libc",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-api"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ammonia",
  "assert-json-diff",
@@ -2095,7 +2095,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-auth"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "argon2",
  "base32",
@@ -2121,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "garde",
  "insta",
@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-db"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
@@ -2158,7 +2158,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-git"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64 0.22.1",
  "git2",
@@ -2169,7 +2169,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-mailer"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "intellipilot-core",
@@ -2183,7 +2183,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-storage"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-testkit"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
@@ -2346,9 +2346,9 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libgit2-sys"
-version = "0.17.0+1.8.1"
+version = "0.18.5+1.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10472326a8a6477c3c20a64547b0059e4b0d086869eee31e6d7da728a8eb7224"
+checksum = "005d6ae6eac1912906073e069f7db60b1fa98e052a68227824afe3e3a1c59ca2"
 dependencies = [
  "cc",
  "libc",

@@ -149,7 +149,7 @@ fn list_blocking(ssh_url: &str, private_key_pem: &str) -> Result<RemoteInfo, Git
     let default_branch = conn
         .default_branch()
         .ok()
-        .and_then(|buf| buf.as_str().map(strip_head_ref));
+        .and_then(|buf| buf.as_str().ok().map(strip_head_ref));
 
     let mut branches: Vec<String> = conn
         .list()
