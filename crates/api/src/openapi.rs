@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.4.8",
+        version = "0.5.0",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -101,6 +101,9 @@ use crate::problem::{FieldErrorView, Problem};
         crate::time_tracking::list_user_allowances,
         crate::time_tracking::set_user_allowance,
         crate::time_tracking::set_user_work_settings,
+        crate::issues_io::export_issues,
+        crate::issues_io::import_preview,
+        crate::issues_io::import_commit,
     ),
     components(schemas(
         LiveResponse,
@@ -240,6 +243,11 @@ use crate::problem::{FieldErrorView, Problem};
         intellipilot_core::time_tracking::TeamMemberMonth,
         intellipilot_core::time_tracking::DayMinutes,
         intellipilot_core::time_tracking::Availability,
+        crate::issues_io::ImportPreview,
+        crate::issues_io::ValueMatch,
+        crate::issues_io::ValueChoice,
+        crate::issues_io::ImportMapping,
+        crate::issues_io::ImportResult,
         intellipilot_core::time_tracking::AssignedTask,
     ))
 )]

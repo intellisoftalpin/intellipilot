@@ -69,6 +69,7 @@ comrak = { workspace = true }
 ammonia = { workspace = true }
 similar = { workspace = true }
 rust_xlsxwriter = { workspace = true }
+csv = { workspace = true }
 
 [dev-dependencies]
 intellipilot-testkit = { path = "../testkit" }

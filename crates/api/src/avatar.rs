@@ -133,36 +133,41 @@ pub async fn upload_avatar(
     };
 
     let key = avatar_key(user.user_id);
-    if auth
-        .attachments
-        .storage
-        .put(&key, bytes, &mime)
-        .await
-        .is_err()
-    {
-        return internal(&rid);
+    if let Err(e) = auth.attachments.storage.put(&key, bytes, &mime).await {
+        // Almost always a non-writable storage dir (INTELLIPILOT_STORAGE_DIR).
+        tracing::error!(error = %e, %key, "avatar storage write failed");
+        return problem(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "avatar_storage_failed",
+            "Avatar storage failed",
+            Some("could not write the avatar to storage".to_owned()),
+            &rid,
+        );
     }
 
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);
     };
-    if users::set_avatar_image(&client, user.user_id, &key, &mime)
-        .await
-        .unwrap_or(false)
-    {
-        audit::record(
-            &client,
-            Some(user.user_id),
-            "avatar_image_set",
-            Some(client_ip(&headers)),
-            Some(&user_agent(&headers)),
-            &json!({ "mime": mime }),
-        )
-        .await;
-        updated(&client, user.user_id, &rid).await
-    } else {
-        internal(&rid)
+    match users::set_avatar_image(&client, user.user_id, &key, &mime).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, &rid);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "avatar db update failed");
+            return internal(&rid);
+        }
     }
+    audit::record(
+        &client,
+        Some(user.user_id),
+        "avatar_image_set",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({ "mime": mime }),
+    )
+    .await;
+    updated(&client, user.user_id, &rid).await
 }
 
 /// Request body for setting an emoji avatar.

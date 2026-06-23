@@ -16,8 +16,8 @@ use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
     admin, attachments, auth, avatar, backlog, branding, catalog, customers, health,
-    issue_relations, me, mfa, milestones, openapi, passkeys, projects, releases, repositories,
-    search, taxonomy, time_tracking, wiki,
+    issue_relations, issues_io, me, mfa, milestones, openapi, passkeys, projects, releases,
+    repositories, search, taxonomy, time_tracking, wiki,
 };
 
 #[allow(clippy::too_many_lines)] // a flat, readable route table
@@ -233,6 +233,21 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/issues/{id}", patch(backlog::update_issue))
             .route("/api/v1/projects/{project_id}/issues/{id}", delete(backlog::delete_issue))
             .route("/api/v1/projects/{project_id}/issues/{id}/move", post(backlog::move_issue))
+            // Issue import (JIRA / IntelliPilot CSV) + export (CSV / XLSX)
+            .route(
+                "/api/v1/projects/{project_id}/issues/export",
+                get(issues_io::export_issues),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/issues/import/preview",
+                post(issues_io::import_preview)
+                    .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/issues/import",
+                post(issues_io::import_commit)
+                    .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+            )
             // Comments (polymorphic) + ref resolver
             .route("/api/v1/projects/{project_id}/{entity}/{id}/comments", get(backlog::list_comments))
             .route("/api/v1/projects/{project_id}/{entity}/{id}/comments", post(backlog::create_comment))

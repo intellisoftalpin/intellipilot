@@ -18,6 +18,7 @@ pub mod customers;
 pub mod dto;
 pub mod health;
 pub mod issue_relations;
+pub mod issues_io;
 pub mod ldap;
 pub mod markdown;
 pub mod me;
