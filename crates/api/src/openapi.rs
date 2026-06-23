@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.4.4",
+        version = "0.4.7",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -39,6 +39,10 @@ use crate::problem::{FieldErrorView, Problem};
         crate::auth::handlers::password_reset_confirm,
         crate::me::get_me,
         crate::me::patch_me,
+        crate::avatar::upload_avatar,
+        crate::avatar::set_emoji_avatar,
+        crate::avatar::delete_avatar,
+        crate::avatar::serve_avatar,
         crate::me::delete_me,
         crate::me::change_password,
         crate::me::export_me,
@@ -129,6 +133,10 @@ use crate::problem::{FieldErrorView, Problem};
         ChangeMemberRoleRequest,
         AddMemberRequest,
         intellipilot_core::user::User,
+        intellipilot_core::user::UserBrief,
+        intellipilot_core::user::ProfileCard,
+        intellipilot_core::user::OutToday,
+        crate::avatar::SetEmojiAvatarRequest,
         intellipilot_core::project::Project,
         intellipilot_core::project::Role,
         intellipilot_core::project::Membership,

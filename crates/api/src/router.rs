@@ -15,9 +15,9 @@ use crate::middleware::{rate_limit, request_id, security_headers};
 use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
-    admin, attachments, auth, backlog, branding, catalog, customers, health, issue_relations, me,
-    mfa, milestones, openapi, passkeys, projects, releases, repositories, search, taxonomy,
-    time_tracking, wiki,
+    admin, attachments, auth, avatar, backlog, branding, catalog, customers, health,
+    issue_relations, me, mfa, milestones, openapi, passkeys, projects, releases, repositories,
+    search, taxonomy, time_tracking, wiki,
 };
 
 #[allow(clippy::too_many_lines)] // a flat, readable route table
@@ -60,6 +60,16 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/me", delete(me::delete_me))
             .route("/api/v1/me/password", post(me::change_password))
             .route("/api/v1/me/export", get(me::export_me))
+            // Avatars: upload (raised body limit) / delete / emoji / serve.
+            .route(
+                "/api/v1/me/avatar",
+                delete(avatar::delete_avatar).merge(
+                    put(avatar::upload_avatar)
+                        .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024)),
+                ),
+            )
+            .route("/api/v1/me/avatar/emoji", put(avatar::set_emoji_avatar))
+            .route("/api/v1/users/{id}/avatar", get(avatar::serve_avatar))
             // Two-factor: TOTP + recovery
             .route("/api/v1/auth/2fa/verify", post(mfa::two_factor_verify))
             .route("/api/v1/me/totp/start", post(mfa::totp_start))

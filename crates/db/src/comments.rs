@@ -1,6 +1,7 @@
 //! Comment persistence (polymorphic over backlog entity kind).
 
 use intellipilot_core::backlog::Comment;
+use intellipilot_core::user::UserBrief;
 use time::OffsetDateTime;
 use tokio_postgres::Row;
 use uuid::Uuid;
@@ -8,6 +9,22 @@ use uuid::Uuid;
 use crate::DbError;
 
 const COLS: &str = "id, target_type, target_id, author_id, body, body_html, edited_at, created_at";
+
+/// The author descriptor, present only when the row was joined to `users`
+/// (the list query) and the author still exists.
+fn author_from_row(r: &Row) -> Option<UserBrief> {
+    let id: Option<Uuid> = r.get("author_id");
+    let id = id?;
+    // Absent on create/update (RETURNING without the join) → None.
+    let username = r.try_get::<_, Option<String>>("username").ok().flatten()?;
+    Some(UserBrief {
+        id,
+        username,
+        full_name: r.try_get("full_name").ok().flatten().unwrap_or_default(),
+        email: r.try_get("email").ok().flatten().unwrap_or_default(),
+        card: crate::users::card_from_row(r),
+    })
+}
 
 fn row_to_comment(r: &Row) -> Comment {
     Comment {
@@ -19,6 +36,7 @@ fn row_to_comment(r: &Row) -> Comment {
         body_html: r.get("body_html"),
         edited_at: r.get("edited_at"),
         created_at: r.get("created_at"),
+        author: author_from_row(r),
     }
 }
 
@@ -51,8 +69,15 @@ pub async fn list(
     let rows = client
         .query(
             &format!(
-                "SELECT {COLS} FROM comments \
-                 WHERE target_type=$1 AND target_id=$2 AND deleted_at IS NULL ORDER BY created_at"
+                "SELECT c.id, c.target_type, c.target_id, c.author_id, c.body, c.body_html, \
+                        c.edited_at, c.created_at, u.username, u.full_name, u.email{card}{ooo} \
+                 FROM comments c \
+                 LEFT JOIN users u ON u.id = c.author_id{join} \
+                 WHERE c.target_type=$1 AND c.target_id=$2 AND c.deleted_at IS NULL \
+                 ORDER BY c.created_at",
+                card = crate::users::CARD_COLS,
+                ooo = crate::users::OUT_TODAY_COLS,
+                join = crate::users::out_today_join("u"),
             ),
             &[&target_type, &target_id],
         )

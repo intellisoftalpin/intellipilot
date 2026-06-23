@@ -76,7 +76,7 @@ pub async fn get_me(State(state): State<AppState>, headers: HeaderMap, user: Aut
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);
     };
-    match users::find_by_id(&client, user.user_id).await {
+    match users::find_by_id_with_card(&client, user.user_id).await {
         Ok(Some(u)) => Json(u).into_response(),
         Ok(None) => not_found(&rid),
         Err(_) => internal(&rid),
@@ -128,6 +128,9 @@ pub async fn patch_me(
         full_name: req.full_name,
         lang: req.lang,
         timezone: req.timezone,
+        motto: req.motto,
+        mood_emoji: req.mood_emoji,
+        mood_text: req.mood_text,
     };
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);

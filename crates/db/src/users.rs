@@ -1,11 +1,88 @@
 //! User persistence.
 
-use intellipilot_core::user::{NewUser, NewUserWithFlags, ProfileUpdate, User};
-use time::OffsetDateTime;
+use intellipilot_core::user::{
+    NewUser, NewUserWithFlags, OutToday, ProfileCard, ProfileUpdate, User,
+};
+use time::{Date, OffsetDateTime};
 use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::DbError;
+
+/// Lateral join resolving each user's absence in effect today.
+///
+/// Computes the absence in effect *today* (UTC), expanded to its booking's full
+/// date range. `user_ref` is the SQL reference to the users row (`users` or an
+/// alias like `u`). Pair with [`OUT_TODAY_COLS`] in the SELECT list.
+#[must_use]
+pub fn out_today_join(user_ref: &str) -> String {
+    format!(
+        " LEFT JOIN LATERAL ( \
+            SELECT te.kind, \
+                   COALESCE(bk.start_date, te.entry_date) AS start_date, \
+                   COALESCE(bk.end_date, te.entry_date) AS end_date \
+            FROM time_entries te \
+            LEFT JOIN LATERAL ( \
+                SELECT min(b.entry_date) AS start_date, max(b.entry_date) AS end_date \
+                FROM time_entries b WHERE b.booking_id = te.booking_id \
+            ) bk ON te.booking_id IS NOT NULL \
+            WHERE te.user_id = {user_ref}.id AND te.kind <> 'work' \
+              AND te.entry_date = (now() AT TIME ZONE 'UTC')::date \
+            ORDER BY te.created_at LIMIT 1 \
+        ) ooo ON true"
+    )
+}
+
+/// Columns produced by [`out_today_join`], for the SELECT list.
+pub const OUT_TODAY_COLS: &str = ", ooo.kind AS out_today_kind, ooo.start_date AS out_today_start, \
+       ooo.end_date AS out_today_end";
+
+/// Avatar / motto / mood display columns. Mood auto-expires: it is blanked once
+/// the UTC day it was set on has passed. Always selected (cheap, no joins).
+pub const CARD_COLS: &str = ", avatar_kind, COALESCE(avatar_emoji, '') AS avatar_emoji, \
+       avatar_updated_at, motto, \
+       CASE WHEN mood_set_on = (now() AT TIME ZONE 'UTC')::date \
+            THEN COALESCE(mood_emoji, '') ELSE '' END AS mood_emoji, \
+       CASE WHEN mood_set_on = (now() AT TIME ZONE 'UTC')::date \
+            THEN mood_text ELSE '' END AS mood_text";
+
+/// Build the out-of-office descriptor from the optional lateral-join columns
+/// (absent on queries that don't include [`out_today_join`] → `None`).
+#[must_use]
+pub fn out_today_from_row(row: &Row) -> Option<OutToday> {
+    let kind = row
+        .try_get::<_, Option<String>>("out_today_kind")
+        .ok()
+        .flatten()?;
+    let start = row
+        .try_get::<_, Option<Date>>("out_today_start")
+        .ok()
+        .flatten()?;
+    let end = row
+        .try_get::<_, Option<Date>>("out_today_end")
+        .ok()
+        .flatten()?;
+    Some(OutToday {
+        kind,
+        start_date: start,
+        end_date: end,
+    })
+}
+
+/// Build the profile card (avatar + motto + mood + out-of-office) from a row
+/// that selected [`CARD_COLS`] (and optionally [`OUT_TODAY_COLS`]).
+#[must_use]
+pub fn card_from_row(row: &Row) -> ProfileCard {
+    ProfileCard {
+        avatar_kind: row.get("avatar_kind"),
+        avatar_emoji: row.get("avatar_emoji"),
+        avatar_updated_at: row.get("avatar_updated_at"),
+        motto: row.get("motto"),
+        mood_emoji: row.get("mood_emoji"),
+        mood_text: row.get("mood_text"),
+        out_today: out_today_from_row(row),
+    }
+}
 
 /// Outcome of an admin update that may be refused by a domain invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,12 +122,19 @@ fn row_to_user(row: &Row) -> User {
         must_change_password: row.get("must_change_password"),
         auth_source: row.get("auth_source"),
         created_at: row.get("created_at"),
+        card: card_from_row(row),
     }
 }
 
 const USER_COLS: &str = "id, email, username, full_name, lang, timezone, \
                          is_active, is_superadmin, must_change_password, \
-                         auth_source, created_at";
+                         auth_source, created_at\
+                         , avatar_kind, COALESCE(avatar_emoji, '') AS avatar_emoji, \
+                         avatar_updated_at, motto, \
+                         CASE WHEN mood_set_on = (now() AT TIME ZONE 'UTC')::date \
+                              THEN COALESCE(mood_emoji, '') ELSE '' END AS mood_emoji, \
+                         CASE WHEN mood_set_on = (now() AT TIME ZONE 'UTC')::date \
+                              THEN mood_text ELSE '' END AS mood_text";
 
 /// Insert a new user. Email is normalized before storage.
 pub async fn create(client: &deadpool_postgres::Client, new: &NewUser) -> Result<User, DbError> {
@@ -189,20 +273,143 @@ pub async fn update_profile(
     id: Uuid,
     upd: &ProfileUpdate,
 ) -> Result<Option<User>, DbError> {
+    // Setting either mood field replaces both and stamps today (UTC) so the
+    // mood auto-expires; leaving both `None` keeps the existing mood.
+    let set_mood = upd.mood_emoji.is_some() || upd.mood_text.is_some();
+    let mood_emoji = upd.mood_emoji.clone().unwrap_or_default();
+    let mood_text = upd.mood_text.clone().unwrap_or_default();
     let row = client
         .query_opt(
             &format!(
                 "UPDATE users SET \
                    full_name = COALESCE($2, full_name), \
                    lang      = COALESCE($3, lang), \
-                   timezone  = COALESCE($4, timezone) \
+                   timezone  = COALESCE($4, timezone), \
+                   motto     = COALESCE($5, motto), \
+                   mood_emoji  = CASE WHEN $7 THEN $6 ELSE mood_emoji END, \
+                   mood_text   = CASE WHEN $7 THEN $8 ELSE mood_text END, \
+                   mood_set_on = CASE WHEN $7 THEN (now() AT TIME ZONE 'UTC')::date \
+                                      ELSE mood_set_on END \
                  WHERE id = $1 AND deleted_at IS NULL \
                  RETURNING {USER_COLS}"
             ),
-            &[&id, &upd.full_name, &upd.lang, &upd.timezone],
+            &[
+                &id,
+                &upd.full_name,
+                &upd.lang,
+                &upd.timezone,
+                &upd.motto,
+                &mood_emoji,
+                &set_mood,
+                &mood_text,
+            ],
         )
         .await?;
     Ok(row.as_ref().map(row_to_user))
+}
+
+/// Fetch a user by id with the out-of-office badge resolved (for `/me`).
+pub async fn find_by_id_with_card(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+) -> Result<Option<User>, DbError> {
+    let row = client
+        .query_opt(
+            &format!(
+                "SELECT {USER_COLS}{OUT_TODAY_COLS} FROM users{join} \
+                 WHERE users.id = $1 AND users.deleted_at IS NULL",
+                join = out_today_join("users"),
+            ),
+            &[&id],
+        )
+        .await?;
+    Ok(row.as_ref().map(row_to_user))
+}
+
+/// The stored avatar object (key + mime) when the user's avatar is an uploaded
+/// image, else `None`. For the avatar-serving endpoint.
+pub async fn avatar_object(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+) -> Result<Option<(String, String)>, DbError> {
+    let row = client
+        .query_opt(
+            "SELECT avatar_storage_key, avatar_mime FROM users \
+             WHERE id = $1 AND avatar_kind = 'image' AND deleted_at IS NULL",
+            &[&id],
+        )
+        .await?;
+    Ok(row.and_then(|r| {
+        let key: Option<String> = r.get("avatar_storage_key");
+        let mime: Option<String> = r.get("avatar_mime");
+        match (key, mime) {
+            (Some(k), Some(m)) => Some((k, m)),
+            _ => None,
+        }
+    }))
+}
+
+/// The user's current avatar storage key (any kind), for cleanup before
+/// replacing or clearing it.
+pub async fn current_avatar_key(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+) -> Result<Option<String>, DbError> {
+    let row = client
+        .query_opt(
+            "SELECT avatar_storage_key FROM users WHERE id = $1 AND deleted_at IS NULL",
+            &[&id],
+        )
+        .await?;
+    Ok(row.and_then(|r| r.get::<_, Option<String>>("avatar_storage_key")))
+}
+
+/// Point the user's avatar at an uploaded image object.
+pub async fn set_avatar_image(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+    storage_key: &str,
+    mime: &str,
+) -> Result<bool, DbError> {
+    let n = client
+        .execute(
+            "UPDATE users SET avatar_kind = 'image', avatar_storage_key = $2, \
+                 avatar_mime = $3, avatar_emoji = NULL, avatar_updated_at = now() \
+             WHERE id = $1 AND deleted_at IS NULL",
+            &[&id, &storage_key, &mime],
+        )
+        .await?;
+    Ok(n > 0)
+}
+
+/// Set the user's avatar to an emoji.
+pub async fn set_avatar_emoji(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+    emoji: &str,
+) -> Result<bool, DbError> {
+    let n = client
+        .execute(
+            "UPDATE users SET avatar_kind = 'emoji', avatar_emoji = $2, \
+                 avatar_storage_key = NULL, avatar_mime = NULL, avatar_updated_at = now() \
+             WHERE id = $1 AND deleted_at IS NULL",
+            &[&id, &emoji],
+        )
+        .await?;
+    Ok(n > 0)
+}
+
+/// Reset the user's avatar to the default (initials).
+pub async fn clear_avatar(client: &deadpool_postgres::Client, id: Uuid) -> Result<bool, DbError> {
+    let n = client
+        .execute(
+            "UPDATE users SET avatar_kind = 'default', avatar_storage_key = NULL, \
+                 avatar_mime = NULL, avatar_emoji = NULL, avatar_updated_at = now() \
+             WHERE id = $1 AND deleted_at IS NULL",
+            &[&id],
+        )
+        .await?;
+    Ok(n > 0)
 }
 
 /// Store (or replace) the encrypted TOTP secret, leaving it unconfirmed.
@@ -631,15 +838,16 @@ pub async fn list(
     let rows = client
         .query(
             &format!(
-                "SELECT {USER_COLS} FROM users \
-                 WHERE deleted_at IS NULL AND ( \
+                "SELECT {USER_COLS}{OUT_TODAY_COLS} FROM users{join} \
+                 WHERE users.deleted_at IS NULL AND ( \
                    $1::text IS NULL OR \
-                   lower(email)     LIKE $1 OR \
-                   lower(username)  LIKE $1 OR \
-                   lower(full_name) LIKE $1 \
+                   lower(users.email)     LIKE $1 OR \
+                   lower(users.username)  LIKE $1 OR \
+                   lower(users.full_name) LIKE $1 \
                  ) \
-                 ORDER BY created_at DESC \
-                 LIMIT $2 OFFSET $3"
+                 ORDER BY users.created_at DESC \
+                 LIMIT $2 OFFSET $3",
+                join = out_today_join("users"),
             ),
             &[&q_pat, &limit, &offset],
         )

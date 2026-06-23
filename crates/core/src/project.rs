@@ -100,6 +100,10 @@ pub struct Membership {
     pub role_slug: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Avatar + motto + mood + out-of-office, so every place that lists a
+    /// member can render the avatar and hover card without extra calls.
+    #[serde(flatten)]
+    pub card: crate::user::ProfileCard,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]

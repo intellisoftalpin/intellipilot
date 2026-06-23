@@ -10,6 +10,7 @@
 pub mod admin;
 pub mod attachments;
 pub mod auth;
+pub mod avatar;
 pub mod backlog;
 pub mod branding;
 pub mod catalog;

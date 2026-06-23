@@ -67,6 +67,7 @@ fn row_to_membership(row: &Row) -> Membership {
         role_id: row.get("role_id"),
         role_slug: row.get("role_slug"),
         created_at: row.get("created_at"),
+        card: crate::users::card_from_row(row),
     }
 }
 
@@ -76,12 +77,17 @@ pub async fn list_for_project(
 ) -> Result<Vec<Membership>, DbError> {
     let rows = client
         .query(
-            "SELECT m.id, m.project_id, m.user_id, u.username, u.full_name, u.email, \
-                    m.role_id, r.slug AS role_slug, m.created_at \
-             FROM memberships m \
-             JOIN roles r ON r.id = m.role_id \
-             JOIN users u ON u.id = m.user_id \
-             WHERE m.project_id = $1 ORDER BY m.created_at",
+            &format!(
+                "SELECT m.id, m.project_id, m.user_id, u.username, u.full_name, u.email, \
+                        m.role_id, r.slug AS role_slug, m.created_at{card}{ooo} \
+                 FROM memberships m \
+                 JOIN roles r ON r.id = m.role_id \
+                 JOIN users u ON u.id = m.user_id{join} \
+                 WHERE m.project_id = $1 ORDER BY m.created_at",
+                card = crate::users::CARD_COLS,
+                ooo = crate::users::OUT_TODAY_COLS,
+                join = crate::users::out_today_join("u"),
+            ),
             &[&project_id],
         )
         .await?;

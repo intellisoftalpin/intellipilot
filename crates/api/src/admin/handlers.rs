@@ -407,8 +407,7 @@ pub async fn update_user(
     if let Some(full_name) = req.full_name.as_deref() {
         let upd = intellipilot_core::user::ProfileUpdate {
             full_name: Some(full_name.to_owned()),
-            lang: None,
-            timezone: None,
+            ..Default::default()
         };
         match users::update_profile(&client, id, &upd).await {
             Ok(None) => {

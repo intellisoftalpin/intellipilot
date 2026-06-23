@@ -58,6 +58,17 @@ pub struct ProfileUpdateRequest {
     #[garde(length(max = 64))]
     #[serde(default)]
     pub timezone: Option<String>,
+    #[garde(length(max = 140))]
+    #[serde(default)]
+    pub motto: Option<String>,
+    /// Daily mood — an emoji + short status. Sending either stamps "today" so
+    /// it auto-expires; send empty strings to clear.
+    #[garde(length(max = 16))]
+    #[serde(default)]
+    pub mood_emoji: Option<String>,
+    #[garde(length(max = 16))]
+    #[serde(default)]
+    pub mood_text: Option<String>,
 }
 
 /// Self-service password change for the logged-in user. Local accounts only;

@@ -205,6 +205,10 @@ pub struct Comment {
     pub edited_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// The author's avatar + identity for rendering (None for a deleted user
+    /// or on the create response, which isn't joined).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<crate::user::UserBrief>,
 }
 
 /// Relationship type between two issues. Inverses (*is-blocked-by*,
