@@ -16,7 +16,8 @@ use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
     admin, attachments, auth, backlog, branding, catalog, customers, health, issue_relations, me,
-    mfa, milestones, openapi, passkeys, projects, releases, repositories, search, taxonomy, wiki,
+    mfa, milestones, openapi, passkeys, projects, releases, repositories, search, taxonomy,
+    time_tracking, wiki,
 };
 
 #[allow(clippy::too_many_lines)] // a flat, readable route table
@@ -314,6 +315,82 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/wiki/{wiki_id}/revisions/{rev}/restore", post(wiki::restore))
             // Unified search
             .route("/api/v1/search", get(search::search))
+            // Time tracking — personal (own timesheet, absences, export)
+            .route(
+                "/api/v1/me/assigned-issues",
+                get(time_tracking::list_my_assigned_issues),
+            )
+            .route(
+                "/api/v1/me/time-entries",
+                get(time_tracking::list_my_entries).post(time_tracking::log_my_time),
+            )
+            .route(
+                "/api/v1/me/time-entries/export",
+                get(time_tracking::export_my_time),
+            )
+            .route(
+                "/api/v1/me/time-entries/{id}",
+                patch(time_tracking::update_my_entry).delete(time_tracking::delete_my_entry),
+            )
+            .route("/api/v1/me/absences", post(time_tracking::book_absence))
+            .route(
+                "/api/v1/me/absences/{booking_id}",
+                delete(time_tracking::delete_absence_booking),
+            )
+            .route(
+                "/api/v1/me/timesheet/summary",
+                get(time_tracking::my_timesheet_summary),
+            )
+            .route(
+                "/api/v1/me/vacation-balance",
+                get(time_tracking::my_vacation_balance),
+            )
+            // Time tracking — project / team
+            .route(
+                "/api/v1/projects/{project_id}/time-entries",
+                get(time_tracking::list_project_time).post(time_tracking::admin_log_time),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/time-entries/export",
+                get(time_tracking::export_project_time),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/time-entries/{entry_id}",
+                patch(time_tracking::admin_update_entry).delete(time_tracking::admin_delete_entry),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/time/summary",
+                get(time_tracking::project_team_month),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/time/locks",
+                get(time_tracking::list_locks).post(time_tracking::lock_period),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/time/locks/{year}/{month}",
+                delete(time_tracking::unlock_period),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/availability",
+                get(time_tracking::project_availability),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/issues/{id}/time",
+                get(time_tracking::issue_time),
+            )
+            // Time tracking — superadmin (vacation allowances + work settings)
+            .route(
+                "/api/v1/admin/users/{id}/vacation-allowances",
+                get(time_tracking::list_user_allowances),
+            )
+            .route(
+                "/api/v1/admin/users/{id}/vacation-allowances/{year}",
+                put(time_tracking::set_user_allowance),
+            )
+            .route(
+                "/api/v1/admin/users/{id}/work-settings",
+                patch(time_tracking::set_user_work_settings),
+            )
             .layer(axum::middleware::from_fn_with_state(
                 RateLimiter::default(),
                 rate_limit::layer,

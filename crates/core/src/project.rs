@@ -93,6 +93,9 @@ pub struct Membership {
     pub id: Uuid,
     pub project_id: Uuid,
     pub user_id: Uuid,
+    pub username: String,
+    pub full_name: String,
+    pub email: String,
     pub role_id: Uuid,
     pub role_slug: String,
     #[serde(with = "time::serde::rfc3339")]

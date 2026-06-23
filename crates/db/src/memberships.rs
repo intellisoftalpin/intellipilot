@@ -61,6 +61,9 @@ fn row_to_membership(row: &Row) -> Membership {
         id: row.get("id"),
         project_id: row.get("project_id"),
         user_id: row.get("user_id"),
+        username: row.get("username"),
+        full_name: row.get("full_name"),
+        email: row.get("email"),
         role_id: row.get("role_id"),
         role_slug: row.get("role_slug"),
         created_at: row.get("created_at"),
@@ -73,8 +76,11 @@ pub async fn list_for_project(
 ) -> Result<Vec<Membership>, DbError> {
     let rows = client
         .query(
-            "SELECT m.id, m.project_id, m.user_id, m.role_id, r.slug AS role_slug, m.created_at \
-             FROM memberships m JOIN roles r ON r.id = m.role_id \
+            "SELECT m.id, m.project_id, m.user_id, u.username, u.full_name, u.email, \
+                    m.role_id, r.slug AS role_slug, m.created_at \
+             FROM memberships m \
+             JOIN roles r ON r.id = m.role_id \
+             JOIN users u ON u.id = m.user_id \
              WHERE m.project_id = $1 ORDER BY m.created_at",
             &[&project_id],
         )

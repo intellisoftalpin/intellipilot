@@ -29,6 +29,26 @@ pub mod option {
     }
 }
 
+/// Required `Date` ⇄ ISO date string (`YYYY-MM-DD`).
+pub mod required {
+    use serde::{Deserialize, Deserializer, Serializer, de};
+    use time::Date;
+    use time::format_description::FormatItem;
+    use time::macros::format_description;
+
+    const FMT: &[FormatItem<'_>] = format_description!("[year]-[month]-[day]");
+
+    pub fn serialize<S: Serializer>(v: &Date, s: S) -> Result<S::Ok, S::Error> {
+        let rendered = v.format(&FMT).map_err(serde::ser::Error::custom)?;
+        s.serialize_str(&rendered)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Date, D::Error> {
+        let s = String::deserialize(d)?;
+        Date::parse(&s, &FMT).map_err(de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

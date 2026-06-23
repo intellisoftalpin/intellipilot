@@ -68,6 +68,7 @@ infer = { workspace = true }
 comrak = { workspace = true }
 ammonia = { workspace = true }
 similar = { workspace = true }
+rust_xlsxwriter = { workspace = true }
 
 [dev-dependencies]
 intellipilot-testkit = { path = "../testkit" }

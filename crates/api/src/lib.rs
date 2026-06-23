@@ -34,6 +34,7 @@ pub mod router;
 pub mod search;
 pub mod state;
 pub mod taxonomy;
+pub mod time_tracking;
 pub mod wiki;
 
 pub use router::build_router;

@@ -785,6 +785,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-utils"
+version = "0.8.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2048,7 +2054,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-api"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "ammonia",
  "assert-json-diff",
@@ -2079,6 +2085,7 @@ dependencies = [
  "proptest",
  "rand 0.8.6",
  "reqwest",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
  "serde_with",
@@ -2104,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-auth"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "argon2",
  "base32",
@@ -2130,7 +2137,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-core"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "garde",
  "insta",
@@ -2147,7 +2154,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-db"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
@@ -2167,7 +2174,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-git"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "base64 0.22.1",
  "git2",
@@ -2178,7 +2185,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-mailer"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "async-trait",
  "intellipilot-core",
@@ -2192,7 +2199,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-storage"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2209,7 +2216,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-testkit"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
@@ -3200,9 +3207,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -3564,6 +3571,15 @@ checksum = "5bcdef0be6fe7f6fa333b1073c949729274b05f123a0ad7efcb8efd878e5c3b1"
 dependencies = [
  "sha2 0.10.9",
  "walkdir",
+]
+
+[[package]]
+name = "rust_xlsxwriter"
+version = "0.79.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c743cb9f2a4524676020e26ee5f298445a82d882b09956811b1e78ca7e42b440"
+dependencies = [
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -4786,7 +4802,7 @@ dependencies = [
  "serde_json",
  "url",
  "utoipa",
- "zip",
+ "zip 3.0.0",
 ]
 
 [[package]]
@@ -5615,6 +5631,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zip"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "crossbeam-utils",
+ "displaydoc",
+ "flate2",
+ "indexmap 2.14.0",
+ "memchr",
+ "thiserror 2.0.18",
+ "zopfli",
 ]
 
 [[package]]

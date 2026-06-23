@@ -21,5 +21,6 @@ pub mod repo;
 pub mod search;
 pub mod serde_date;
 pub mod taxonomy;
+pub mod time_tracking;
 pub mod user;
 pub mod wiki;

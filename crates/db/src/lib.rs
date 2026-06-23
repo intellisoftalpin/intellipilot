@@ -36,6 +36,7 @@ pub mod search;
 pub mod sessions;
 pub mod ssh_keys;
 pub mod taxonomy;
+pub mod time_tracking;
 pub mod users;
 pub mod webauthn;
 pub mod wiki;

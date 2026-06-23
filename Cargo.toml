@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.3"
+version = "0.4.4"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -105,6 +105,10 @@ base64 = "0.22"
 comrak = { version = "0.31", default-features = false }
 ammonia = "4"
 similar = "2"
+
+# Spreadsheet export (native .xlsx; CSV is hand-built). Pure-Rust deflate
+# (miniz_oxide) — no C zlib dependency.
+rust_xlsxwriter = { version = "0.79", default-features = false }
 
 # Misc
 config = { version = "0.14", default-features = false, features = ["toml", "yaml"] }

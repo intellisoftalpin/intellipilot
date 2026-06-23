@@ -88,11 +88,21 @@ pub enum Permission {
     AttachmentCreate,
     #[serde(rename = "attachment.delete")]
     AttachmentDelete,
+    // Time tracking
+    /// Log / edit / delete your own worked time in the project.
+    #[serde(rename = "time.log")]
+    TimeLog,
+    /// See the whole team's timesheet in the project.
+    #[serde(rename = "time.view_all")]
+    TimeViewAll,
+    /// Correct other members' entries and lock/unlock project-months.
+    #[serde(rename = "time.manage")]
+    TimeManage,
 }
 
 impl Permission {
     /// Every permission in catalog order.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 35] = [
         Self::ProjectView,
         Self::ProjectModify,
         Self::ProjectDelete,
@@ -125,6 +135,9 @@ impl Permission {
         Self::CommentModerate,
         Self::AttachmentCreate,
         Self::AttachmentDelete,
+        Self::TimeLog,
+        Self::TimeViewAll,
+        Self::TimeManage,
     ];
 
     /// Stable wire string for this permission.
@@ -165,6 +178,9 @@ impl Permission {
             Self::CommentModerate => "comment.moderate",
             Self::AttachmentCreate => "attachment.create",
             Self::AttachmentDelete => "attachment.delete",
+            Self::TimeLog => "time.log",
+            Self::TimeViewAll => "time.view_all",
+            Self::TimeManage => "time.manage",
         }
     }
 }
@@ -193,7 +209,7 @@ fn all_view() -> Vec<Permission> {
 fn developer_perms() -> Vec<Permission> {
     use Permission::{
         AttachmentCreate, AttachmentDelete, CommentCreate, EpicCreate, EpicModify, IssueCreate,
-        IssueModify, MilestoneCreate, MilestoneModify, WikiCreate, WikiModify,
+        IssueModify, MilestoneCreate, MilestoneModify, TimeLog, WikiCreate, WikiModify,
     };
     let mut perms = all_view();
     perms.extend([
@@ -208,6 +224,7 @@ fn developer_perms() -> Vec<Permission> {
         CommentCreate,
         AttachmentCreate,
         AttachmentDelete,
+        TimeLog,
     ]);
     perms.sort_unstable();
     perms.dedup();
@@ -220,7 +237,7 @@ fn product_owner_perms() -> Vec<Permission> {
     use Permission::{
         CommentModerate, EpicDelete, IssueDelete, MemberAdd, MemberModifyRole, MemberRemove,
         MemberView, MilestoneDelete, ProjectModify, RoleCreate, RoleDelete, RoleModify, RoleView,
-        WikiDelete,
+        TimeViewAll, WikiDelete,
     };
     let mut perms = developer_perms();
     perms.extend([
@@ -238,6 +255,7 @@ fn product_owner_perms() -> Vec<Permission> {
         MilestoneDelete,
         WikiDelete,
         CommentModerate,
+        TimeViewAll,
     ]);
     perms.sort_unstable();
     perms.dedup();
@@ -294,7 +312,7 @@ mod tests {
                 p.as_str()
             );
         }
-        assert_eq!(Permission::ALL.len(), 32);
+        assert_eq!(Permission::ALL.len(), 35);
     }
 
     #[test]
