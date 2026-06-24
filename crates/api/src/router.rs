@@ -15,7 +15,7 @@ use crate::middleware::{rate_limit, request_id, security_headers};
 use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
-    admin, attachments, auth, avatar, backlog, branding, catalog, customers, health,
+    admin, attachments, auth, avatar, backlog, branding, catalog, customers, dashboard, health,
     issue_relations, issues_io, me, mfa, milestones, openapi, passkeys, projects, releases,
     repositories, search, taxonomy, time_tracking, wiki,
 };
@@ -55,6 +55,7 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/auth/password/reset/confirm",
                 post(auth::handlers::password_reset_confirm),
             )
+            .route("/api/v1/me/dashboard", get(dashboard::get_home))
             .route("/api/v1/me", get(me::get_me))
             .route("/api/v1/me", patch(me::patch_me))
             .route("/api/v1/me", delete(me::delete_me))
@@ -101,6 +102,10 @@ pub fn build_router(state: AppState) -> Router {
             // Projects, roles, members, invitations
             .route("/api/v1/projects", post(projects::create_project))
             .route("/api/v1/projects", get(projects::list_projects))
+            .route(
+                "/api/v1/projects/{project_id}/dashboard",
+                get(dashboard::get_project),
+            )
             .route("/api/v1/projects/{project_id}", get(projects::get_project))
             .route("/api/v1/projects/{project_id}", patch(projects::update_project))
             .route("/api/v1/projects/{project_id}", delete(projects::delete_project))

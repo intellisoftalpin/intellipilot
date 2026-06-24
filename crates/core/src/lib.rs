@@ -11,6 +11,7 @@ pub mod attachment;
 pub mod backlog;
 pub mod catalog;
 pub mod customer;
+pub mod dashboard;
 pub mod error;
 pub mod ids;
 pub mod milestone;

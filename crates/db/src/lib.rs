@@ -12,6 +12,7 @@ pub mod component_releases;
 pub mod component_repositories;
 pub mod components;
 pub mod customers;
+pub mod dashboard;
 pub mod history;
 pub mod idempotency;
 pub mod invitations;

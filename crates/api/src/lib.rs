@@ -15,6 +15,7 @@ pub mod backlog;
 pub mod branding;
 pub mod catalog;
 pub mod customers;
+pub mod dashboard;
 pub mod dto;
 pub mod health;
 pub mod issue_relations;
