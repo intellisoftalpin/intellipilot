@@ -43,7 +43,7 @@ pub fn hash_token(raw: &str) -> String {
     clippy::cast_possible_truncation,
     clippy::cast_lossless
 )]
-fn base64url(bytes: &[u8]) -> String {
+pub(crate) fn base64url(bytes: &[u8]) -> String {
     // URL-safe, no padding. Hand-rolled to avoid pulling a base64 crate into
     // the auth surface.
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";

@@ -4,6 +4,7 @@
 //! opaque refresh tokens.
 //! Phase 2: TOTP, recovery codes, secret encryption, WebAuthn ceremonies.
 
+pub mod app_token;
 pub mod password;
 pub mod recovery;
 pub mod refresh;

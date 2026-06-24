@@ -3,6 +3,8 @@
 
 use garde::Validate;
 use intellipilot_core::activity::ActivityEvent;
+use intellipilot_core::app_token::AppToken;
+use intellipilot_core::perms::Permission;
 use intellipilot_core::user::User;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -124,6 +126,49 @@ pub struct PendingInvitation {
     pub expires_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+}
+
+// ---------------------------------------------------------------------------
+// App tokens (V004)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct CreateAppTokenRequest {
+    #[garde(length(min = 1, max = 128))]
+    pub name: String,
+    /// Granted permissions (project-data only).
+    #[garde(skip)]
+    #[serde(default)]
+    pub permissions: Vec<Permission>,
+    /// Projects the token may act in.
+    #[garde(skip)]
+    #[serde(default)]
+    pub project_ids: Vec<Uuid>,
+    /// Optional expiry; absent = never expires.
+    #[garde(skip)]
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+}
+
+/// One-time creation response. The raw `secret` is delivered exactly once and
+/// never stored — only its hash is kept server-side.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateAppTokenResponse {
+    pub token: AppToken,
+    pub secret: String,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct UpdateAppTokenRequest {
+    #[garde(length(min = 1, max = 128))]
+    #[serde(default)]
+    pub name: Option<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub permissions: Option<Vec<Permission>>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub project_ids: Option<Vec<Uuid>>,
 }
 
 // ---------------------------------------------------------------------------

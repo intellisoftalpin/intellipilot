@@ -176,7 +176,7 @@ impl FromRequestParts<AppState> for ProjectContext {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
         let rid = request_id(&parts.headers);
         let auth = state.auth.as_ref().ok_or_else(|| internal(&rid))?;
-        let user = AuthUser::from_request_parts(parts, state).await?;
+        let caller = crate::auth::authenticate(parts, state).await?;
 
         let params = Path::<HashMap<String, String>>::from_request_parts(parts, state)
             .await
@@ -191,26 +191,55 @@ impl FromRequestParts<AppState> for ProjectContext {
             .await
             .map_err(|_| internal(&rid))?
             .ok_or_else(|| not_found(&rid))?;
-        let access = memdb::access(&client, project_id, user.user_id)
-            .await
-            .map_err(|_| internal(&rid))?;
-        let is_superadmin = udb::is_active_superadmin(&client, user.user_id)
-            .await
-            .unwrap_or(false);
 
-        // Private projects are hidden from non-members — but a superadmin sees
-        // everything.
-        if project.visibility == Visibility::Private && access.is_none() && !is_superadmin {
-            return Err(not_found(&rid));
+        match caller {
+            crate::auth::Caller::User(user_id) => {
+                let access = memdb::access(&client, project_id, user_id)
+                    .await
+                    .map_err(|_| internal(&rid))?;
+                let is_superadmin = udb::is_active_superadmin(&client, user_id)
+                    .await
+                    .unwrap_or(false);
+
+                // Private projects are hidden from non-members — but a
+                // superadmin sees everything.
+                if project.visibility == Visibility::Private && access.is_none() && !is_superadmin {
+                    return Err(not_found(&rid));
+                }
+
+                Ok(Self {
+                    project,
+                    actor_id: user_id,
+                    access,
+                    is_superadmin,
+                    rid,
+                })
+            }
+            // An app token authenticates as INTELLIBOT. Its access is the
+            // granted permission set — but only inside the projects it is
+            // scoped to. Out of scope it gets no access (→ 403 on require), and
+            // a private out-of-scope project stays hidden (404).
+            crate::auth::Caller::AppToken(tok) => {
+                let in_scope = tok.project_ids.contains(&project_id);
+                if project.visibility == Visibility::Private && !in_scope {
+                    return Err(not_found(&rid));
+                }
+                let access = in_scope.then(|| MemberAccess {
+                    membership_id: Uuid::nil(),
+                    role_id: Uuid::nil(),
+                    role_slug: "app_token".to_owned(),
+                    is_admin: false,
+                    permissions: tok.permissions,
+                });
+                Ok(Self {
+                    project,
+                    actor_id: intellipilot_core::app_token::INTELLIBOT_USER_ID,
+                    access,
+                    is_superadmin: false,
+                    rid,
+                })
+            }
         }
-
-        Ok(Self {
-            project,
-            actor_id: user.user_id,
-            access,
-            is_superadmin,
-            rid,
-        })
     }
 }
 

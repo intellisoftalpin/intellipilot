@@ -11,9 +11,11 @@ use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use garde::Validate;
+use intellipilot_auth::app_token;
 use intellipilot_auth::password::hash_password;
 use intellipilot_auth::refresh;
 use intellipilot_core::user::{NewUser, NewUserWithFlags};
+use intellipilot_db::app_tokens as appdb;
 use intellipilot_db::ldap_settings::{self, LdapSettingsUpdate};
 use intellipilot_db::notification_settings::{self, NotificationSettingsUpdate};
 use intellipilot_db::platform_invitations::{self, PlatformInviteRole};
@@ -28,10 +30,11 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::admin::dto::{
-    CreateInvitationRequest, CreateInvitationResponse, CreateUserRequest, CreateUserResponse,
-    LdapSettingsResponse, NotificationSettingsResponse, NotificationTestResponse,
-    PasswordResetIssuedResponse, PendingInvitation, PlatformSettingsResponse, TestLdapRequest,
-    TestLdapResponse, TestMailRequest, UpdateBrandingRequest, UpdateLdapSettingsRequest,
+    CreateAppTokenRequest, CreateAppTokenResponse, CreateInvitationRequest,
+    CreateInvitationResponse, CreateUserRequest, CreateUserResponse, LdapSettingsResponse,
+    NotificationSettingsResponse, NotificationTestResponse, PasswordResetIssuedResponse,
+    PendingInvitation, PlatformSettingsResponse, TestLdapRequest, TestLdapResponse,
+    TestMailRequest, UpdateAppTokenRequest, UpdateBrandingRequest, UpdateLdapSettingsRequest,
     UpdateNotificationSettingsRequest, UpdateSettingsRequest, UpdateUserRequest, UserListResponse,
 };
 use crate::auth::{SuperadminUser, client_ip, request_id, user_agent};
@@ -697,6 +700,281 @@ pub async fn revoke_invitation(
                 Some(client_ip(&headers)),
                 Some(&user_agent(&headers)),
                 &json!({ "invitation_id": id }),
+            )
+            .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, &rid),
+        Err(_) => internal(&rid),
+    }
+}
+
+// ===========================================================================
+// App tokens (V004)
+// ===========================================================================
+
+/// True when every id in `ids` names an existing project. `ids` must be
+/// de-duplicated by the caller.
+async fn projects_all_exist(
+    client: &deadpool_postgres::Client,
+    ids: &[Uuid],
+) -> Result<bool, intellipilot_db::DbError> {
+    if ids.is_empty() {
+        return Ok(true);
+    }
+    let row = client
+        .query_one(
+            "SELECT count(*)::bigint AS n FROM projects WHERE id = ANY($1)",
+            &[&ids],
+        )
+        .await?;
+    Ok(usize::try_from(row.get::<_, i64>("n")).unwrap_or(0) == ids.len())
+}
+
+fn unknown_project(rid: &str) -> Response {
+    problem(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "unknown_project",
+        "Unknown project",
+        Some("one or more project_ids do not exist".to_owned()),
+        rid,
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/app-tokens",
+    request_body = CreateAppTokenRequest,
+    responses(
+        (status = 201, body = CreateAppTokenResponse),
+        (status = 401),
+        (status = 403),
+        (status = 422),
+    )
+)]
+pub async fn create_app_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    body: Result<Json<CreateAppTokenRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let req = match parse_json(body, &rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(report) = req.validate() {
+        return validation_problem(&report, &rid);
+    }
+    let mut project_ids = req.project_ids.clone();
+    project_ids.sort();
+    project_ids.dedup();
+
+    let Ok(mut client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    match projects_all_exist(&client, &project_ids).await {
+        Ok(true) => {}
+        Ok(false) => return unknown_project(&rid),
+        Err(_) => return internal(&rid),
+    }
+
+    let minted = app_token::generate();
+    let Ok(id) = appdb::create(
+        &mut client,
+        &req.name,
+        &minted.hash,
+        &minted.prefix,
+        &minted.last4,
+        &req.permissions,
+        Some(admin.user_id),
+        req.expires_at,
+        &project_ids,
+    )
+    .await
+    else {
+        return internal(&rid);
+    };
+    let Ok(Some(token)) = appdb::get(&client, id).await else {
+        return internal(&rid);
+    };
+
+    audit::record(
+        &client,
+        Some(admin.user_id),
+        "admin_app_token_created",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({ "app_token_id": id, "name": req.name }),
+    )
+    .await;
+
+    (
+        StatusCode::CREATED,
+        Json(CreateAppTokenResponse {
+            token,
+            secret: minted.raw,
+        }),
+    )
+        .into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/app-tokens",
+    responses(
+        (status = 200, body = Vec<intellipilot_core::app_token::AppToken>),
+        (status = 401),
+        (status = 403),
+    )
+)]
+pub async fn list_app_tokens(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    appdb::list(&client)
+        .await
+        .map_or_else(|_| internal(&rid), |items| Json(items).into_response())
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/app-tokens/{id}",
+    responses(
+        (status = 200, body = intellipilot_core::app_token::AppToken),
+        (status = 401),
+        (status = 403),
+        (status = 404),
+    )
+)]
+pub async fn get_app_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    match appdb::get(&client, id).await {
+        Ok(Some(token)) => Json(token).into_response(),
+        Ok(None) => problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, &rid),
+        Err(_) => internal(&rid),
+    }
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/admin/app-tokens/{id}",
+    request_body = UpdateAppTokenRequest,
+    responses(
+        (status = 200, body = intellipilot_core::app_token::AppToken),
+        (status = 401),
+        (status = 403),
+        (status = 404),
+        (status = 422),
+    )
+)]
+pub async fn update_app_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    Path(id): Path<Uuid>,
+    body: Result<Json<UpdateAppTokenRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let req = match parse_json(body, &rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(report) = req.validate() {
+        return validation_problem(&report, &rid);
+    }
+    let deduped: Option<Vec<Uuid>> = req.project_ids.clone().map(|mut v| {
+        v.sort();
+        v.dedup();
+        v
+    });
+
+    let Ok(mut client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    if let Some(ref pids) = deduped {
+        match projects_all_exist(&client, pids).await {
+            Ok(true) => {}
+            Ok(false) => return unknown_project(&rid),
+            Err(_) => return internal(&rid),
+        }
+    }
+
+    match appdb::update(
+        &mut client,
+        id,
+        req.name.as_deref(),
+        req.permissions.as_deref(),
+        deduped.as_deref(),
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => return problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, &rid),
+        Err(_) => return internal(&rid),
+    }
+    let Ok(Some(token)) = appdb::get(&client, id).await else {
+        return internal(&rid);
+    };
+    audit::record(
+        &client,
+        Some(admin.user_id),
+        "admin_app_token_updated",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({ "app_token_id": id }),
+    )
+    .await;
+    Json(token).into_response()
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/app-tokens/{id}/revoke",
+    responses(
+        (status = 204),
+        (status = 401),
+        (status = 403),
+        (status = 404),
+    )
+)]
+pub async fn revoke_app_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    match appdb::revoke(&client, id).await {
+        Ok(true) => {
+            audit::record(
+                &client,
+                Some(admin.user_id),
+                "admin_app_token_revoked",
+                Some(client_ip(&headers)),
+                Some(&user_agent(&headers)),
+                &json!({ "app_token_id": id }),
             )
             .await;
             StatusCode::NO_CONTENT.into_response()

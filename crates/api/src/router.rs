@@ -157,6 +157,18 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/admin/invitations/{id}",
                 delete(admin::handlers::revoke_invitation),
             )
+            .route(
+                "/api/v1/admin/app-tokens",
+                get(admin::handlers::list_app_tokens).post(admin::handlers::create_app_token),
+            )
+            .route(
+                "/api/v1/admin/app-tokens/{id}",
+                get(admin::handlers::get_app_token).patch(admin::handlers::update_app_token),
+            )
+            .route(
+                "/api/v1/admin/app-tokens/{id}/revoke",
+                post(admin::handlers::revoke_app_token),
+            )
             .route("/api/v1/admin/settings", get(admin::handlers::get_settings))
             .route(
                 "/api/v1/admin/settings",

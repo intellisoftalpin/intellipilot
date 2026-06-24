@@ -839,7 +839,7 @@ pub async fn list(
         .query(
             &format!(
                 "SELECT {USER_COLS}{OUT_TODAY_COLS} FROM users{join} \
-                 WHERE users.deleted_at IS NULL AND ( \
+                 WHERE users.deleted_at IS NULL AND users.auth_source <> 'system' AND ( \
                    $1::text IS NULL OR \
                    lower(users.email)     LIKE $1 OR \
                    lower(users.username)  LIKE $1 OR \
@@ -857,7 +857,7 @@ pub async fn list(
     let total = client
         .query_one(
             "SELECT COUNT(*)::bigint AS n FROM users \
-             WHERE deleted_at IS NULL AND ( \
+             WHERE deleted_at IS NULL AND auth_source <> 'system' AND ( \
                $1::text IS NULL OR \
                lower(email)     LIKE $1 OR \
                lower(username)  LIKE $1 OR \

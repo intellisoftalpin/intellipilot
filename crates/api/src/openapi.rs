@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.5.1",
+        version = "0.5.2",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -71,6 +71,11 @@ use crate::problem::{FieldErrorView, Problem};
         crate::admin::handlers::create_invitation,
         crate::admin::handlers::list_invitations,
         crate::admin::handlers::revoke_invitation,
+        crate::admin::handlers::create_app_token,
+        crate::admin::handlers::list_app_tokens,
+        crate::admin::handlers::get_app_token,
+        crate::admin::handlers::update_app_token,
+        crate::admin::handlers::revoke_app_token,
         crate::admin::handlers::get_settings,
         crate::admin::handlers::update_settings,
         crate::admin::handlers::update_branding,
@@ -218,6 +223,10 @@ use crate::problem::{FieldErrorView, Problem};
         crate::admin::dto::CreateInvitationRequest,
         crate::admin::dto::CreateInvitationResponse,
         crate::admin::dto::PendingInvitation,
+        crate::admin::dto::CreateAppTokenRequest,
+        crate::admin::dto::CreateAppTokenResponse,
+        crate::admin::dto::UpdateAppTokenRequest,
+        intellipilot_core::app_token::AppToken,
         crate::admin::dto::PlatformSettingsResponse,
         crate::admin::dto::UpdateSettingsRequest,
         crate::admin::dto::UpdateBrandingRequest,

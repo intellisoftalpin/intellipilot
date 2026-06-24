@@ -39,14 +39,7 @@ impl FromRequestParts<AppState> for AuthUser {
             .into_response_with_status(StatusCode::INTERNAL_SERVER_ERROR)
         })?;
 
-        let token = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .map(str::trim);
-
-        let Some(token) = token else {
+        let Some(token) = bearer(parts) else {
             return Err(unauthorized(&rid));
         };
 
@@ -59,6 +52,71 @@ impl FromRequestParts<AppState> for AuthUser {
             },
         )
     }
+}
+
+/// Extract the raw bearer credential from the `Authorization` header.
+fn bearer(parts: &Parts) -> Option<&str> {
+    parts
+        .headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+}
+
+/// The authenticated caller behind a request.
+///
+/// Either a human user (Paseto access token) or an app token (the `ipat_`
+/// bearer). App tokens carry their granted permissions + project scope and act
+/// as the INTELLIBOT user.
+#[derive(Debug, Clone)]
+pub enum Caller {
+    User(Uuid),
+    AppToken(intellipilot_db::app_tokens::AppTokenAuth),
+}
+
+/// Resolve the [`Caller`] from the bearer credential.
+///
+/// An `ipat_…` bearer is validated against the app-token store (must be active:
+/// not revoked, not expired); anything else is verified as a Paseto access
+/// token. App-token auth best-effort stamps `last_used_at`.
+///
+/// `result_large_err`: the rejection is an axum `Response`, by design.
+#[allow(clippy::result_large_err)]
+pub async fn authenticate(parts: &Parts, state: &AppState) -> Result<Caller, Response> {
+    let rid = request_id(&parts.headers);
+    let auth = state.auth.as_ref().ok_or_else(|| internal(&rid))?;
+    let Some(token) = bearer(parts) else {
+        return Err(unauthorized(&rid));
+    };
+    if token.starts_with(intellipilot_core::app_token::TOKEN_PREFIX) {
+        let hash = intellipilot_auth::app_token::hash_token(token);
+        let client = auth.db.pool.get().await.map_err(|_| internal(&rid))?;
+        match intellipilot_db::app_tokens::find_active_by_hash(&client, &hash).await {
+            Ok(Some(t)) => {
+                if let Err(e) = intellipilot_db::app_tokens::touch_last_used(&client, t.id).await {
+                    tracing::warn!(error = %e, "failed to stamp app token last_used_at");
+                }
+                Ok(Caller::AppToken(t))
+            }
+            _ => Err(unauthorized(&rid)),
+        }
+    } else {
+        verify_access_token(&auth.access_key, token)
+            .map(|c| Caller::User(c.user_id))
+            .map_err(|_| unauthorized(&rid))
+    }
+}
+
+fn internal(rid: &str) -> Response {
+    Problem::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal_error",
+        "Internal Server Error",
+        None,
+        rid,
+    )
+    .into_response_with_status(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 fn unauthorized(rid: &str) -> Response {

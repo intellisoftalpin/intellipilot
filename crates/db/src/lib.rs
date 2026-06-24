@@ -3,6 +3,7 @@
 //! Deliberately does NOT use sqlx — see workspace `Cargo.toml` for the
 //! security rationale (sqlx-core pulls in `paste` and `rsa`).
 
+pub mod app_tokens;
 pub mod attachments;
 pub mod audit;
 pub mod backlog;

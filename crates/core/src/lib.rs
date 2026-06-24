@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr))]
 
 pub mod activity;
+pub mod app_token;
 pub mod attachment;
 pub mod backlog;
 pub mod catalog;
