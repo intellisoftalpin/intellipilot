@@ -194,7 +194,7 @@ pub async fn create_release(
     ctx: ProjectContext,
     body: Result<Json<CreateReleaseRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ReleaseCreate) {
         return r;
     }
     let req = match parse_body(body, &ctx.rid) {
@@ -226,7 +226,7 @@ pub async fn update_release(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<UpdateReleaseRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ReleaseModify) {
         return r;
     }
     let Some(id) = item_id(&params, "release_id") else {
@@ -254,7 +254,7 @@ pub async fn delete_release(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ReleaseDelete) {
         return r;
     }
     let Some(id) = item_id(&params, "release_id") else {
@@ -300,7 +300,7 @@ pub async fn create_version(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<CreateVersionRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ReleaseCreate) {
         return r;
     }
     let Some(release_id) = item_id(&params, "release_id") else {
@@ -343,7 +343,7 @@ pub async fn update_version(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<UpdateVersionRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ReleaseModify) {
         return r;
     }
     let Some(id) = item_id(&params, "version_id") else {
@@ -389,7 +389,7 @@ pub async fn delete_version(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ReleaseDelete) {
         return r;
     }
     let Some(id) = item_id(&params, "version_id") else {
@@ -463,7 +463,7 @@ pub async fn link_component_release(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<LinkReleaseRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ReleaseModify) {
         return r;
     }
     let Some(component_id) = item_id(&params, "component_id") else {
@@ -497,7 +497,7 @@ pub async fn unlink_component_release(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ReleaseModify) {
         return r;
     }
     let (Some(component_id), Some(release_id)) = (

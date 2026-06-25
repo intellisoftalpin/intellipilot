@@ -114,7 +114,7 @@ pub async fn create(
     ctx: ProjectContext,
     body: Result<Json<CreateCustomerRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::CustomerCreate) {
         return r;
     }
     let req = match parse_body(body, &ctx.rid) {
@@ -162,7 +162,7 @@ pub async fn update(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<UpdateCustomerRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::CustomerModify) {
         return r;
     }
     let Some(id) = item_id(&params, "customer_id") else {
@@ -210,7 +210,7 @@ pub async fn delete(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::CustomerDelete) {
         return r;
     }
     let Some(id) = item_id(&params, "customer_id") else {

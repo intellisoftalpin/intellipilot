@@ -112,7 +112,7 @@ pub async fn create(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<CreateTaxonomyItemRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::TaxonomyCreate) {
         return r;
     }
     let kind = match parse_kind(&params, &ctx.rid) {
@@ -167,7 +167,7 @@ pub async fn update(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<UpdateTaxonomyItemRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::TaxonomyModify) {
         return r;
     }
     let kind = match parse_kind(&params, &ctx.rid) {
@@ -213,7 +213,7 @@ pub async fn delete(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::TaxonomyDelete) {
         return r;
     }
     let kind = match parse_kind(&params, &ctx.rid) {
@@ -264,7 +264,7 @@ pub async fn move_item(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<MoveTaxonomyItemRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::TaxonomyModify) {
         return r;
     }
     let kind = match parse_kind(&params, &ctx.rid) {

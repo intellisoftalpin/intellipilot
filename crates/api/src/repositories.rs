@@ -286,7 +286,7 @@ pub async fn create_ssh_key(
     headers: HeaderMap,
     body: Result<Json<CreateSshKeyRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::RepositoryCreate) {
         return r;
     }
     let req = match parse_body(body, &ctx.rid) {
@@ -364,7 +364,7 @@ pub async fn update_ssh_key(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<UpdateSshKeyRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::RepositoryModify) {
         return r;
     }
     let Some(id) = item_id(&params, "key_id") else {
@@ -403,7 +403,7 @@ pub async fn delete_ssh_key(
     headers: HeaderMap,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::RepositoryDelete) {
         return r;
     }
     let Some(id) = item_id(&params, "key_id") else {
@@ -455,7 +455,7 @@ pub async fn create_repository(
     headers: HeaderMap,
     body: Result<Json<CreateRepositoryRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::RepositoryCreate) {
         return r;
     }
     let req = match parse_body(body, &ctx.rid) {
@@ -590,7 +590,7 @@ pub async fn update_repository(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<UpdateRepositoryRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::RepositoryModify) {
         return r;
     }
     let Some(id) = item_id(&params, "repository_id") else {
@@ -663,7 +663,7 @@ pub async fn delete_repository(
     headers: HeaderMap,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::RepositoryDelete) {
         return r;
     }
     let Some(id) = item_id(&params, "repository_id") else {
@@ -700,7 +700,7 @@ pub async fn preview_branches(
     ctx: ProjectContext,
     body: Result<Json<PreviewBranchesRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::RepositoryModify) {
         return r;
     }
     let req = match parse_body(body, &ctx.rid) {
@@ -791,7 +791,7 @@ pub async fn link_component_repository(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<LinkRepositoryRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::RepositoryModify) {
         return r;
     }
     let Some(component_id) = item_id(&params, "component_id") else {
@@ -854,7 +854,7 @@ pub async fn update_component_repository(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<UpdateLinkRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::RepositoryModify) {
         return r;
     }
     let (Some(component_id), Some(repository_id)) = (
@@ -893,7 +893,7 @@ pub async fn unlink_component_repository(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::RepositoryModify) {
         return r;
     }
     let (Some(component_id), Some(repository_id)) = (

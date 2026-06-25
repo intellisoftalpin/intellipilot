@@ -98,11 +98,53 @@ pub enum Permission {
     /// Correct other members' entries and lock/unlock project-months.
     #[serde(rename = "time.manage")]
     TimeManage,
+    // Taxonomy (issue types, priorities, sizes, statuses, resolutions)
+    #[serde(rename = "taxonomy.create")]
+    TaxonomyCreate,
+    #[serde(rename = "taxonomy.modify")]
+    TaxonomyModify,
+    #[serde(rename = "taxonomy.delete")]
+    TaxonomyDelete,
+    // Labels
+    #[serde(rename = "label.create")]
+    LabelCreate,
+    #[serde(rename = "label.modify")]
+    LabelModify,
+    #[serde(rename = "label.delete")]
+    LabelDelete,
+    // Components
+    #[serde(rename = "component.create")]
+    ComponentCreate,
+    #[serde(rename = "component.modify")]
+    ComponentModify,
+    #[serde(rename = "component.delete")]
+    ComponentDelete,
+    // Repositories (incl. SSH keys and component↔repository links)
+    #[serde(rename = "repository.create")]
+    RepositoryCreate,
+    #[serde(rename = "repository.modify")]
+    RepositoryModify,
+    #[serde(rename = "repository.delete")]
+    RepositoryDelete,
+    // Customers
+    #[serde(rename = "customer.create")]
+    CustomerCreate,
+    #[serde(rename = "customer.modify")]
+    CustomerModify,
+    #[serde(rename = "customer.delete")]
+    CustomerDelete,
+    // Releases (incl. versions and component↔release links)
+    #[serde(rename = "release.create")]
+    ReleaseCreate,
+    #[serde(rename = "release.modify")]
+    ReleaseModify,
+    #[serde(rename = "release.delete")]
+    ReleaseDelete,
 }
 
 impl Permission {
     /// Every permission in catalog order.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 53] = [
         Self::ProjectView,
         Self::ProjectModify,
         Self::ProjectDelete,
@@ -138,6 +180,24 @@ impl Permission {
         Self::TimeLog,
         Self::TimeViewAll,
         Self::TimeManage,
+        Self::TaxonomyCreate,
+        Self::TaxonomyModify,
+        Self::TaxonomyDelete,
+        Self::LabelCreate,
+        Self::LabelModify,
+        Self::LabelDelete,
+        Self::ComponentCreate,
+        Self::ComponentModify,
+        Self::ComponentDelete,
+        Self::RepositoryCreate,
+        Self::RepositoryModify,
+        Self::RepositoryDelete,
+        Self::CustomerCreate,
+        Self::CustomerModify,
+        Self::CustomerDelete,
+        Self::ReleaseCreate,
+        Self::ReleaseModify,
+        Self::ReleaseDelete,
     ];
 
     /// Stable wire string for this permission.
@@ -181,6 +241,24 @@ impl Permission {
             Self::TimeLog => "time.log",
             Self::TimeViewAll => "time.view_all",
             Self::TimeManage => "time.manage",
+            Self::TaxonomyCreate => "taxonomy.create",
+            Self::TaxonomyModify => "taxonomy.modify",
+            Self::TaxonomyDelete => "taxonomy.delete",
+            Self::LabelCreate => "label.create",
+            Self::LabelModify => "label.modify",
+            Self::LabelDelete => "label.delete",
+            Self::ComponentCreate => "component.create",
+            Self::ComponentModify => "component.modify",
+            Self::ComponentDelete => "component.delete",
+            Self::RepositoryCreate => "repository.create",
+            Self::RepositoryModify => "repository.modify",
+            Self::RepositoryDelete => "repository.delete",
+            Self::CustomerCreate => "customer.create",
+            Self::CustomerModify => "customer.modify",
+            Self::CustomerDelete => "customer.delete",
+            Self::ReleaseCreate => "release.create",
+            Self::ReleaseModify => "release.modify",
+            Self::ReleaseDelete => "release.delete",
         }
     }
 }
@@ -235,9 +313,12 @@ fn developer_perms() -> Vec<Permission> {
 /// delete on work items + comment moderation.
 fn product_owner_perms() -> Vec<Permission> {
     use Permission::{
-        CommentModerate, EpicDelete, IssueDelete, MemberAdd, MemberModifyRole, MemberRemove,
-        MemberView, MilestoneDelete, ProjectModify, RoleCreate, RoleDelete, RoleModify, RoleView,
-        TimeViewAll, WikiDelete,
+        CommentModerate, ComponentCreate, ComponentDelete, ComponentModify, CustomerCreate,
+        CustomerDelete, CustomerModify, EpicDelete, IssueDelete, LabelCreate, LabelDelete,
+        LabelModify, MemberAdd, MemberModifyRole, MemberRemove, MemberView, MilestoneDelete,
+        ProjectModify, ReleaseCreate, ReleaseDelete, ReleaseModify, RepositoryCreate,
+        RepositoryDelete, RepositoryModify, RoleCreate, RoleDelete, RoleModify, RoleView,
+        TaxonomyCreate, TaxonomyDelete, TaxonomyModify, TimeViewAll, WikiDelete,
     };
     let mut perms = developer_perms();
     perms.extend([
@@ -256,6 +337,26 @@ fn product_owner_perms() -> Vec<Permission> {
         WikiDelete,
         CommentModerate,
         TimeViewAll,
+        // Project-configuration entities (previously bundled under
+        // project.modify; now split into dedicated permissions).
+        TaxonomyCreate,
+        TaxonomyModify,
+        TaxonomyDelete,
+        LabelCreate,
+        LabelModify,
+        LabelDelete,
+        ComponentCreate,
+        ComponentModify,
+        ComponentDelete,
+        RepositoryCreate,
+        RepositoryModify,
+        RepositoryDelete,
+        CustomerCreate,
+        CustomerModify,
+        CustomerDelete,
+        ReleaseCreate,
+        ReleaseModify,
+        ReleaseDelete,
     ]);
     perms.sort_unstable();
     perms.dedup();
@@ -312,7 +413,70 @@ mod tests {
                 p.as_str()
             );
         }
-        assert_eq!(Permission::ALL.len(), 35);
+        assert_eq!(Permission::ALL.len(), 53);
+    }
+
+    #[test]
+    fn config_entity_permissions_present() {
+        // The project-configuration entities each carry create/modify/delete.
+        for group in [
+            "taxonomy",
+            "label",
+            "component",
+            "repository",
+            "customer",
+            "release",
+        ] {
+            for verb in ["create", "modify", "delete"] {
+                let wire = format!("{group}.{verb}");
+                assert!(
+                    Permission::ALL.iter().any(|p| p.as_str() == wire),
+                    "missing permission {wire}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn config_entity_permissions_role_assignment() {
+        let roles = default_roles();
+        let by_slug = |slug: &str| -> std::collections::HashSet<Permission> {
+            roles
+                .iter()
+                .find(|r| r.slug == slug)
+                .map(|r| r.permissions.iter().copied().collect())
+                .unwrap()
+        };
+        let po = by_slug("product_owner");
+        let dev = by_slug("dev");
+        let config = [
+            Permission::TaxonomyCreate,
+            Permission::TaxonomyModify,
+            Permission::TaxonomyDelete,
+            Permission::LabelCreate,
+            Permission::LabelModify,
+            Permission::LabelDelete,
+            Permission::ComponentCreate,
+            Permission::ComponentModify,
+            Permission::ComponentDelete,
+            Permission::RepositoryCreate,
+            Permission::RepositoryModify,
+            Permission::RepositoryDelete,
+            Permission::CustomerCreate,
+            Permission::CustomerModify,
+            Permission::CustomerDelete,
+            Permission::ReleaseCreate,
+            Permission::ReleaseModify,
+            Permission::ReleaseDelete,
+        ];
+        for p in config {
+            assert!(po.contains(&p), "product_owner should hold {}", p.as_str());
+            assert!(
+                !dev.contains(&p),
+                "dev should NOT hold {} by default",
+                p.as_str()
+            );
+        }
     }
 
     #[test]

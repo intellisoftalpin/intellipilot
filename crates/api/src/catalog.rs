@@ -107,7 +107,7 @@ pub async fn create_label(
     ctx: ProjectContext,
     body: Result<Json<CreateLabelRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::LabelCreate) {
         return r;
     }
     let req = match parse_body(body, &ctx.rid) {
@@ -132,7 +132,7 @@ pub async fn update_label(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<UpdateLabelRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::LabelModify) {
         return r;
     }
     let Some(id) = item_id(&params, "label_id") else {
@@ -167,7 +167,7 @@ pub async fn delete_label(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::LabelDelete) {
         return r;
     }
     let Some(id) = item_id(&params, "label_id") else {
@@ -207,7 +207,7 @@ pub async fn create_component(
     ctx: ProjectContext,
     body: Result<Json<CreateComponentRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ComponentCreate) {
         return r;
     }
     let req = match parse_body(body, &ctx.rid) {
@@ -232,7 +232,7 @@ pub async fn update_component(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<UpdateComponentRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ComponentModify) {
         return r;
     }
     let Some(id) = item_id(&params, "component_id") else {
@@ -267,7 +267,7 @@ pub async fn delete_component(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::ProjectModify) {
+    if let Err(r) = ctx.require(Permission::ComponentDelete) {
         return r;
     }
     let Some(id) = item_id(&params, "component_id") else {
