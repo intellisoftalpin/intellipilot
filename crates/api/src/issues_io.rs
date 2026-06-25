@@ -853,6 +853,7 @@ pub async fn import_commit(
                 look(&status_map, &row.status_name),
                 "#7e57c2",
                 look(&user_map, &row.assignee),
+                None,
             )
             .await
             {

@@ -279,6 +279,7 @@ pub async fn create_epic(
         req.status_id,
         &req.color,
         req.assigned_to,
+        req.milestone_id,
     )
     .await
     {
@@ -381,6 +382,7 @@ pub async fn update_epic(
     let color = patch.color.unwrap_or(old.color.clone());
     let status_id = patch.status_id.unwrap_or(old.status_id);
     let assigned_to = patch.assigned_to.unwrap_or(old.assigned_to);
+    let milestone_id = patch.milestone_id.unwrap_or(old.milestone_id);
 
     let mut diff = serde_json::Map::new();
     diff_field(&mut diff, "subject", &json!(old.subject), &json!(subject));
@@ -403,6 +405,12 @@ pub async fn update_epic(
         &json!(old.assigned_to),
         &json!(assigned_to),
     );
+    diff_field(
+        &mut diff,
+        "milestone_id",
+        &json!(old.milestone_id),
+        &json!(milestone_id),
+    );
 
     match bl::update_epic(
         &client,
@@ -414,6 +422,7 @@ pub async fn update_epic(
         status_id,
         &color,
         assigned_to,
+        milestone_id,
     )
     .await
     {

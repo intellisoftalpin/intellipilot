@@ -364,6 +364,9 @@ pub struct CreateEpicRequest {
     #[garde(skip)]
     #[serde(default)]
     pub assigned_to: Option<Uuid>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub milestone_id: Option<Uuid>,
 }
 
 #[derive(Debug, Default, Deserialize, ToSchema)]
@@ -379,6 +382,8 @@ pub struct UpdateEpicRequest {
     pub color: Option<String>,
     #[serde(default, with = "serde_with::rust::double_option")]
     pub assigned_to: Option<Option<Uuid>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub milestone_id: Option<Option<Uuid>>,
 }
 
 /// Create a unified issue.
@@ -615,4 +620,12 @@ pub struct UpdateMilestoneRequest {
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::option")]
     pub end_date: Option<time::Date>,
+}
+
+/// Replace the full set of epics belonging to a milestone.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct SetMilestoneEpicsRequest {
+    #[garde(skip)]
+    #[serde(default)]
+    pub epic_ids: Vec<Uuid>,
 }

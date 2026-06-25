@@ -50,6 +50,8 @@ pub struct Epic {
     pub color: String,
     pub owner_id: Option<Uuid>,
     pub assigned_to: Option<Uuid>,
+    /// Milestone this epic belongs to (a milestone is composed of epics).
+    pub milestone_id: Option<Uuid>,
     pub order: f64,
     pub version: i32,
     #[serde(with = "time::serde::rfc3339")]

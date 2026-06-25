@@ -19,7 +19,7 @@ use intellipilot_db::{backlog as bl, milestones as msdb, taxonomy as taxdb};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::dto::{CreateMilestoneRequest, UpdateMilestoneRequest};
+use crate::dto::{CreateMilestoneRequest, SetMilestoneEpicsRequest, UpdateMilestoneRequest};
 use crate::problem::Problem;
 use crate::projects::{ProjectContext, slugify};
 use crate::state::AppState;
@@ -360,6 +360,40 @@ pub async fn stats(
     }
     match msdb::stats(&client, ctx.project.id, id).await {
         Ok(s) => Json(s).into_response(),
+        Err(_) => internal(&ctx.rid),
+    }
+}
+
+/// `PUT /api/v1/projects/{project_id}/milestones/{milestone_id}/epics` —
+/// replace the set of epics belonging to this milestone.
+pub async fn set_epics(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    Path(params): Path<HashMap<String, String>>,
+    body: Result<Json<SetMilestoneEpicsRequest>, JsonRejection>,
+) -> Response {
+    if let Err(r) = ctx.require(Permission::MilestoneModify) {
+        return r;
+    }
+    let Some(id) = mid_param(&params) else {
+        return not_found(&ctx.rid);
+    };
+    let req = match parse_body::<SetMilestoneEpicsRequest>(body, &ctx.rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&ctx.rid);
+    };
+    if !msdb::in_project(&client, ctx.project.id, id)
+        .await
+        .unwrap_or(false)
+    {
+        return not_found(&ctx.rid);
+    }
+    match bl::set_milestone_epics(&client, ctx.project.id, id, &req.epic_ids).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(_) => internal(&ctx.rid),
     }
 }

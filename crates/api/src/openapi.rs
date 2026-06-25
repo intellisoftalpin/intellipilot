@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.5.5",
+        version = "0.5.6",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -207,6 +207,7 @@ use crate::problem::{FieldErrorView, Problem};
         intellipilot_core::backlog::IssueLink,
         crate::dto::CreateMilestoneRequest,
         crate::dto::UpdateMilestoneRequest,
+        crate::dto::SetMilestoneEpicsRequest,
         intellipilot_core::milestone::Milestone,
         intellipilot_core::milestone::MilestoneStats,
         intellipilot_core::attachment::Attachment,

@@ -58,7 +58,7 @@ async fn next_order(
 // ==========================================================================
 
 const EPIC_COLS: &str = "id, project_id, ref, subject, description, status_id, color, \
-     owner_id, assigned_to, \"order\", version, created_at, modified_at";
+     owner_id, assigned_to, milestone_id, \"order\", version, created_at, modified_at";
 
 fn row_to_epic(r: &Row) -> Epic {
     Epic {
@@ -71,6 +71,7 @@ fn row_to_epic(r: &Row) -> Epic {
         color: r.get("color"),
         owner_id: r.get("owner_id"),
         assigned_to: r.get("assigned_to"),
+        milestone_id: r.get("milestone_id"),
         order: r.get("order"),
         version: r.get("version"),
         created_at: r.get("created_at"),
@@ -87,6 +88,7 @@ pub async fn create_epic(
     status_id: Option<Uuid>,
     color: &str,
     assigned_to: Option<Uuid>,
+    milestone_id: Option<Uuid>,
 ) -> Result<Epic, DbError> {
     let reference = alloc_ref(client, project_id).await?;
     let order = next_order(client, "epics", project_id).await?;
@@ -94,8 +96,8 @@ pub async fn create_epic(
         .query_one(
             &format!(
                 "INSERT INTO epics (project_id, ref, subject, description, status_id, color, \
-                   owner_id, assigned_to, \"order\") \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING {EPIC_COLS}"
+                   owner_id, assigned_to, milestone_id, \"order\") \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING {EPIC_COLS}"
             ),
             &[
                 &project_id,
@@ -106,6 +108,7 @@ pub async fn create_epic(
                 &color,
                 &owner_id,
                 &assigned_to,
+                &milestone_id,
                 &order,
             ],
         )
@@ -152,12 +155,13 @@ pub async fn update_epic(
     status_id: Option<Uuid>,
     color: &str,
     assigned_to: Option<Uuid>,
+    milestone_id: Option<Uuid>,
 ) -> Result<UpdateOutcome<Epic>, DbError> {
     let row = client
         .query_opt(
             &format!(
                 "UPDATE epics SET subject=$4, description=$5, status_id=$6, color=$7, \
-                   assigned_to=$8, version=version+1 \
+                   assigned_to=$8, milestone_id=$9, version=version+1 \
                  WHERE id=$1 AND project_id=$2 AND version=$3 AND deleted_at IS NULL \
                  RETURNING {EPIC_COLS}"
             ),
@@ -170,6 +174,7 @@ pub async fn update_epic(
                 &status_id,
                 &color,
                 &assigned_to,
+                &milestone_id,
             ],
         )
         .await?;
@@ -177,6 +182,34 @@ pub async fn update_epic(
         Some(r) => Ok(UpdateOutcome::Updated(row_to_epic(&r))),
         None => Ok(classify_miss(client, "epics", project_id, id, expected_version).await?),
     }
+}
+
+/// Replace the set of epics belonging to a milestone: detach every epic
+/// currently in it, then attach the given ones (all scoped to the project).
+pub async fn set_milestone_epics(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    milestone_id: Uuid,
+    epic_ids: &[Uuid],
+) -> Result<(), DbError> {
+    client
+        .execute(
+            "UPDATE epics SET milestone_id = NULL \
+             WHERE project_id = $1 AND milestone_id = $2 AND deleted_at IS NULL",
+            &[&project_id, &milestone_id],
+        )
+        .await?;
+    if !epic_ids.is_empty() {
+        let ids: Vec<Uuid> = epic_ids.to_vec();
+        client
+            .execute(
+                "UPDATE epics SET milestone_id = $2 \
+                 WHERE project_id = $1 AND id = ANY($3) AND deleted_at IS NULL",
+                &[&project_id, &milestone_id, &ids],
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 /// Whether an epic exists in this project (for cross-project assoc checks).
