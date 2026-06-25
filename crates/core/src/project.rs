@@ -40,6 +40,19 @@ impl Visibility {
     }
 }
 
+/// Per-project configuration for the epics board's columns.
+///
+/// The board has three mutually-exclusive columns: **All**, **In Progress** and
+/// **Done**. `in_progress_status_ids` lists the `issue_status` taxonomy items
+/// that land in *In Progress*; *Done* is derived from `is_closed` statuses; and
+/// *All* is the remainder (no status, or any status in neither bucket). An empty
+/// list means nothing is mapped yet (everything sits in *All* / *Done*).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct EpicBoardSettings {
+    #[serde(default)]
+    pub in_progress_status_ids: Vec<Uuid>,
+}
+
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[allow(clippy::struct_excessive_bools)] // feature flags, not state machine
 pub struct Project {
@@ -53,6 +66,8 @@ pub struct Project {
     pub backlog_enabled: bool,
     pub wiki_enabled: bool,
     pub epics_enabled: bool,
+    /// Column → status mapping for the epics board.
+    pub epic_board: EpicBoardSettings,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -75,6 +90,7 @@ pub struct ProjectUpdate {
     pub backlog_enabled: Option<bool>,
     pub wiki_enabled: Option<bool>,
     pub epics_enabled: Option<bool>,
+    pub epic_board: Option<EpicBoardSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]

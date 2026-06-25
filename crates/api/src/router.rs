@@ -15,8 +15,8 @@ use crate::middleware::{rate_limit, request_id, security_headers};
 use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
-    admin, attachments, auth, avatar, backlog, branding, catalog, customers, dashboard, health,
-    issue_relations, issues_io, me, mfa, milestones, openapi, passkeys, projects, releases,
+    admin, attachments, auth, avatar, backlog, branding, catalog, customers, dashboard, epic_cover,
+    health, issue_relations, issues_io, me, mfa, milestones, openapi, passkeys, projects, releases,
     repositories, search, taxonomy, time_tracking, wiki,
 };
 
@@ -242,6 +242,16 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/epics/{id}", patch(backlog::update_epic))
             .route("/api/v1/projects/{project_id}/epics/{id}", delete(backlog::delete_epic))
             .route("/api/v1/projects/{project_id}/epics/{id}/move", post(backlog::move_epic))
+            // Epic cover image (object-storage backed, like avatars)
+            .route(
+                "/api/v1/projects/{project_id}/epics/{id}/cover-image",
+                get(epic_cover::serve_cover)
+                    .delete(epic_cover::delete_cover)
+                    .merge(
+                        put(epic_cover::upload_cover)
+                            .layer(axum::extract::DefaultBodyLimit::max(5 * 1024 * 1024)),
+                    ),
+            )
             // Backlog — issues (unified: Story / Task / Bug / sub-task)
             .route("/api/v1/projects/{project_id}/issues", get(backlog::list_issues))
             .route("/api/v1/projects/{project_id}/issues", post(backlog::create_issue))

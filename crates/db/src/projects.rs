@@ -11,10 +11,12 @@ use uuid::Uuid;
 use crate::DbError;
 
 const PROJECT_COLS: &str = "id, slug, name, description, owner_id, visibility, \
-     kanban_enabled, backlog_enabled, wiki_enabled, epics_enabled, created_at";
+     kanban_enabled, backlog_enabled, wiki_enabled, epics_enabled, epic_board_settings, \
+     created_at";
 
 fn row_to_project(row: &Row) -> Project {
     let visibility: String = row.get("visibility");
+    let epic_board = serde_json::from_value(row.get("epic_board_settings")).unwrap_or_default();
     Project {
         id: row.get("id"),
         slug: row.get("slug"),
@@ -26,6 +28,7 @@ fn row_to_project(row: &Row) -> Project {
         backlog_enabled: row.get("backlog_enabled"),
         wiki_enabled: row.get("wiki_enabled"),
         epics_enabled: row.get("epics_enabled"),
+        epic_board,
         created_at: row.get("created_at"),
     }
 }
@@ -181,6 +184,11 @@ pub async fn update(
     upd: &ProjectUpdate,
 ) -> Result<Option<Project>, DbError> {
     let visibility = upd.visibility.map(|v| v.as_str().to_owned());
+    let epic_board = upd
+        .epic_board
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
     let row = client
         .query_opt(
             &format!(
@@ -191,7 +199,8 @@ pub async fn update(
                    kanban_enabled = COALESCE($5, kanban_enabled), \
                    backlog_enabled = COALESCE($6, backlog_enabled), \
                    wiki_enabled = COALESCE($7, wiki_enabled), \
-                   epics_enabled = COALESCE($8, epics_enabled) \
+                   epics_enabled = COALESCE($8, epics_enabled), \
+                   epic_board_settings = COALESCE($9::jsonb, epic_board_settings) \
                  WHERE id = $1 AND deleted_at IS NULL \
                  RETURNING {PROJECT_COLS}"
             ),
@@ -204,6 +213,7 @@ pub async fn update(
                 &upd.backlog_enabled,
                 &upd.wiki_enabled,
                 &upd.epics_enabled,
+                &epic_board,
             ],
         )
         .await?;

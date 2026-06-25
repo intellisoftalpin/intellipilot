@@ -383,6 +383,8 @@ pub async fn update_epic(
     let status_id = patch.status_id.unwrap_or(old.status_id);
     let assigned_to = patch.assigned_to.unwrap_or(old.assigned_to);
     let milestone_id = patch.milestone_id.unwrap_or(old.milestone_id);
+    let start_date = patch.start_date.or(old.start_date);
+    let end_date = patch.end_date.or(old.end_date);
 
     let mut diff = serde_json::Map::new();
     diff_field(&mut diff, "subject", &json!(old.subject), &json!(subject));
@@ -411,6 +413,18 @@ pub async fn update_epic(
         &json!(old.milestone_id),
         &json!(milestone_id),
     );
+    diff_field(
+        &mut diff,
+        "start_date",
+        &json!(old.start_date.map(|d| d.to_string())),
+        &json!(start_date.map(|d| d.to_string())),
+    );
+    diff_field(
+        &mut diff,
+        "end_date",
+        &json!(old.end_date.map(|d| d.to_string())),
+        &json!(end_date.map(|d| d.to_string())),
+    );
 
     match bl::update_epic(
         &client,
@@ -423,6 +437,8 @@ pub async fn update_epic(
         &color,
         assigned_to,
         milestone_id,
+        start_date,
+        end_date,
     )
     .await
     {

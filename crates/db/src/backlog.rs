@@ -58,7 +58,8 @@ async fn next_order(
 // ==========================================================================
 
 const EPIC_COLS: &str = "id, project_id, ref, subject, description, status_id, color, \
-     owner_id, assigned_to, milestone_id, \"order\", version, created_at, modified_at";
+     owner_id, assigned_to, milestone_id, start_date, end_date, cover_image_kind, \
+     cover_image_updated_at, \"order\", version, created_at, modified_at";
 
 fn row_to_epic(r: &Row) -> Epic {
     Epic {
@@ -72,11 +73,64 @@ fn row_to_epic(r: &Row) -> Epic {
         owner_id: r.get("owner_id"),
         assigned_to: r.get("assigned_to"),
         milestone_id: r.get("milestone_id"),
+        start_date: r.get("start_date"),
+        end_date: r.get("end_date"),
+        cover_image_kind: r.get("cover_image_kind"),
+        cover_image_updated_at: r.get("cover_image_updated_at"),
+        // Derived; hydrated by list_epics / get_epic from the issues table.
+        task_total: 0,
+        task_closed: 0,
         order: r.get("order"),
         version: r.get("version"),
         created_at: r.get("created_at"),
         modified_at: r.get("modified_at"),
     }
+}
+
+/// Per-epic task counts for a project: epic_id → (total, closed). Counts only
+/// non-deleted issues directly grouped under an epic; "closed" follows the
+/// issue's status `is_closed` flag.
+pub async fn epic_task_counts(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+) -> Result<std::collections::HashMap<Uuid, (i64, i64)>, DbError> {
+    let rows = client
+        .query(
+            "SELECT i.epic_id, count(*) AS total, \
+               count(*) FILTER (WHERE COALESCE(t.is_closed, false)) AS closed \
+             FROM issues i LEFT JOIN taxonomy_items t ON t.id = i.status_id \
+             WHERE i.project_id = $1 AND i.deleted_at IS NULL AND i.epic_id IS NOT NULL \
+             GROUP BY i.epic_id",
+            &[&project_id],
+        )
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            (
+                r.get::<_, Uuid>("epic_id"),
+                (r.get::<_, i64>("total"), r.get::<_, i64>("closed")),
+            )
+        })
+        .collect())
+}
+
+/// Task counts for a single epic (total, closed).
+pub async fn epic_task_count_one(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    epic_id: Uuid,
+) -> Result<(i64, i64), DbError> {
+    let row = client
+        .query_one(
+            "SELECT count(*) AS total, \
+               count(*) FILTER (WHERE COALESCE(t.is_closed, false)) AS closed \
+             FROM issues i LEFT JOIN taxonomy_items t ON t.id = i.status_id \
+             WHERE i.project_id = $1 AND i.epic_id = $2 AND i.deleted_at IS NULL",
+            &[&project_id, &epic_id],
+        )
+        .await?;
+    Ok((row.get("total"), row.get("closed")))
 }
 
 pub async fn create_epic(
@@ -129,7 +183,12 @@ pub async fn get_epic(
             &[&id, &project_id],
         )
         .await?;
-    Ok(row.as_ref().map(row_to_epic))
+    let Some(r) = row else { return Ok(None) };
+    let mut epic = row_to_epic(&r);
+    let (total, closed) = epic_task_count_one(client, project_id, epic.id).await?;
+    epic.task_total = total;
+    epic.task_closed = closed;
+    Ok(Some(epic))
 }
 
 pub async fn list_epics(
@@ -142,7 +201,18 @@ pub async fn list_epics(
             &[&project_id],
         )
         .await?;
-    Ok(rows.iter().map(row_to_epic).collect())
+    let counts = epic_task_counts(client, project_id).await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let mut epic = row_to_epic(r);
+            if let Some(&(total, closed)) = counts.get(&epic.id) {
+                epic.task_total = total;
+                epic.task_closed = closed;
+            }
+            epic
+        })
+        .collect())
 }
 
 pub async fn update_epic(
@@ -156,12 +226,15 @@ pub async fn update_epic(
     color: &str,
     assigned_to: Option<Uuid>,
     milestone_id: Option<Uuid>,
+    start_date: Option<Date>,
+    end_date: Option<Date>,
 ) -> Result<UpdateOutcome<Epic>, DbError> {
     let row = client
         .query_opt(
             &format!(
                 "UPDATE epics SET subject=$4, description=$5, status_id=$6, color=$7, \
-                   assigned_to=$8, milestone_id=$9, version=version+1 \
+                   assigned_to=$8, milestone_id=$9, start_date=$10, end_date=$11, \
+                   version=version+1 \
                  WHERE id=$1 AND project_id=$2 AND version=$3 AND deleted_at IS NULL \
                  RETURNING {EPIC_COLS}"
             ),
@@ -175,13 +248,85 @@ pub async fn update_epic(
                 &color,
                 &assigned_to,
                 &milestone_id,
+                &start_date,
+                &end_date,
             ],
         )
         .await?;
     match row {
-        Some(r) => Ok(UpdateOutcome::Updated(row_to_epic(&r))),
+        Some(r) => {
+            let mut epic = row_to_epic(&r);
+            let (total, closed) = epic_task_count_one(client, project_id, epic.id).await?;
+            epic.task_total = total;
+            epic.task_closed = closed;
+            Ok(UpdateOutcome::Updated(epic))
+        }
         None => Ok(classify_miss(client, "epics", project_id, id, expected_version).await?),
     }
+}
+
+// --- epic cover image (mirrors the user-avatar object model) ---------------
+
+/// The stored cover-image object (key + mime) when the epic has an uploaded
+/// image, else `None`. For the cover-serving endpoint.
+pub async fn epic_cover_object(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    id: Uuid,
+) -> Result<Option<(String, String)>, DbError> {
+    let row = client
+        .query_opt(
+            "SELECT cover_image_storage_key, cover_image_mime FROM epics \
+             WHERE id = $1 AND project_id = $2 AND cover_image_kind = 'image' \
+               AND deleted_at IS NULL",
+            &[&id, &project_id],
+        )
+        .await?;
+    Ok(row.and_then(|r| {
+        match (
+            r.get::<_, Option<String>>("cover_image_storage_key"),
+            r.get::<_, Option<String>>("cover_image_mime"),
+        ) {
+            (Some(k), Some(m)) => Some((k, m)),
+            _ => None,
+        }
+    }))
+}
+
+/// Point an epic's cover at an uploaded image object.
+pub async fn set_epic_cover_image(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    id: Uuid,
+    storage_key: &str,
+    mime: &str,
+) -> Result<bool, DbError> {
+    let n = client
+        .execute(
+            "UPDATE epics SET cover_image_kind = 'image', cover_image_storage_key = $3, \
+                 cover_image_mime = $4, cover_image_updated_at = now() \
+             WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL",
+            &[&id, &project_id, &storage_key, &mime],
+        )
+        .await?;
+    Ok(n > 0)
+}
+
+/// Reset an epic's cover to the colour-swatch fallback.
+pub async fn clear_epic_cover_image(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    id: Uuid,
+) -> Result<bool, DbError> {
+    let n = client
+        .execute(
+            "UPDATE epics SET cover_image_kind = 'none', cover_image_storage_key = NULL, \
+                 cover_image_mime = NULL, cover_image_updated_at = now() \
+             WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL",
+            &[&id, &project_id],
+        )
+        .await?;
+    Ok(n > 0)
 }
 
 /// Replace the set of epics belonging to a milestone: detach every epic

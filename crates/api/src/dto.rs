@@ -227,6 +227,10 @@ pub struct UpdateProjectRequest {
     #[garde(skip)]
     #[serde(default)]
     pub epics_enabled: Option<bool>,
+    /// Epics-board column → status mapping. Present replaces it wholesale.
+    #[garde(skip)]
+    #[serde(default)]
+    pub epic_board: Option<intellipilot_core::project::EpicBoardSettings>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -384,6 +388,14 @@ pub struct UpdateEpicRequest {
     pub assigned_to: Option<Option<Uuid>>,
     #[serde(default, with = "serde_with::rust::double_option")]
     pub milestone_id: Option<Option<Uuid>>,
+    /// Absent leaves the date unchanged (clearing is not supported, matching
+    /// issues / milestones).
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::option")]
+    pub start_date: Option<time::Date>,
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::option")]
+    pub end_date: Option<time::Date>,
 }
 
 /// Create a unified issue.

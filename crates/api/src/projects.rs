@@ -403,6 +403,7 @@ pub async fn update_project(
         backlog_enabled: req.backlog_enabled,
         wiki_enabled: req.wiki_enabled,
         epics_enabled: req.epics_enabled,
+        epic_board: req.epic_board.clone(),
     };
     let auth = state.auth();
     let Ok(client) = auth.db.pool.get().await else {

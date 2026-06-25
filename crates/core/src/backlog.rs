@@ -6,7 +6,7 @@
 //! `parent_id` and optional grouping under an epic via `epic_id`.
 
 use serde::Serialize;
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -52,6 +52,23 @@ pub struct Epic {
     pub assigned_to: Option<Uuid>,
     /// Milestone this epic belongs to (a milestone is composed of epics).
     pub milestone_id: Option<Uuid>,
+    #[serde(with = "crate::serde_date::option")]
+    pub start_date: Option<Date>,
+    #[serde(with = "crate::serde_date::option")]
+    pub end_date: Option<Date>,
+    /// Cover image kind: `none` (render the colour swatch) or `image` (uploaded,
+    /// served at `GET /epics/{id}/cover-image`).
+    pub cover_image_kind: String,
+    /// When the cover image last changed — clients use it for cache-busting.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub cover_image_updated_at: Option<OffsetDateTime>,
+    /// Total non-deleted tasks grouped under this epic (derived; 0 unless the
+    /// query hydrated it, e.g. `list_epics`).
+    #[serde(default)]
+    pub task_total: i64,
+    /// Tasks under this epic whose status is closed (derived; for progress).
+    #[serde(default)]
+    pub task_closed: i64,
     pub order: f64,
     pub version: i32,
     #[serde(with = "time::serde::rfc3339")]
