@@ -66,6 +66,8 @@ pub struct TaxonomyItem {
     pub name: String,
     pub slug: String,
     pub color: String,
+    #[serde(default)]
+    pub emoji: String,
     pub order: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_closed: Option<bool>,

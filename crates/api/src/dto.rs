@@ -304,6 +304,9 @@ pub struct CreateTaxonomyItemRequest {
     #[garde(length(max = 16))]
     #[serde(default)]
     pub color: String,
+    #[garde(length(max = 16))]
+    #[serde(default)]
+    pub emoji: String,
     #[garde(skip)]
     #[serde(default)]
     pub is_closed: Option<bool>,
@@ -320,6 +323,9 @@ pub struct UpdateTaxonomyItemRequest {
     #[garde(length(max = 16))]
     #[serde(default)]
     pub color: Option<String>,
+    #[garde(length(max = 16))]
+    #[serde(default)]
+    pub emoji: Option<String>,
     #[garde(skip)]
     #[serde(default)]
     pub is_closed: Option<bool>,

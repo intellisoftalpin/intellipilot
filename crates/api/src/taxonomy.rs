@@ -142,6 +142,7 @@ pub async fn create(
         &req.name,
         &req.slug,
         &req.color,
+        &req.emoji,
         is_closed,
         value,
     )
@@ -191,6 +192,7 @@ pub async fn update(
         item_id,
         req.name.as_deref(),
         req.color.as_deref(),
+        req.emoji.as_deref(),
         req.is_closed,
         req.value,
     )

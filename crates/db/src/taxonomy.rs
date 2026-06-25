@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::DbError;
 
 const COLS: &str =
-    "id, project_id, kind, name, slug, color, \"order\", is_closed, value, created_at";
+    "id, project_id, kind, name, slug, color, emoji, \"order\", is_closed, value, created_at";
 
 fn row_to_item(row: &Row) -> TaxonomyItem {
     let kind: String = row.get("kind");
@@ -21,6 +21,7 @@ fn row_to_item(row: &Row) -> TaxonomyItem {
         name: row.get("name"),
         slug: row.get("slug"),
         color: row.get("color"),
+        emoji: row.get("emoji"),
         order: row.get("order"),
         is_closed: row.get("is_closed"),
         value: row.get("value"),
@@ -85,6 +86,7 @@ pub async fn create(
     name: &str,
     slug: &str,
     color: &str,
+    emoji: &str,
     is_closed: Option<bool>,
     value: Option<f64>,
 ) -> Result<TaxonomyItem, DbError> {
@@ -93,8 +95,8 @@ pub async fn create(
         .query_one(
             &format!(
                 "INSERT INTO taxonomy_items \
-                   (project_id, kind, name, slug, color, \"order\", is_closed, value) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {COLS}"
+                   (project_id, kind, name, slug, color, emoji, \"order\", is_closed, value) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {COLS}"
             ),
             &[
                 &project_id,
@@ -102,6 +104,7 @@ pub async fn create(
                 &name,
                 &slug,
                 &color,
+                &emoji,
                 &order,
                 &is_closed,
                 &value,
@@ -119,6 +122,7 @@ pub async fn update(
     id: Uuid,
     name: Option<&str>,
     color: Option<&str>,
+    emoji: Option<&str>,
     is_closed: Option<bool>,
     value: Option<f64>,
 ) -> Result<Option<TaxonomyItem>, DbError> {
@@ -128,8 +132,9 @@ pub async fn update(
                 "UPDATE taxonomy_items SET \
                    name = COALESCE($4, name), \
                    color = COALESCE($5, color), \
-                   is_closed = COALESCE($6, is_closed), \
-                   value = COALESCE($7, value) \
+                   emoji = COALESCE($6, emoji), \
+                   is_closed = COALESCE($7, is_closed), \
+                   value = COALESCE($8, value) \
                  WHERE id = $1 AND project_id = $2 AND kind = $3 \
                  RETURNING {COLS}"
             ),
@@ -139,6 +144,7 @@ pub async fn update(
                 &kind.as_str(),
                 &name,
                 &color,
+                &emoji,
                 &is_closed,
                 &value,
             ],

@@ -97,7 +97,8 @@ pub async fn home(
 
     let att_rows = client
         .query(
-            "SELECT p.id AS project_id, p.slug AS project_slug, i.ref AS reference, i.subject, \
+            "SELECT p.id AS project_id, i.id AS issue_id, p.slug AS project_slug, \
+                    i.ref AS reference, i.subject, \
                     i.due_date, COALESCE(st.name, '—') AS status_name, \
                     (i.due_date < $2) AS overdue \
              FROM issues i JOIN projects p ON p.id = i.project_id \
@@ -114,6 +115,7 @@ pub async fn home(
             let due: Option<Date> = r.get("due_date");
             AttentionItem {
                 project_id: r.get("project_id"),
+                issue_id: r.get("issue_id"),
                 project_slug: r.get("project_slug"),
                 reference: r.get("reference"),
                 subject: r.get("subject"),
@@ -213,6 +215,7 @@ async fn named_counts(
 }
 
 /// One project's dashboard snapshot.
+#[allow(clippy::too_many_lines)] // a flat sequence of independent aggregations
 pub async fn project(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
@@ -245,6 +248,26 @@ pub async fn project(
     let my_by_status = status_columns(client, project_id, Some(user_id)).await?;
     let by_type = named_counts(client, project_id, "type_id", "issue_type").await?;
     let by_priority = named_counts(client, project_id, "priority_id", "priority").await?;
+
+    // Issues by business category (a fixed enum column, not a taxonomy).
+    let cat_rows = client
+        .query(
+            "SELECT COALESCE(category, 'other') AS name, count(*)::int8 AS cnt \
+             FROM issues \
+             WHERE project_id = $1 AND deleted_at IS NULL \
+             GROUP BY COALESCE(category, 'other') \
+             ORDER BY cnt DESC",
+            &[&project_id],
+        )
+        .await?;
+    let by_category = cat_rows
+        .iter()
+        .map(|r| NamedCount {
+            name: r.get("name"),
+            color: String::new(),
+            count: r.get("cnt"),
+        })
+        .collect();
 
     let epic_rows = client
         .query(
@@ -316,6 +339,7 @@ pub async fn project(
         my_by_status,
         by_type,
         by_priority,
+        by_category,
         epics,
         throughput,
     })

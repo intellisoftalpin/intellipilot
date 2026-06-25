@@ -36,6 +36,7 @@ pub struct ProjectBucket {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct AttentionItem {
     pub project_id: Uuid,
+    pub issue_id: Uuid,
     pub project_slug: String,
     pub reference: i64,
     pub subject: String,
@@ -93,6 +94,7 @@ pub struct ProjectDashboard {
     pub my_by_status: Vec<StatusBucket>,
     pub by_type: Vec<NamedCount>,
     pub by_priority: Vec<NamedCount>,
+    pub by_category: Vec<NamedCount>,
     pub epics: Vec<EpicReadiness>,
     pub throughput: Vec<WeekCount>,
 }

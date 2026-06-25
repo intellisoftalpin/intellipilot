@@ -761,6 +761,7 @@ pub async fn import_commit(
                     &c.value,
                     &slugify(&c.value),
                     "#9e9e9e",
+                    "",
                     None,
                     None,
                 )
