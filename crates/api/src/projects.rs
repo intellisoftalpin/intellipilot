@@ -193,7 +193,11 @@ async fn unique_prefix(
 fn random_color() -> String {
     let raw = refresh::generate().raw;
     let idx = raw.bytes().next().unwrap_or(0) as usize % PROJECT_COLORS.len();
-    PROJECT_COLORS.get(idx).copied().unwrap_or("#999999").to_owned()
+    PROJECT_COLORS
+        .get(idx)
+        .copied()
+        .unwrap_or("#999999")
+        .to_owned()
 }
 
 // --------------------------------------------------------------------------
