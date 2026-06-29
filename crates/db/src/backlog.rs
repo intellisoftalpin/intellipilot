@@ -25,7 +25,7 @@ pub enum UpdateOutcome<T> {
     Conflict,
 }
 
-/// Allocate the next per-project ref atomically (shared across all kinds).
+/// Allocate the next per-project issue ref atomically.
 pub async fn alloc_ref(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
@@ -40,6 +40,24 @@ pub async fn alloc_ref(
         )
         .await?;
     Ok(row.get("last_ref"))
+}
+
+/// Allocate the next per-project epic ref atomically. Epics number
+/// independently of issues (key `<PREFIX>-E-<ref>`) via a separate counter.
+pub async fn alloc_epic_ref(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+) -> Result<i64, DbError> {
+    let row = client
+        .query_one(
+            "INSERT INTO project_ref_counters (project_id, last_epic_ref) VALUES ($1, 1) \
+             ON CONFLICT (project_id) DO UPDATE \
+               SET last_epic_ref = project_ref_counters.last_epic_ref + 1 \
+             RETURNING last_epic_ref",
+            &[&project_id],
+        )
+        .await?;
+    Ok(row.get("last_epic_ref"))
 }
 
 async fn next_order(
@@ -144,7 +162,7 @@ pub async fn create_epic(
     assigned_to: Option<Uuid>,
     milestone_id: Option<Uuid>,
 ) -> Result<Epic, DbError> {
-    let reference = alloc_ref(client, project_id).await?;
+    let reference = alloc_epic_ref(client, project_id).await?;
     let order = next_order(client, "epics", project_id).await?;
     let row = client
         .query_one(

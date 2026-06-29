@@ -202,6 +202,15 @@ pub struct CreateProjectRequest {
     #[garde(length(max = 16))]
     #[serde(default)]
     pub visibility: Option<String>,
+    /// Optional issue-key prefix (2–3 letters; uppercased server-side). Derived
+    /// from the name and made unique when omitted.
+    #[garde(length(max = 3), pattern(r"^[A-Za-z]{2,3}$"))]
+    #[serde(default)]
+    pub issue_prefix: Option<String>,
+    /// Optional card color (hex). A random palette color is assigned when omitted.
+    #[garde(length(max = 16))]
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -215,6 +224,14 @@ pub struct UpdateProjectRequest {
     #[garde(length(max = 16))]
     #[serde(default)]
     pub visibility: Option<String>,
+    /// Issue-key prefix (2–3 letters; uppercased server-side).
+    #[garde(length(max = 3), pattern(r"^[A-Za-z]{2,3}$"))]
+    #[serde(default)]
+    pub issue_prefix: Option<String>,
+    /// Card color (hex).
+    #[garde(length(max = 16))]
+    #[serde(default)]
+    pub color: Option<String>,
     #[garde(skip)]
     #[serde(default)]
     pub kanban_enabled: Option<bool>,

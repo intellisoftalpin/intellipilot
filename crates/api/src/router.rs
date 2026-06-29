@@ -16,8 +16,8 @@ use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
     admin, attachments, auth, avatar, backlog, branding, catalog, customers, dashboard, epic_cover,
-    health, issue_relations, issues_io, me, mfa, milestones, openapi, passkeys, projects, releases,
-    repositories, search, taxonomy, time_tracking, wiki,
+    health, issue_relations, issues_io, me, mfa, milestones, openapi, passkeys, project_icon,
+    projects, releases, repositories, search, taxonomy, time_tracking, wiki,
 };
 
 #[allow(clippy::too_many_lines)] // a flat, readable route table
@@ -109,6 +109,16 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}", get(projects::get_project))
             .route("/api/v1/projects/{project_id}", patch(projects::update_project))
             .route("/api/v1/projects/{project_id}", delete(projects::delete_project))
+            // Project icon image (object-storage backed, like avatars)
+            .route(
+                "/api/v1/projects/{project_id}/icon",
+                get(project_icon::serve_icon)
+                    .delete(project_icon::delete_icon)
+                    .merge(
+                        put(project_icon::upload_icon)
+                            .layer(axum::extract::DefaultBodyLimit::max(5 * 1024 * 1024)),
+                    ),
+            )
             .route("/api/v1/projects/{project_id}/roles", get(projects::list_roles))
             .route("/api/v1/projects/{project_id}/roles", post(projects::create_role))
             .route(

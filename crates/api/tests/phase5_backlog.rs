@@ -38,23 +38,24 @@ async fn owner_project(app: &TestApp) -> (String, String) {
 }
 
 #[tokio::test]
-async fn create_entities_allocate_shared_contiguous_refs() {
+async fn epics_and_issues_number_independently() {
     require_db!();
     let app = TestApp::spawn().await;
     let (token, pid) = owner_project(&app).await;
 
-    let e = app
+    // Epics have their own ref series (key <PREFIX>-E-<ref>).
+    let e1 = app
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/epics"),
             &token,
             &json!({ "subject": "E1" }),
         ))
         .await;
-    assert_eq!(e.status, 201, "{:?}", e.json);
-    assert_eq!(e.json["ref"], 1);
-    assert!(e.header("etag").is_some(), "response carries an ETag");
+    assert_eq!(e1.status, 201, "{:?}", e1.json);
+    assert_eq!(e1.json["ref"], 1);
+    assert!(e1.header("etag").is_some(), "response carries an ETag");
 
-    // Three issues share the per-project ref series with the epic.
+    // Issues number independently of epics, starting at 1.
     let u1 = app
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/issues"),
@@ -62,7 +63,7 @@ async fn create_entities_allocate_shared_contiguous_refs() {
             &json!({ "subject": "U1" }),
         ))
         .await;
-    assert_eq!(u1.json["ref"], 2);
+    assert_eq!(u1.json["ref"], 1);
     let u2 = app
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/issues"),
@@ -70,15 +71,27 @@ async fn create_entities_allocate_shared_contiguous_refs() {
             &json!({ "subject": "T1" }),
         ))
         .await;
-    assert_eq!(u2.json["ref"], 3);
-    let i = app
+    assert_eq!(u2.json["ref"], 2);
+
+    // A second epic continues the epic series, unaffected by the issues.
+    let e2 = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/epics"),
+            &token,
+            &json!({ "subject": "E2" }),
+        ))
+        .await;
+    assert_eq!(e2.json["ref"], 2);
+
+    // And a third issue continues the issue series.
+    let u3 = app
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/issues"),
             &token,
             &json!({ "subject": "I1" }),
         ))
         .await;
-    assert_eq!(i.json["ref"], 4);
+    assert_eq!(u3.json["ref"], 3);
 }
 
 #[tokio::test]

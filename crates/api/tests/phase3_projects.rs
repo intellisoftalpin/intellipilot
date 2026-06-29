@@ -388,3 +388,69 @@ async fn add_existing_user_directly() {
         .await;
     assert_eq!(bad_role.status, 422, "{:?}", bad_role.json);
 }
+
+#[tokio::test]
+async fn project_prefix_color_and_uniqueness() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, _id) = user(&app, "pfx@example.com", "pfxowner").await;
+
+    // Auto-derived prefix from a two-word name → "PS"; random color; no icon.
+    let p1 = create_project(&app, &token, "Payment Service").await;
+    assert_eq!(p1["issue_prefix"], "PS");
+    assert!(p1["color"].as_str().unwrap().starts_with('#'));
+    assert_eq!(p1["icon_image_kind"], "none");
+
+    // Explicit prefix is uppercased and accepted; explicit color kept.
+    let resp = app
+        .send(post_json_bearer(
+            "/api/v1/projects",
+            &token,
+            &json!({ "name": "Other", "issue_prefix": "abc", "color": "#0079bc" }),
+        ))
+        .await;
+    assert_eq!(resp.status, 201, "{:?}", resp.json);
+    assert_eq!(resp.json["issue_prefix"], "ABC");
+    assert_eq!(resp.json["color"], "#0079bc");
+
+    // A taken prefix is rejected (409, not silently mutated).
+    let dup = app
+        .send(post_json_bearer(
+            "/api/v1/projects",
+            &token,
+            &json!({ "name": "Dup", "issue_prefix": "ABC" }),
+        ))
+        .await;
+    assert_eq!(dup.status, 409, "{:?}", dup.json);
+
+    // Invalid format (digit) is rejected (422).
+    let bad = app
+        .send(post_json_bearer(
+            "/api/v1/projects",
+            &token,
+            &json!({ "name": "Bad", "issue_prefix": "A1" }),
+        ))
+        .await;
+    assert_eq!(bad.status, 422, "{:?}", bad.json);
+
+    // PATCH changes the prefix (uppercased); a clashing one is rejected.
+    let pid = p1["id"].as_str().unwrap();
+    let patched = app
+        .send(patch_json_bearer(
+            &format!("/api/v1/projects/{pid}"),
+            &token,
+            &json!({ "issue_prefix": "pay" }),
+        ))
+        .await;
+    assert_eq!(patched.status, 200, "{:?}", patched.json);
+    assert_eq!(patched.json["issue_prefix"], "PAY");
+
+    let clash = app
+        .send(patch_json_bearer(
+            &format!("/api/v1/projects/{pid}"),
+            &token,
+            &json!({ "issue_prefix": "ABC" }),
+        ))
+        .await;
+    assert_eq!(clash.status, 409, "{:?}", clash.json);
+}

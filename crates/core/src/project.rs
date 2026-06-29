@@ -53,6 +53,14 @@ pub struct EpicBoardSettings {
     pub in_progress_status_ids: Vec<Uuid>,
 }
 
+/// Predefined card-color palette (kept in sync with the frontend
+/// `ColorPalette.swatches`). New projects without an explicit color get a
+/// random entry; existing projects are backfilled deterministically.
+pub const PROJECT_COLORS: [&str; 10] = [
+    "#999999", "#ff8a84", "#ffcc00", "#9dce0a", "#669900", "#0079bc", "#5c3566", "#cc0000",
+    "#ff7518", "#34495e",
+];
+
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[allow(clippy::struct_excessive_bools)] // feature flags, not state machine
 pub struct Project {
@@ -62,6 +70,16 @@ pub struct Project {
     pub description: String,
     pub owner_id: Uuid,
     pub visibility: Visibility,
+    /// Issue-key prefix: 2–3 uppercase letters, globally unique. Issue keys
+    /// render as `<issue_prefix>-<ref>`, epic keys as `<issue_prefix>-E-<ref>`.
+    pub issue_prefix: String,
+    /// Card color (hex, from `PROJECT_COLORS`).
+    pub color: String,
+    /// `none` (render prefix-initials fallback) or `image` (uploaded icon).
+    pub icon_image_kind: String,
+    /// Cache-buster for the uploaded icon; `None` when no icon is set.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub icon_image_updated_at: Option<OffsetDateTime>,
     pub kanban_enabled: bool,
     pub backlog_enabled: bool,
     pub wiki_enabled: bool,
@@ -79,6 +97,8 @@ pub struct NewProject {
     pub description: String,
     pub owner_id: Uuid,
     pub visibility: Visibility,
+    pub issue_prefix: String,
+    pub color: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -86,6 +106,8 @@ pub struct ProjectUpdate {
     pub name: Option<String>,
     pub description: Option<String>,
     pub visibility: Option<Visibility>,
+    pub issue_prefix: Option<String>,
+    pub color: Option<String>,
     pub kanban_enabled: Option<bool>,
     pub backlog_enabled: Option<bool>,
     pub wiki_enabled: Option<bool>,

@@ -24,7 +24,7 @@ use axum::response::{IntoResponse, Response};
 use garde::Validate;
 use intellipilot_auth::refresh;
 use intellipilot_core::perms::Permission;
-use intellipilot_core::project::{NewProject, ProjectUpdate, Visibility};
+use intellipilot_core::project::{NewProject, PROJECT_COLORS, ProjectUpdate, Visibility};
 use intellipilot_db::memberships::MemberAccess;
 use intellipilot_db::{
     audit, invitations as invdb, memberships as memdb, projects as projdb, roles as roledb,
@@ -126,6 +126,74 @@ pub(crate) fn slugify(name: &str) -> String {
     } else {
         trimmed
     }
+}
+
+/// Derive a 2–3 letter uppercase issue prefix from a project name. Uses the
+/// initials of the first words when there are several (e.g. "Payment Service" →
+/// "PS"); otherwise the leading letters of the single word ("Apple" → "APP").
+pub(crate) fn derive_prefix(name: &str) -> String {
+    let words: Vec<&str> = name
+        .split_whitespace()
+        .filter(|w| w.chars().any(|c| c.is_ascii_alphabetic()))
+        .collect();
+    let mut p = String::new();
+    if words.len() >= 2 {
+        for w in words.iter().take(3) {
+            if let Some(c) = w.chars().find(char::is_ascii_alphabetic) {
+                p.push(c.to_ascii_uppercase());
+            }
+        }
+    } else {
+        for c in name.chars().filter(char::is_ascii_alphabetic).take(3) {
+            p.push(c.to_ascii_uppercase());
+        }
+    }
+    while p.len() < 2 {
+        p.push('X');
+    }
+    p.truncate(3);
+    p
+}
+
+/// Resolve a globally-unique issue prefix from a derived base, scanning short
+/// letter combinations on collision. Only used for auto-generation; an
+/// explicit user-supplied prefix is rejected (not mutated) when taken.
+async fn unique_prefix(
+    client: &deadpool_postgres::Client,
+    base: &str,
+) -> Result<String, intellipilot_db::DbError> {
+    if !projdb::prefix_exists(client, base, None).await? {
+        return Ok(base.to_owned());
+    }
+    let letters: Vec<char> = ('A'..='Z').collect();
+    for &a in &letters {
+        for &b in &letters {
+            let cand = format!("{a}{b}");
+            if !projdb::prefix_exists(client, &cand, None).await? {
+                return Ok(cand);
+            }
+        }
+    }
+    for &a in &letters {
+        for &b in &letters {
+            for &c in &letters {
+                let cand = format!("{a}{b}{c}");
+                if !projdb::prefix_exists(client, &cand, None).await? {
+                    return Ok(cand);
+                }
+            }
+        }
+    }
+    Err(intellipilot_db::DbError::Build(
+        "prefix space exhausted".into(),
+    ))
+}
+
+/// A random color from the predefined palette.
+fn random_color() -> String {
+    let raw = refresh::generate().raw;
+    let idx = raw.bytes().next().unwrap_or(0) as usize % PROJECT_COLORS.len();
+    PROJECT_COLORS.get(idx).copied().unwrap_or("#999999").to_owned()
 }
 
 // --------------------------------------------------------------------------
@@ -288,12 +356,35 @@ pub async fn create_project(
         Err(_) => return internal(&rid),
     };
 
+    // Issue prefix: an explicit one must be free (rejected, not mutated); an
+    // omitted one is derived from the name and made unique.
+    let issue_prefix = match req.issue_prefix.as_deref() {
+        Some(p) => {
+            let p = p.to_ascii_uppercase();
+            match projdb::prefix_exists(&client, &p, None).await {
+                Ok(true) => return conflict(&rid, "issue prefix already in use"),
+                Ok(false) => p,
+                Err(_) => return internal(&rid),
+            }
+        }
+        None => match unique_prefix(&client, &derive_prefix(&req.name)).await {
+            Ok(p) => p,
+            Err(_) => return internal(&rid),
+        },
+    };
+    let color = match req.color.as_deref() {
+        Some(c) if !c.is_empty() => c.to_owned(),
+        _ => random_color(),
+    };
+
     let new = NewProject {
         name: req.name.clone(),
         slug,
         description: req.description.clone(),
         owner_id: user.user_id,
         visibility,
+        issue_prefix,
+        color,
     };
     match projdb::create_with_defaults(&mut client, &new).await {
         Ok(project) => {
@@ -395,19 +486,33 @@ pub async fn update_project(
         }
         None => None,
     };
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&ctx.rid);
+    };
+    // A changed prefix is uppercased and must stay globally unique.
+    let issue_prefix = match req.issue_prefix.as_deref() {
+        Some(p) => {
+            let p = p.to_ascii_uppercase();
+            match projdb::prefix_exists(&client, &p, Some(ctx.project.id)).await {
+                Ok(true) => return conflict(&ctx.rid, "issue prefix already in use"),
+                Ok(false) => Some(p),
+                Err(_) => return internal(&ctx.rid),
+            }
+        }
+        None => None,
+    };
     let upd = ProjectUpdate {
         name: req.name.clone(),
         description: req.description.clone(),
         visibility,
+        issue_prefix,
+        color: req.color.clone(),
         kanban_enabled: req.kanban_enabled,
         backlog_enabled: req.backlog_enabled,
         wiki_enabled: req.wiki_enabled,
         epics_enabled: req.epics_enabled,
         epic_board: req.epic_board.clone(),
-    };
-    let auth = state.auth();
-    let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
     };
     match projdb::update(&client, ctx.project.id, &upd).await {
         Ok(Some(p)) => Json(p).into_response(),

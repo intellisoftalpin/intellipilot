@@ -31,6 +31,7 @@ pub mod notify;
 pub mod openapi;
 pub mod passkeys;
 pub mod problem;
+pub mod project_icon;
 pub mod projects;
 pub mod releases;
 pub mod repositories;
