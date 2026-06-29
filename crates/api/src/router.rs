@@ -238,6 +238,7 @@ pub fn build_router(state: AppState) -> Router {
             // Backlog — epics
             .route("/api/v1/projects/{project_id}/epics", get(backlog::list_epics))
             .route("/api/v1/projects/{project_id}/epics", post(backlog::create_epic))
+            .route("/api/v1/projects/{project_id}/epics", delete(backlog::purge_epics))
             .route("/api/v1/projects/{project_id}/epics/{id}", get(backlog::get_epic))
             .route("/api/v1/projects/{project_id}/epics/{id}", patch(backlog::update_epic))
             .route("/api/v1/projects/{project_id}/epics/{id}", delete(backlog::delete_epic))
@@ -255,6 +256,7 @@ pub fn build_router(state: AppState) -> Router {
             // Backlog — issues (unified: Story / Task / Bug / sub-task)
             .route("/api/v1/projects/{project_id}/issues", get(backlog::list_issues))
             .route("/api/v1/projects/{project_id}/issues", post(backlog::create_issue))
+            .route("/api/v1/projects/{project_id}/issues", delete(backlog::purge_issues))
             .route("/api/v1/projects/{project_id}/issues/bulk", post(backlog::bulk_create_issues))
             .route("/api/v1/projects/{project_id}/issues/{id}", get(backlog::get_issue))
             .route("/api/v1/projects/{project_id}/issues/{id}", patch(backlog::update_issue))

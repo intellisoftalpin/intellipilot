@@ -13,7 +13,7 @@
 
 mod common;
 
-use common::{TestApp, get_with_bearer, post_json_bearer, req};
+use common::{TestApp, delete_bearer, get_with_bearer, post_json_bearer, req};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
@@ -631,4 +631,86 @@ async fn issue_carries_labels_and_components() {
         1,
         "components unchanged"
     );
+}
+
+#[tokio::test]
+async fn bulk_purge_epics_detaches_issues_then_purge_issues_clears_all() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+
+    let epic = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/epics"),
+            &token,
+            &json!({ "subject": "E" }),
+        ))
+        .await;
+    assert_eq!(epic.status, 201, "{:?}", epic.json);
+    let epic_id = epic.json["id"].as_str().unwrap().to_owned();
+
+    // One issue grouped under the epic, one standalone.
+    let linked = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/issues"),
+            &token,
+            &json!({ "subject": "linked", "epic_id": epic_id }),
+        ))
+        .await;
+    assert_eq!(linked.status, 201, "{:?}", linked.json);
+    let _solo = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/issues"),
+            &token,
+            &json!({ "subject": "solo" }),
+        ))
+        .await;
+
+    // Purge epics: the epic is gone but both issues survive, detached.
+    let pe = app
+        .send(delete_bearer(
+            &format!("/api/v1/projects/{pid}/epics"),
+            &token,
+        ))
+        .await;
+    assert_eq!(pe.status, 200, "{:?}", pe.json);
+    assert_eq!(pe.json["deleted"], 1);
+
+    let epics = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/epics"),
+            &token,
+        ))
+        .await;
+    assert_eq!(epics.json["epics"].as_array().unwrap().len(), 0);
+
+    let issues = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/issues"),
+            &token,
+        ))
+        .await;
+    let list = issues.json["issues"].as_array().unwrap();
+    assert_eq!(list.len(), 2, "issues survive an epic purge");
+    for i in list {
+        assert!(i["epic_id"].is_null(), "epic_id detached after purge");
+    }
+
+    // Purge issues: now everything is gone.
+    let pi = app
+        .send(delete_bearer(
+            &format!("/api/v1/projects/{pid}/issues"),
+            &token,
+        ))
+        .await;
+    assert_eq!(pi.status, 200, "{:?}", pi.json);
+    assert_eq!(pi.json["deleted"], 2);
+
+    let issues2 = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/issues"),
+            &token,
+        ))
+        .await;
+    assert_eq!(issues2.json["issues"].as_array().unwrap().len(), 0);
 }

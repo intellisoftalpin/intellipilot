@@ -849,3 +849,114 @@ pub async fn taxonomy_reference_count(
         .await?;
     Ok(row.get("n"))
 }
+
+// ==========================================================================
+// bulk purge (project danger zone — hard, irreversible)
+// ==========================================================================
+
+/// Of the storage keys just removed (within `tx`), the ones no surviving
+/// attachment row still references — safe to delete from object storage.
+/// Mirrors the content-addressed dedup check in `attachments::gc`.
+async fn orphan_storage_keys(
+    tx: &tokio_postgres::Transaction<'_>,
+    removed: &[Row],
+) -> Result<Vec<String>, DbError> {
+    let mut keys: Vec<String> = removed
+        .iter()
+        .map(|r| r.get::<_, String>("storage_key"))
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let still = tx
+        .query(
+            "SELECT DISTINCT storage_key FROM attachments WHERE storage_key = ANY($1)",
+            &[&keys],
+        )
+        .await?;
+    let still: Vec<String> = still
+        .iter()
+        .map(|r| r.get::<_, String>("storage_key"))
+        .collect();
+    keys.retain(|k| !still.contains(k));
+    Ok(keys)
+}
+
+/// Hard-delete every issue in a project. Irreversible.
+///
+/// Also removes their comments/history/attachment rows; junction rows
+/// (labels/components/links/watchers) cascade via FK; time logs detach
+/// (`issue_id` → NULL); sub-task `parent_id` clears. Returns the issue count and
+/// the now-orphaned attachment storage keys (the caller deletes those blobs).
+pub async fn purge_project_issues(
+    client: &mut deadpool_postgres::Client,
+    project_id: Uuid,
+) -> Result<(u64, Vec<String>), DbError> {
+    let tx = client.transaction().await?;
+    tx.execute(
+        "DELETE FROM comments WHERE target_type = 'issue' \
+           AND target_id IN (SELECT id FROM issues WHERE project_id = $1)",
+        &[&project_id],
+    )
+    .await?;
+    tx.execute(
+        "DELETE FROM history_entries WHERE target_type = 'issue' \
+           AND target_id IN (SELECT id FROM issues WHERE project_id = $1)",
+        &[&project_id],
+    )
+    .await?;
+    let removed = tx
+        .query(
+            "DELETE FROM attachments WHERE target_type = 'issue' \
+               AND target_id IN (SELECT id FROM issues WHERE project_id = $1) \
+             RETURNING storage_key",
+            &[&project_id],
+        )
+        .await?;
+    let n = tx
+        .execute("DELETE FROM issues WHERE project_id = $1", &[&project_id])
+        .await?;
+    let orphans = orphan_storage_keys(&tx, &removed).await?;
+    tx.commit().await?;
+    Ok((n, orphans))
+}
+
+/// Hard-delete every epic in a project. Irreversible.
+///
+/// Also removes their comments/history/attachment rows. Issues are kept; their
+/// `epic_id` clears automatically (FK `ON DELETE SET NULL`). Returns the epic
+/// count and orphaned attachment storage keys.
+pub async fn purge_project_epics(
+    client: &mut deadpool_postgres::Client,
+    project_id: Uuid,
+) -> Result<(u64, Vec<String>), DbError> {
+    let tx = client.transaction().await?;
+    tx.execute(
+        "DELETE FROM comments WHERE target_type = 'epic' \
+           AND target_id IN (SELECT id FROM epics WHERE project_id = $1)",
+        &[&project_id],
+    )
+    .await?;
+    tx.execute(
+        "DELETE FROM history_entries WHERE target_type = 'epic' \
+           AND target_id IN (SELECT id FROM epics WHERE project_id = $1)",
+        &[&project_id],
+    )
+    .await?;
+    let removed = tx
+        .query(
+            "DELETE FROM attachments WHERE target_type = 'epic' \
+               AND target_id IN (SELECT id FROM epics WHERE project_id = $1) \
+             RETURNING storage_key",
+            &[&project_id],
+        )
+        .await?;
+    let n = tx
+        .execute("DELETE FROM epics WHERE project_id = $1", &[&project_id])
+        .await?;
+    let orphans = orphan_storage_keys(&tx, &removed).await?;
+    tx.commit().await?;
+    Ok((n, orphans))
+}

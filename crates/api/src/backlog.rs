@@ -28,8 +28,9 @@ use intellipilot_core::backlog::{EntityKind, etag};
 use intellipilot_core::perms::Permission;
 use intellipilot_db::backlog::UpdateOutcome;
 use intellipilot_db::{
-    attachments as adb, backlog as bl, comments as cdb, components as compdb, customers as custdb,
-    history, idempotency, labels as ldb, milestones as msdb, release_versions as rvdb,
+    attachments as adb, audit, backlog as bl, comments as cdb, components as compdb,
+    customers as custdb, history, idempotency, labels as ldb, milestones as msdb,
+    release_versions as rvdb,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -523,6 +524,82 @@ pub async fn move_epic(
         &ctx.rid,
     )
     .await
+}
+
+// --------------------------------------------------------------------------
+// bulk purge (project danger zone — hard, irreversible)
+// --------------------------------------------------------------------------
+
+/// `DELETE /api/v1/projects/{project_id}/issues` — hard-purge ALL issues in the
+/// project (and their comments/history/attachments). Project-level destructive
+/// action, gated on `ProjectModify`.
+pub async fn purge_issues(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = ctx.require(Permission::ProjectModify) {
+        return r;
+    }
+    let auth = state.auth();
+    let mut client = match auth.db.pool.get().await {
+        Ok(c) => c,
+        Err(_) => return internal(&ctx.rid),
+    };
+    match bl::purge_project_issues(&mut client, ctx.project.id).await {
+        Ok((n, keys)) => {
+            for k in &keys {
+                auth.attachments.storage.delete(k).await.ok();
+            }
+            audit::record(
+                &client,
+                Some(ctx.actor_id),
+                "project_issues_purged",
+                Some(client_ip(&headers)),
+                Some(&user_agent(&headers)),
+                &json!({ "project_id": ctx.project.id.to_string(), "deleted": n }),
+            )
+            .await;
+            Json(json!({ "deleted": n })).into_response()
+        }
+        Err(_) => internal(&ctx.rid),
+    }
+}
+
+/// `DELETE /api/v1/projects/{project_id}/epics` — hard-purge ALL epics in the
+/// project. Issues are kept but detached (`epic_id` cleared). Gated on
+/// `ProjectModify`.
+pub async fn purge_epics(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = ctx.require(Permission::ProjectModify) {
+        return r;
+    }
+    let auth = state.auth();
+    let mut client = match auth.db.pool.get().await {
+        Ok(c) => c,
+        Err(_) => return internal(&ctx.rid),
+    };
+    match bl::purge_project_epics(&mut client, ctx.project.id).await {
+        Ok((n, keys)) => {
+            for k in &keys {
+                auth.attachments.storage.delete(k).await.ok();
+            }
+            audit::record(
+                &client,
+                Some(ctx.actor_id),
+                "project_epics_purged",
+                Some(client_ip(&headers)),
+                Some(&user_agent(&headers)),
+                &json!({ "project_id": ctx.project.id.to_string(), "deleted": n }),
+            )
+            .await;
+            Json(json!({ "deleted": n })).into_response()
+        }
+        Err(_) => internal(&ctx.rid),
+    }
 }
 
 // ==========================================================================
