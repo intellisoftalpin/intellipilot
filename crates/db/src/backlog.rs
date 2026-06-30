@@ -13,6 +13,7 @@ use intellipilot_core::backlog::{Epic, Issue, IssueCategory, Resolution};
 use intellipilot_core::ordering::{normalized_ranks, rank_between};
 use time::{Date, OffsetDateTime};
 use tokio_postgres::Row;
+use tokio_postgres::types::ToSql;
 use uuid::Uuid;
 
 use crate::DbError;
@@ -586,6 +587,73 @@ pub async fn set_issue_components(
     Ok(())
 }
 
+/// Group an `(issue_id, value)` junction query into `issue_id -> [value]`.
+async fn group_ids(
+    client: &deadpool_postgres::Client,
+    sql: &str,
+    ids: &[Uuid],
+    value_col: &str,
+) -> Result<std::collections::HashMap<Uuid, Vec<Uuid>>, DbError> {
+    let rows = client.query(sql, &[&ids]).await?;
+    let mut map: std::collections::HashMap<Uuid, Vec<Uuid>> = std::collections::HashMap::new();
+    for r in &rows {
+        map.entry(r.get::<_, Uuid>("issue_id"))
+            .or_default()
+            .push(r.get::<_, Uuid>(value_col));
+    }
+    Ok(map)
+}
+
+/// Hydrate labels/components/customers/watchers for a batch of issues in 4
+/// queries total (one per junction), instead of 4 queries *per issue*. Replaces
+/// the old N+1 per-row hydration on list paths.
+pub async fn hydrate_issue_relations(
+    client: &deadpool_postgres::Client,
+    issues: &mut [Issue],
+) -> Result<(), DbError> {
+    if issues.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = issues.iter().map(|i| i.id).collect();
+    let labels = group_ids(
+        client,
+        "SELECT issue_id, label_id FROM issue_labels WHERE issue_id = ANY($1) ORDER BY label_id",
+        &ids,
+        "label_id",
+    )
+    .await?;
+    let components = group_ids(
+        client,
+        "SELECT issue_id, component_id FROM issue_components WHERE issue_id = ANY($1) \
+         ORDER BY component_id",
+        &ids,
+        "component_id",
+    )
+    .await?;
+    let customers = group_ids(
+        client,
+        "SELECT issue_id, customer_id FROM issue_customers WHERE issue_id = ANY($1) \
+         ORDER BY customer_id",
+        &ids,
+        "customer_id",
+    )
+    .await?;
+    let watchers = group_ids(
+        client,
+        "SELECT issue_id, user_id FROM issue_watchers WHERE issue_id = ANY($1) ORDER BY user_id",
+        &ids,
+        "user_id",
+    )
+    .await?;
+    for iss in issues.iter_mut() {
+        iss.labels = labels.get(&iss.id).cloned().unwrap_or_default();
+        iss.components = components.get(&iss.id).cloned().unwrap_or_default();
+        iss.customer_ids = customers.get(&iss.id).cloned().unwrap_or_default();
+        iss.watchers = watchers.get(&iss.id).cloned().unwrap_or_default();
+    }
+    Ok(())
+}
+
 pub async fn create_issue(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
@@ -674,16 +742,114 @@ pub async fn list_issues(
             &[&project_id],
         )
         .await?;
-    let mut issues = Vec::with_capacity(rows.len());
-    for r in &rows {
-        let mut issue = row_to_issue(r);
-        issue.labels = issue_label_ids(client, issue.id).await?;
-        issue.components = issue_component_ids(client, issue.id).await?;
-        issue.customer_ids = issue_customer_ids(client, issue.id).await?;
-        issue.watchers = issue_watcher_ids(client, issue.id).await?;
-        issues.push(issue);
-    }
+    let mut issues: Vec<Issue> = rows.iter().map(row_to_issue).collect();
+    hydrate_issue_relations(client, &mut issues).await?;
     Ok(issues)
+}
+
+/// Filter set for the issues list.
+///
+/// Every field is optional (NULL → no filter). `assignee_mode`/`epic_mode`/
+/// `milestone_mode` are `None` (no filter), `"none"` (unset / IS NULL) or
+/// `"is"` (equals the matching id). Used by [`list_issues_paged`], which also
+/// returns the total matching count; `limit = None` means unbounded (the board
+/// / all-issues callers).
+#[derive(Debug, Default)]
+pub struct IssueQuery {
+    pub search: Option<String>,
+    pub status_id: Option<Uuid>,
+    pub type_id: Option<Uuid>,
+    pub priority_id: Option<Uuid>,
+    pub size_id: Option<Uuid>,
+    pub category: Option<String>,
+    pub assignee_mode: Option<String>,
+    pub assignee_id: Option<Uuid>,
+    pub epic_mode: Option<String>,
+    pub epic_id: Option<Uuid>,
+    pub milestone_mode: Option<String>,
+    pub milestone_id: Option<Uuid>,
+    pub label_id: Option<Uuid>,
+    pub component_id: Option<Uuid>,
+    pub overdue: bool,
+}
+
+const ISSUE_FILTER_WHERE: &str = "issues.project_id = $1 AND issues.deleted_at IS NULL \
+     AND ($2::uuid IS NULL OR issues.status_id = $2) \
+     AND ($3::uuid IS NULL OR issues.type_id = $3) \
+     AND ($4::uuid IS NULL OR issues.priority_id = $4) \
+     AND ($5::uuid IS NULL OR issues.size_id = $5) \
+     AND ($6::text IS NULL OR issues.category = $6) \
+     AND ($7::text IS NULL OR ($7 = 'none' AND issues.assigned_to IS NULL) \
+                          OR ($7 = 'is' AND issues.assigned_to = $8::uuid)) \
+     AND ($9::text IS NULL OR ($9 = 'none' AND issues.epic_id IS NULL) \
+                          OR ($9 = 'is' AND issues.epic_id = $10::uuid)) \
+     AND ($11::text IS NULL OR ($11 = 'none' AND issues.milestone_id IS NULL) \
+                           OR ($11 = 'is' AND issues.milestone_id = $12::uuid)) \
+     AND ($13::uuid IS NULL OR EXISTS \
+            (SELECT 1 FROM issue_labels il WHERE il.issue_id = issues.id AND il.label_id = $13)) \
+     AND ($14::uuid IS NULL OR EXISTS \
+            (SELECT 1 FROM issue_components ic WHERE ic.issue_id = issues.id AND ic.component_id = $14)) \
+     AND ($15::text IS NULL OR issues.subject ILIKE $15 OR issues.description ILIKE $15 \
+                           OR issues.ref::text ILIKE $15) \
+     AND ($16::boolean IS NOT TRUE OR (issues.due_date < CURRENT_DATE \
+            AND NOT COALESCE((SELECT is_closed FROM taxonomy_items WHERE id = issues.status_id), false)))";
+
+pub async fn list_issues_paged(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    q: &IssueQuery,
+    limit: Option<i64>,
+    offset: i64,
+) -> Result<(Vec<Issue>, i64), DbError> {
+    let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
+    let off = offset.max(0);
+    let lim = limit.unwrap_or(0);
+    let base_params: Vec<&(dyn ToSql + Sync)> = vec![
+        &project_id,
+        &q.status_id,
+        &q.type_id,
+        &q.priority_id,
+        &q.size_id,
+        &q.category,
+        &q.assignee_mode,
+        &q.assignee_id,
+        &q.epic_mode,
+        &q.epic_id,
+        &q.milestone_mode,
+        &q.milestone_id,
+        &q.label_id,
+        &q.component_id,
+        &search_like,
+        &q.overdue,
+    ];
+
+    let total: i64 = client
+        .query_one(
+            &format!("SELECT count(*) AS n FROM issues WHERE {ISSUE_FILTER_WHERE}"),
+            &base_params,
+        )
+        .await?
+        .get("n");
+
+    let mut page_params = base_params.clone();
+    let page_sql = if limit.is_some() {
+        page_params.push(&lim);
+        page_params.push(&off);
+        format!(
+            "SELECT {ISSUE_COLS} FROM issues WHERE {ISSUE_FILTER_WHERE} \
+             ORDER BY issues.\"order\", issues.id LIMIT $17 OFFSET $18"
+        )
+    } else {
+        page_params.push(&off);
+        format!(
+            "SELECT {ISSUE_COLS} FROM issues WHERE {ISSUE_FILTER_WHERE} \
+             ORDER BY issues.\"order\", issues.id OFFSET $17"
+        )
+    };
+    let rows = client.query(&page_sql, &page_params).await?;
+    let mut issues: Vec<Issue> = rows.iter().map(row_to_issue).collect();
+    hydrate_issue_relations(client, &mut issues).await?;
+    Ok((issues, total))
 }
 
 pub async fn update_issue(
@@ -782,15 +948,8 @@ pub async fn issues_in_milestone(
             &[&project_id, &milestone_id],
         )
         .await?;
-    let mut issues = Vec::with_capacity(rows.len());
-    for r in &rows {
-        let mut issue = row_to_issue(r);
-        issue.labels = issue_label_ids(client, issue.id).await?;
-        issue.components = issue_component_ids(client, issue.id).await?;
-        issue.customer_ids = issue_customer_ids(client, issue.id).await?;
-        issue.watchers = issue_watcher_ids(client, issue.id).await?;
-        issues.push(issue);
-    }
+    let mut issues: Vec<Issue> = rows.iter().map(row_to_issue).collect();
+    hydrate_issue_relations(client, &mut issues).await?;
     Ok(issues)
 }
 

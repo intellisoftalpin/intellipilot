@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use garde::Validate;
@@ -1027,7 +1027,66 @@ async fn validate_label_component_ids(
     Ok(())
 }
 
-pub async fn list_issues(State(state): State<AppState>, ctx: ProjectContext) -> Response {
+/// Query string for the issues list: server-side filtering + pagination. Every
+/// filter is optional. `assignee`/`epic`/`milestone` accept `none` (unset) or a
+/// uuid. `limit` omitted → unbounded (board / all-issues callers); the list UI
+/// sends an explicit page size (default 50, clamped 1..=200).
+#[derive(Debug, serde::Deserialize)]
+pub struct IssueListQuery {
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default, rename = "status")]
+    pub status_id: Option<String>,
+    #[serde(default, rename = "type")]
+    pub type_id: Option<String>,
+    #[serde(default, rename = "priority")]
+    pub priority_id: Option<String>,
+    #[serde(default, rename = "size")]
+    pub size_id: Option<String>,
+    #[serde(default)]
+    pub assignee: Option<String>,
+    #[serde(default)]
+    pub epic: Option<String>,
+    #[serde(default)]
+    pub milestone: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub component: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub overdue: Option<bool>,
+}
+
+/// Resolve a `none`/uuid reference filter into a (mode, id) pair.
+fn ref_filter(s: &Option<String>) -> (Option<String>, Option<Uuid>) {
+    match s.as_deref() {
+        None => (None, None),
+        Some("none") => (Some("none".to_owned()), None),
+        Some(v) => Uuid::parse_str(v).map_or((None, None), |u| (Some("is".to_owned()), Some(u))),
+    }
+}
+
+fn opt_uuid(s: &Option<String>) -> Option<Uuid> {
+    s.as_deref().and_then(|v| Uuid::parse_str(v).ok())
+}
+
+fn opt_nonempty(s: &Option<String>) -> Option<String> {
+    s.as_ref()
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+}
+
+pub async fn list_issues(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    Query(q): Query<IssueListQuery>,
+) -> Response {
     if let Err(r) = ctx.require(Permission::IssueView) {
         return r;
     }
@@ -1035,8 +1094,36 @@ pub async fn list_issues(State(state): State<AppState>, ctx: ProjectContext) -> 
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
     };
-    match bl::list_issues(&client, ctx.project.id).await {
-        Ok(items) => Json(json!({ "issues": items })).into_response(),
+    let (assignee_mode, assignee_id) = ref_filter(&q.assignee);
+    let (epic_mode, epic_id) = ref_filter(&q.epic);
+    let (milestone_mode, milestone_id) = ref_filter(&q.milestone);
+    let query = bl::IssueQuery {
+        search: opt_nonempty(&q.search),
+        status_id: opt_uuid(&q.status_id),
+        type_id: opt_uuid(&q.type_id),
+        priority_id: opt_uuid(&q.priority_id),
+        size_id: opt_uuid(&q.size_id),
+        category: opt_nonempty(&q.category),
+        assignee_mode,
+        assignee_id,
+        epic_mode,
+        epic_id,
+        milestone_mode,
+        milestone_id,
+        label_id: opt_uuid(&q.label),
+        component_id: opt_uuid(&q.component),
+        overdue: q.overdue.unwrap_or(false),
+    };
+    let limit = q.limit.map(|l| i64::from(l.clamp(1, 200)));
+    let offset = i64::from(q.offset.unwrap_or(0));
+    match bl::list_issues_paged(&client, ctx.project.id, &query, limit, offset).await {
+        Ok((items, total)) => Json(json!({
+            "issues": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }))
+        .into_response(),
         Err(_) => internal(&ctx.rid),
     }
 }
