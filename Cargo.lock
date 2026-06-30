@@ -84,9 +84,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "arbitrary"
@@ -2075,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-api"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "ammonia",
  "assert-json-diff",
@@ -2133,7 +2133,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-auth"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "argon2",
  "base32",
@@ -2159,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-core"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "garde",
  "insta",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-db"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
@@ -2196,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-git"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "base64 0.22.1",
  "git2",
@@ -2207,7 +2207,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-mailer"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "async-trait",
  "intellipilot-core",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-storage"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-testkit"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
