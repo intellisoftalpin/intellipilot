@@ -15,9 +15,10 @@ use crate::middleware::{rate_limit, request_id, security_headers};
 use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
-    admin, attachments, auth, avatar, backlog, branding, catalog, customers, dashboard, epic_cover,
-    health, issue_relations, issues_io, me, mfa, milestones, openapi, passkeys, project_icon,
-    projects, releases, repositories, search, taxonomy, time_tracking, wiki,
+    admin, attachments, auth, avatar, backlog, board_views, branding, catalog, customers,
+    dashboard, epic_cover, health, issue_relations, issues_io, me, mfa, milestones, openapi,
+    passkeys, project_icon, projects, releases, repositories, search, taxonomy, time_tracking,
+    wiki,
 };
 
 #[allow(clippy::too_many_lines)] // a flat, readable route table
@@ -268,6 +269,7 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/issues", post(backlog::create_issue))
             .route("/api/v1/projects/{project_id}/issues", delete(backlog::purge_issues))
             .route("/api/v1/projects/{project_id}/issues/bulk", post(backlog::bulk_create_issues))
+            .route("/api/v1/projects/{project_id}/issues/by-ref/{ref}", get(backlog::get_issue_by_ref))
             .route("/api/v1/projects/{project_id}/issues/{id}", get(backlog::get_issue))
             .route("/api/v1/projects/{project_id}/issues/{id}", patch(backlog::update_issue))
             .route("/api/v1/projects/{project_id}/issues/{id}", delete(backlog::delete_issue))
@@ -325,6 +327,19 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/customers", post(customers::create))
             .route("/api/v1/projects/{project_id}/customers/{customer_id}", patch(customers::update))
             .route("/api/v1/projects/{project_id}/customers/{customer_id}", delete(customers::delete))
+            // Kanban board — per-user saved views + last-used
+            .route(
+                "/api/v1/projects/{project_id}/board-views",
+                get(board_views::list).post(board_views::create),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/board-views/last-used",
+                get(board_views::get_last_used).put(board_views::put_last_used),
+            )
+            .route(
+                "/api/v1/projects/{project_id}/board-views/{view_id}",
+                put(board_views::update).delete(board_views::delete),
+            )
             // Releases + versions
             .route("/api/v1/projects/{project_id}/releases", get(releases::list_releases))
             .route("/api/v1/projects/{project_id}/releases", post(releases::create_release))

@@ -660,7 +660,6 @@ fn write_from_create(req: &CreateIssueRequest) -> bl::IssueWrite<'_> {
         category: req
             .category
             .map(intellipilot_core::backlog::IssueCategory::as_str),
-        customer_id: req.customer_id,
         start_date: req.start_date,
         due_date: req.due_date,
         resolution: req
@@ -676,7 +675,7 @@ fn write_from_create(req: &CreateIssueRequest) -> bl::IssueWrite<'_> {
 async fn validate_issue_extras(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
-    customer_id: Option<Uuid>,
+    customer_ids: &[Uuid],
     release_version_id: Option<Uuid>,
     release_text: Option<&str>,
     rid: &str,
@@ -689,16 +688,17 @@ async fn validate_issue_extras(
             "set either release_version_id or release_text, not both",
         ));
     }
-    if let Some(cid) = customer_id
-        && !custdb::in_project(client, project_id, cid)
+    for cid in customer_ids {
+        if !custdb::in_project(client, project_id, *cid)
             .await
             .unwrap_or(false)
-    {
-        return Err(unprocessable(
-            rid,
-            "invalid_association",
-            "customer not found in this project",
-        ));
+        {
+            return Err(unprocessable(
+                rid,
+                "invalid_association",
+                "customer not found in this project",
+            ));
+        }
     }
     if let Some(vid) = release_version_id
         && !rvdb::in_project(client, project_id, vid)
@@ -759,7 +759,7 @@ pub async fn create_issue(
     if let Err(r) = validate_issue_extras(
         &client,
         ctx.project.id,
-        req.customer_id,
+        &req.customer_ids,
         req.release_version_id,
         req.release_text.as_deref(),
         &ctx.rid,
@@ -788,6 +788,9 @@ pub async fn create_issue(
         .await
         .is_err()
         || bl::set_issue_components(&mut client, i.id, &req.components)
+            .await
+            .is_err()
+        || bl::set_issue_customers(&mut client, i.id, &req.customer_ids)
             .await
             .is_err()
     {
@@ -867,7 +870,7 @@ pub async fn bulk_create_issues(
         if let Err(r) = validate_issue_extras(
             &client,
             ctx.project.id,
-            item.customer_id,
+            &item.customer_ids,
             item.release_version_id,
             item.release_text.as_deref(),
             &ctx.rid,
@@ -894,6 +897,9 @@ pub async fn bulk_create_issues(
             .await
             .is_err()
             || bl::set_issue_components(&mut client, i.id, &item.components)
+                .await
+                .is_err()
+            || bl::set_issue_customers(&mut client, i.id, &item.customer_ids)
                 .await
                 .is_err()
         {
@@ -1057,6 +1063,35 @@ pub async fn get_issue(
     }
 }
 
+/// `GET /api/v1/projects/{project_id}/issues/by-ref/{ref}`
+///
+/// Resolve a human-readable issue key (the numeric `ref` from `PS-398`) to the
+/// full issue — backs clean, deep-linkable issue URLs in the SPA.
+pub async fn get_issue_by_ref(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    Path(params): Path<HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = ctx.require(Permission::IssueView) {
+        return r;
+    }
+    let Some(reference) = params.get("ref").and_then(|s| s.parse::<i64>().ok()) else {
+        return not_found(&ctx.rid);
+    };
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&ctx.rid);
+    };
+    match bl::issue_id_by_ref(&client, ctx.project.id, reference).await {
+        Ok(Some(id)) => match bl::get_issue(&client, ctx.project.id, id).await {
+            Ok(Some(e)) => with_etag(StatusCode::OK, e.id, e.version, &e),
+            _ => not_found(&ctx.rid),
+        },
+        Ok(None) => not_found(&ctx.rid),
+        Err(_) => internal(&ctx.rid),
+    }
+}
+
 pub async fn update_issue(
     State(state): State<AppState>,
     ctx: ProjectContext,
@@ -1085,9 +1120,10 @@ pub async fn update_issue(
     if let Err(r) = check_if_match(&headers, &etag(old.id, old.version), &ctx.rid) {
         return r;
     }
-    // Validate any label/component replacement up front.
+    // Validate any label/component/customer replacement up front.
     let new_labels = patch.labels.clone();
     let new_components = patch.components.clone();
+    let new_customers = patch.customer_ids.clone();
     if let Err(r) = validate_label_component_ids(
         &client,
         ctx.project.id,
@@ -1111,7 +1147,10 @@ pub async fn update_issue(
     let milestone_id = patch.milestone_id.unwrap_or(old.milestone_id);
     let assigned_to = patch.assigned_to.unwrap_or(old.assigned_to);
     let category = patch.category.unwrap_or(old.category);
-    let customer_id = patch.customer_id.unwrap_or(old.customer_id);
+    // Effective customer set: the replacement if present, else unchanged.
+    let customer_ids = new_customers
+        .clone()
+        .unwrap_or_else(|| old.customer_ids.clone());
     // Dates: absent leaves unchanged (no clear), matching milestones.
     let start_date = patch.start_date.or(old.start_date);
     let due_date = patch.due_date.or(old.due_date);
@@ -1152,7 +1191,7 @@ pub async fn update_issue(
     if let Err(r) = validate_issue_extras(
         &client,
         ctx.project.id,
-        customer_id,
+        &customer_ids,
         release_version_id,
         release_text.as_deref(),
         &ctx.rid,
@@ -1210,12 +1249,12 @@ pub async fn update_issue(
         &json!(old.category),
         &json!(category),
     );
-    diff_field(
-        &mut diff,
-        "customer_id",
-        &json!(old.customer_id),
-        &json!(customer_id),
-    );
+    if new_customers.is_some() && old.customer_ids != customer_ids {
+        diff.insert(
+            "customer_ids".to_owned(),
+            json!([old.customer_ids, customer_ids]),
+        );
+    }
     diff_field(
         &mut diff,
         "start_date",
@@ -1259,7 +1298,6 @@ pub async fn update_issue(
         milestone_id,
         assigned_to,
         category: category.map(intellipilot_core::backlog::IssueCategory::as_str),
-        customer_id,
         start_date,
         due_date,
         resolution: resolution.map(intellipilot_core::backlog::Resolution::as_str),
@@ -1279,6 +1317,14 @@ pub async fn update_issue(
             }
             if let Some(components) = &new_components {
                 if bl::set_issue_components(&mut client, e.id, components)
+                    .await
+                    .is_err()
+                {
+                    return internal(&ctx.rid);
+                }
+            }
+            if let Some(customers) = &new_customers {
+                if bl::set_issue_customers(&mut client, e.id, customers)
                     .await
                     .is_err()
                 {

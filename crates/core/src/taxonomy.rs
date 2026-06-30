@@ -50,6 +50,14 @@ impl TaxonomyKind {
         matches!(self, Self::IssueStatus)
     }
 
+    /// Whether this kind carries an `is_new` flag (the status kind). The "new"
+    /// status is the default column a freshly created issue lands in; at most
+    /// one status per project may carry it.
+    #[must_use]
+    pub const fn has_new(self) -> bool {
+        matches!(self, Self::IssueStatus)
+    }
+
     /// Whether this kind carries a numeric `value` (size ordinal only).
     #[must_use]
     pub const fn has_value(self) -> bool {
@@ -71,6 +79,10 @@ pub struct TaxonomyItem {
     pub order: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_closed: Option<bool>,
+    /// The "new" status flag (status kind only): the default column a new issue
+    /// lands in. At most one status per project carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_new: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<f64>,
     #[serde(with = "time::serde::rfc3339")]
@@ -85,6 +97,7 @@ pub struct DefaultTaxonomyItem {
     pub slug: &'static str,
     pub color: &'static str,
     pub is_closed: Option<bool>,
+    pub is_new: Option<bool>,
     pub value: Option<f64>,
 }
 
@@ -97,13 +110,15 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
                   name: &'static str,
                   slug: &'static str,
                   color: &'static str,
-                  closed: bool| {
+                  closed: bool,
+                  is_new: bool| {
         DefaultTaxonomyItem {
             kind,
             name,
             slug,
             color,
             is_closed: Some(closed),
+            is_new: Some(is_new),
             value: None,
         }
     };
@@ -115,6 +130,7 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
                 slug,
                 color,
                 is_closed: None,
+                is_new: None,
                 value: None,
             }
         };
@@ -125,24 +141,34 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
             slug,
             color,
             is_closed: None,
+            is_new: None,
             value: Some(ordinal),
         }
     };
 
     vec![
-        // Unified issue statuses (shared by every issue type)
-        status(IssueStatus, "New", "new", "#999999", false),
-        status(IssueStatus, "Ready", "ready", "#ff8a84", false),
-        status(IssueStatus, "In progress", "in-progress", "#ffcc00", false),
+        // Unified issue statuses (shared by every issue type). "New" is the
+        // default landing column for freshly created issues.
+        status(IssueStatus, "New", "new", "#999999", false, true),
+        status(IssueStatus, "Ready", "ready", "#ff8a84", false, false),
+        status(
+            IssueStatus,
+            "In progress",
+            "in-progress",
+            "#ffcc00",
+            false,
+            false,
+        ),
         status(
             IssueStatus,
             "Ready for test",
             "ready-for-test",
             "#9dce0a",
             false,
+            false,
         ),
-        status(IssueStatus, "Done", "done", "#669900", true),
-        status(IssueStatus, "Archived", "archived", "#5c3566", true),
+        status(IssueStatus, "Done", "done", "#669900", true, false),
+        status(IssueStatus, "Archived", "archived", "#5c3566", true, false),
         // Issue types (the work-item discriminator: Story / Task / Bug / …)
         plain(IssueType, "Story", "story", "#3b7dd8"),
         plain(IssueType, "Task", "task", "#669900"),

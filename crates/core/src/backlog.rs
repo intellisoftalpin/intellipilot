@@ -103,8 +103,9 @@ pub struct Issue {
     /// Business-driver category (fixed enum).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<IssueCategory>,
-    /// Requesting customer (meaningful when `category = customer_request`).
-    pub customer_id: Option<Uuid>,
+    /// Requesting customers (meaningful when `category = customer_request`). An
+    /// issue may serve several customers (many-to-many).
+    pub customer_ids: Vec<Uuid>,
     #[serde(with = "crate::serde_date::option")]
     pub start_date: Option<time::Date>,
     #[serde(with = "crate::serde_date::option")]

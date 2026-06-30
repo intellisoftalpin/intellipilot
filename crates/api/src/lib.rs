@@ -12,6 +12,7 @@ pub mod attachments;
 pub mod auth;
 pub mod avatar;
 pub mod backlog;
+pub mod board_views;
 pub mod branding;
 pub mod catalog;
 pub mod customers;

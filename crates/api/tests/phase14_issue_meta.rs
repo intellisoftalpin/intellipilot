@@ -161,7 +161,7 @@ async fn issue_new_fields_round_trip_and_resolution() {
             "subject": "Feature X",
             "size_id": size_m,
             "category": "customer_request",
-            "customer_id": cust_id,
+            "customer_ids": [cust_id],
             "start_date": "2026-06-01",
             "due_date": "2026-06-30",
             "status_id": st_new,
@@ -172,7 +172,7 @@ async fn issue_new_fields_round_trip_and_resolution() {
     assert_eq!(created.status, 201, "{:?}", created.json);
     assert_eq!(created.json["size_id"], size_m);
     assert_eq!(created.json["category"], "customer_request");
-    assert_eq!(created.json["customer_id"], cust_id);
+    assert_eq!(created.json["customer_ids"][0], cust_id);
     assert_eq!(created.json["start_date"], "2026-06-01");
     assert_eq!(created.json["due_date"], "2026-06-30");
     assert_eq!(created.json["release_text"], "PSBP 1.1 (manual)");
@@ -240,7 +240,7 @@ async fn invalid_category_and_customer_and_fix_version() {
         &app,
         &token,
         &pid,
-        &json!({ "subject": "x", "customer_id": uuid::Uuid::now_v7() }),
+        &json!({ "subject": "x", "customer_ids": [uuid::Uuid::now_v7()] }),
     )
     .await;
     assert_eq!(bad_cust.status, 422, "{:?}", bad_cust.json);

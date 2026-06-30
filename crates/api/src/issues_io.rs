@@ -684,6 +684,10 @@ pub struct ImportMapping {
     /// Components map to existing only (`target`); `create` is ignored.
     #[serde(default)]
     pub components: Vec<ValueChoice>,
+    /// Unmatched JIRA users map to an existing project member (`target`) or are
+    /// skipped (left unassigned). `create` is ignored — users are never created.
+    #[serde(default)]
+    pub users: Vec<ValueChoice>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -764,6 +768,7 @@ pub async fn import_commit(
                     "",
                     None,
                     None,
+                    None,
                 )
                 .await
                 {
@@ -805,8 +810,9 @@ pub async fn import_commit(
         .filter_map(|c| c.target.map(|t| (c.value.to_lowercase(), t)))
         .collect();
 
-    // Users: match by username / email / full_name.
-    let user_map: HashMap<String, Uuid> = memdb::list_for_project(&client, pid)
+    // Users: auto-match by username / email / full_name, then overlay the
+    // explicit mapping (a chosen project member for each unmatched JIRA user).
+    let mut user_map: HashMap<String, Uuid> = memdb::list_for_project(&client, pid)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -817,6 +823,11 @@ pub async fn import_commit(
                 .map(move |s| (s.to_lowercase(), m.user_id))
         })
         .collect();
+    for c in &mapping.users {
+        if let Some(target) = c.target {
+            user_map.insert(c.value.to_lowercase(), target);
+        }
+    }
 
     let look = |m: &HashMap<String, Uuid>, k: &str| m.get(&k.to_lowercase()).copied();
 
@@ -883,7 +894,6 @@ pub async fn import_commit(
             milestone_id: None,
             assigned_to: look(&user_map, &row.assignee),
             category: None,
-            customer_id: None,
             start_date: None,
             due_date: row.due_date,
             resolution: None,

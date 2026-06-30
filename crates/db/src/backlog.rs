@@ -396,7 +396,7 @@ pub async fn epic_in_project(
 
 const ISSUE_COLS: &str = "id, project_id, ref, subject, description, status_id, type_id, \
      priority_id, size_id, epic_id, parent_id, milestone_id, owner_id, assigned_to, \
-     category, customer_id, start_date, due_date, resolution, resolved_at, \
+     category, start_date, due_date, resolution, resolved_at, \
      release_version_id, release_text, \"order\", version, created_at, modified_at";
 
 fn row_to_issue(r: &Row) -> Issue {
@@ -418,7 +418,8 @@ fn row_to_issue(r: &Row) -> Issue {
         category: r
             .get::<_, Option<String>>("category")
             .and_then(|s| IssueCategory::parse(&s)),
-        customer_id: r.get("customer_id"),
+        // Filled by the caller from the issue_customers junction table.
+        customer_ids: Vec::new(),
         start_date: r.get("start_date"),
         due_date: r.get("due_date"),
         resolution: r
@@ -468,7 +469,6 @@ pub struct IssueWrite<'a> {
     pub milestone_id: Option<Uuid>,
     pub assigned_to: Option<Uuid>,
     pub category: Option<&'a str>,
-    pub customer_id: Option<Uuid>,
     pub start_date: Option<Date>,
     pub due_date: Option<Date>,
     pub resolution: Option<&'a str>,
@@ -525,6 +525,44 @@ pub async fn set_issue_labels(
     Ok(())
 }
 
+/// Customer ids attached to an issue.
+pub async fn issue_customer_ids(
+    client: &deadpool_postgres::Client,
+    issue_id: Uuid,
+) -> Result<Vec<Uuid>, DbError> {
+    let rows = client
+        .query(
+            "SELECT customer_id FROM issue_customers WHERE issue_id = $1 ORDER BY customer_id",
+            &[&issue_id],
+        )
+        .await?;
+    Ok(rows.iter().map(|r| r.get("customer_id")).collect())
+}
+
+/// Replace the full set of customers on an issue (validated to be in-project by
+/// the caller). Transactional.
+pub async fn set_issue_customers(
+    client: &mut deadpool_postgres::Client,
+    issue_id: Uuid,
+    customer_ids: &[Uuid],
+) -> Result<(), DbError> {
+    let tx = client.transaction().await?;
+    tx.execute(
+        "DELETE FROM issue_customers WHERE issue_id = $1",
+        &[&issue_id],
+    )
+    .await?;
+    for cid in customer_ids {
+        tx.execute(
+            "INSERT INTO issue_customers (issue_id, customer_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            &[&issue_id, cid],
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Replace the full set of components on an issue.
 pub async fn set_issue_components(
     client: &mut deadpool_postgres::Client,
@@ -556,14 +594,20 @@ pub async fn create_issue(
 ) -> Result<Issue, DbError> {
     let reference = alloc_ref(client, project_id).await?;
     let order = next_order(client, "issues", project_id).await?;
+    // Default a freshly created issue (no explicit status) into the project's
+    // "new" status, so it lands in the board's first column automatically.
+    let status_id = match w.status_id {
+        Some(s) => Some(s),
+        None => crate::taxonomy::new_status_id(client, project_id).await?,
+    };
     let row = client
         .query_one(
             &format!(
                 "INSERT INTO issues (project_id, ref, subject, description, status_id, type_id, \
                    priority_id, size_id, epic_id, parent_id, milestone_id, owner_id, assigned_to, \
-                   category, customer_id, start_date, due_date, resolution, release_version_id, \
+                   category, start_date, due_date, resolution, release_version_id, \
                    release_text, \"order\", resolved_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, \
                    CASE WHEN $5::uuid IS NOT NULL \
                           AND (SELECT is_closed FROM taxonomy_items WHERE id = $5::uuid) IS TRUE \
                         THEN now() END) \
@@ -574,7 +618,7 @@ pub async fn create_issue(
                 &reference,
                 &w.subject,
                 &w.description,
-                &w.status_id,
+                &status_id,
                 &w.type_id,
                 &w.priority_id,
                 &w.size_id,
@@ -584,7 +628,6 @@ pub async fn create_issue(
                 &owner_id,
                 &w.assigned_to,
                 &w.category,
-                &w.customer_id,
                 &w.start_date,
                 &w.due_date,
                 &w.resolution,
@@ -614,6 +657,7 @@ pub async fn get_issue(
             let mut issue = row_to_issue(&r);
             issue.labels = issue_label_ids(client, issue.id).await?;
             issue.components = issue_component_ids(client, issue.id).await?;
+            issue.customer_ids = issue_customer_ids(client, issue.id).await?;
             issue.watchers = issue_watcher_ids(client, issue.id).await?;
             Ok(Some(issue))
         }
@@ -635,6 +679,7 @@ pub async fn list_issues(
         let mut issue = row_to_issue(r);
         issue.labels = issue_label_ids(client, issue.id).await?;
         issue.components = issue_component_ids(client, issue.id).await?;
+        issue.customer_ids = issue_customer_ids(client, issue.id).await?;
         issue.watchers = issue_watcher_ids(client, issue.id).await?;
         issues.push(issue);
     }
@@ -653,8 +698,8 @@ pub async fn update_issue(
             &format!(
                 "UPDATE issues SET subject=$4, description=$5, status_id=$6, type_id=$7, \
                    priority_id=$8, size_id=$9, epic_id=$10, parent_id=$11, milestone_id=$12, \
-                   assigned_to=$13, category=$14, customer_id=$15, start_date=$16, due_date=$17, \
-                   resolution=$18, release_version_id=$19, release_text=$20, \
+                   assigned_to=$13, category=$14, start_date=$15, due_date=$16, \
+                   resolution=$17, release_version_id=$18, release_text=$19, \
                    resolved_at = CASE WHEN $6::uuid IS NOT NULL \
                           AND (SELECT is_closed FROM taxonomy_items WHERE id = $6::uuid) IS TRUE \
                         THEN COALESCE(resolved_at, now()) ELSE NULL END, \
@@ -677,7 +722,6 @@ pub async fn update_issue(
                 &w.milestone_id,
                 &w.assigned_to,
                 &w.category,
-                &w.customer_id,
                 &w.start_date,
                 &w.due_date,
                 &w.resolution,
@@ -690,6 +734,22 @@ pub async fn update_issue(
         Some(r) => Ok(UpdateOutcome::Updated(row_to_issue(&r))),
         None => Ok(classify_miss(client, "issues", project_id, id, expected_version).await?),
     }
+}
+
+/// Resolve a per-project issue `ref` to its id (issues only — epics number
+/// independently and are not considered here).
+pub async fn issue_id_by_ref(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    reference: i64,
+) -> Result<Option<Uuid>, DbError> {
+    let row = client
+        .query_opt(
+            "SELECT id FROM issues WHERE project_id=$1 AND ref=$2 AND deleted_at IS NULL",
+            &[&project_id, &reference],
+        )
+        .await?;
+    Ok(row.map(|r| r.get("id")))
 }
 
 /// Whether an issue exists in this project (for parent / cross-project checks).
@@ -727,6 +787,7 @@ pub async fn issues_in_milestone(
         let mut issue = row_to_issue(r);
         issue.labels = issue_label_ids(client, issue.id).await?;
         issue.components = issue_component_ids(client, issue.id).await?;
+        issue.customer_ids = issue_customer_ids(client, issue.id).await?;
         issue.watchers = issue_watcher_ids(client, issue.id).await?;
         issues.push(issue);
     }

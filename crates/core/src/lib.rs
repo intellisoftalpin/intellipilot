@@ -9,6 +9,7 @@ pub mod activity;
 pub mod app_token;
 pub mod attachment;
 pub mod backlog;
+pub mod board;
 pub mod catalog;
 pub mod customer;
 pub mod dashboard;

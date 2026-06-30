@@ -331,6 +331,10 @@ pub struct CreateTaxonomyItemRequest {
     #[garde(skip)]
     #[serde(default)]
     pub is_closed: Option<bool>,
+    /// Mark this status as the "new" (default) column (status kind only).
+    #[garde(skip)]
+    #[serde(default)]
+    pub is_new: Option<bool>,
     #[garde(skip)]
     #[serde(default)]
     pub value: Option<f64>,
@@ -350,6 +354,10 @@ pub struct UpdateTaxonomyItemRequest {
     #[garde(skip)]
     #[serde(default)]
     pub is_closed: Option<bool>,
+    /// Mark this status as the "new" (default) column (status kind only).
+    #[garde(skip)]
+    #[serde(default)]
+    pub is_new: Option<bool>,
     #[garde(skip)]
     #[serde(default)]
     pub value: Option<f64>,
@@ -454,9 +462,10 @@ pub struct CreateIssueRequest {
     #[garde(skip)]
     #[serde(default)]
     pub category: Option<intellipilot_core::backlog::IssueCategory>,
-    #[garde(skip)]
+    /// Requesting customers (many-to-many). Full set on create.
+    #[garde(length(max = 50))]
     #[serde(default)]
-    pub customer_id: Option<Uuid>,
+    pub customer_ids: Vec<Uuid>,
     #[garde(skip)]
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::option")]
@@ -507,8 +516,9 @@ pub struct UpdateIssueRequest {
     pub assigned_to: Option<Option<Uuid>>,
     #[serde(default, with = "serde_with::rust::double_option")]
     pub category: Option<Option<intellipilot_core::backlog::IssueCategory>>,
-    #[serde(default, with = "serde_with::rust::double_option")]
-    pub customer_id: Option<Option<Uuid>>,
+    /// Full replacement of the issue's customers when present.
+    #[serde(default)]
+    pub customer_ids: Option<Vec<Uuid>>,
     /// Absent leaves the date unchanged (clearing is not supported, matching
     /// milestones).
     #[schema(value_type = Option<String>)]

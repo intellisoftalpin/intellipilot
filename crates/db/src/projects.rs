@@ -104,8 +104,8 @@ pub async fn create_with_defaults(
         *order += APPEND_GAP;
         tx.execute(
             "INSERT INTO taxonomy_items \
-               (project_id, kind, name, slug, color, \"order\", is_closed, value) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+               (project_id, kind, name, slug, color, \"order\", is_closed, is_new, value) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
             &[
                 &project.id,
                 &kind,
@@ -114,6 +114,7 @@ pub async fn create_with_defaults(
                 &item.color,
                 &*order,
                 &item.is_closed,
+                &item.is_new,
                 &item.value,
             ],
         )

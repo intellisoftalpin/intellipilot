@@ -129,12 +129,21 @@ pub async fn create(
     } else {
         None
     };
+    let is_new = if kind.has_new() {
+        Some(req.is_new.unwrap_or(false))
+    } else {
+        None
+    };
     let value = if kind.has_value() { req.value } else { None };
 
     let auth = state.auth();
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
     };
+    // At most one "new" status per project: clear the flag elsewhere first.
+    if is_new == Some(true) && taxdb::clear_is_new(&client, ctx.project.id).await.is_err() {
+        return internal(&ctx.rid);
+    }
     match taxdb::create(
         &client,
         ctx.project.id,
@@ -144,6 +153,7 @@ pub async fn create(
         &req.color,
         &req.emoji,
         is_closed,
+        is_new,
         value,
     )
     .await
@@ -181,10 +191,16 @@ pub async fn update(
         Ok(v) => v,
         Err(r) => return r,
     };
+    // Only the status kind carries an is_new flag.
+    let is_new = if kind.has_new() { req.is_new } else { None };
     let auth = state.auth();
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
     };
+    // At most one "new" status per project: clear the flag elsewhere first.
+    if is_new == Some(true) && taxdb::clear_is_new(&client, ctx.project.id).await.is_err() {
+        return internal(&ctx.rid);
+    }
     match taxdb::update(
         &client,
         ctx.project.id,
@@ -194,6 +210,7 @@ pub async fn update(
         req.color.as_deref(),
         req.emoji.as_deref(),
         req.is_closed,
+        is_new,
         req.value,
     )
     .await

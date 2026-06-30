@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::DbError;
 
-const COLS: &str =
-    "id, project_id, kind, name, slug, color, emoji, \"order\", is_closed, value, created_at";
+const COLS: &str = "id, project_id, kind, name, slug, color, emoji, \"order\", is_closed, \
+     is_new, value, created_at";
 
 fn row_to_item(row: &Row) -> TaxonomyItem {
     let kind: String = row.get("kind");
@@ -24,9 +24,42 @@ fn row_to_item(row: &Row) -> TaxonomyItem {
         emoji: row.get("emoji"),
         order: row.get("order"),
         is_closed: row.get("is_closed"),
+        is_new: row.get("is_new"),
         value: row.get("value"),
         created_at: row.get("created_at"),
     }
+}
+
+/// The id of the project's "new" status (the default landing column), if one is
+/// flagged. Used to default a freshly created issue's status.
+pub async fn new_status_id(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+) -> Result<Option<Uuid>, DbError> {
+    let row = client
+        .query_opt(
+            "SELECT id FROM taxonomy_items \
+             WHERE project_id = $1 AND kind = 'issue_status' AND is_new IS TRUE LIMIT 1",
+            &[&project_id],
+        )
+        .await?;
+    Ok(row.map(|r| r.get("id")))
+}
+
+/// Clear the `is_new` flag from every status in a project. Run before flagging a
+/// new "new" status so the at-most-one-per-project index is never violated.
+pub async fn clear_is_new(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+) -> Result<(), DbError> {
+    client
+        .execute(
+            "UPDATE taxonomy_items SET is_new = false \
+             WHERE project_id = $1 AND kind = 'issue_status' AND is_new IS TRUE",
+            &[&project_id],
+        )
+        .await?;
+    Ok(())
 }
 
 pub async fn list(
@@ -88,6 +121,7 @@ pub async fn create(
     color: &str,
     emoji: &str,
     is_closed: Option<bool>,
+    is_new: Option<bool>,
     value: Option<f64>,
 ) -> Result<TaxonomyItem, DbError> {
     let order = rank_between(max_order(client, project_id, kind).await?, None).unwrap_or(1.0);
@@ -95,8 +129,8 @@ pub async fn create(
         .query_one(
             &format!(
                 "INSERT INTO taxonomy_items \
-                   (project_id, kind, name, slug, color, emoji, \"order\", is_closed, value) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {COLS}"
+                   (project_id, kind, name, slug, color, emoji, \"order\", is_closed, is_new, value) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING {COLS}"
             ),
             &[
                 &project_id,
@@ -107,6 +141,7 @@ pub async fn create(
                 &emoji,
                 &order,
                 &is_closed,
+                &is_new,
                 &value,
             ],
         )
@@ -124,6 +159,7 @@ pub async fn update(
     color: Option<&str>,
     emoji: Option<&str>,
     is_closed: Option<bool>,
+    is_new: Option<bool>,
     value: Option<f64>,
 ) -> Result<Option<TaxonomyItem>, DbError> {
     let row = client
@@ -134,7 +170,8 @@ pub async fn update(
                    color = COALESCE($5, color), \
                    emoji = COALESCE($6, emoji), \
                    is_closed = COALESCE($7, is_closed), \
-                   value = COALESCE($8, value) \
+                   is_new = COALESCE($8, is_new), \
+                   value = COALESCE($9, value) \
                  WHERE id = $1 AND project_id = $2 AND kind = $3 \
                  RETURNING {COLS}"
             ),
@@ -146,6 +183,7 @@ pub async fn update(
                 &color,
                 &emoji,
                 &is_closed,
+                &is_new,
                 &value,
             ],
         )

@@ -205,6 +205,69 @@ async fn import_commit_creates_issues_parent_and_comment() {
 }
 
 #[tokio::test]
+async fn import_maps_unmatched_user_to_member() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+    // Resolve the importing owner's user id — we'll map a JIRA user onto them.
+    let me = app.send(get_with_bearer("/api/v1/me", &token)).await;
+    let owner_id = me.json["id"].as_str().unwrap().to_owned();
+
+    // Map every type/status/priority as create, and the JIRA user alice.jira
+    // onto the owner; bob.jira is left unmapped (stays unassigned).
+    let mapping = json!({
+        "types": [
+            {"value": "Task", "create": true},
+            {"value": "Bug", "create": true},
+        ],
+        "statuses": [
+            {"value": "To Do", "create": true},
+            {"value": "In Progress", "create": true},
+        ],
+        "priorities": [
+            {"value": "High", "create": true},
+            {"value": "Critical", "create": true},
+        ],
+        "components": [],
+        "users": [
+            {"value": "alice.jira", "target": owner_id},
+            {"value": "bob.jira"},
+        ],
+    })
+    .to_string();
+
+    let r = app
+        .send(import_request(
+            &format!("/api/v1/projects/{pid}/issues/import"),
+            &token,
+            JIRA_CSV,
+            Some(&mapping),
+        ))
+        .await;
+    assert_eq!(r.status, 200, "{:?}", r.json);
+
+    let list = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/issues"),
+            &token,
+        ))
+        .await;
+    let issues = list.json["issues"].as_array().unwrap();
+    // Parent task's assignee was alice.jira → mapped to the owner.
+    let parent = issues
+        .iter()
+        .find(|i| i["subject"] == "Parent task")
+        .unwrap();
+    assert_eq!(
+        parent["assigned_to"], owner_id,
+        "alice.jira mapped to owner"
+    );
+    // Child bug's assignee was bob.jira → unmapped → unassigned.
+    let child = issues.iter().find(|i| i["subject"] == "Child bug").unwrap();
+    assert!(child["assigned_to"].is_null(), "bob.jira left unassigned");
+}
+
+#[tokio::test]
 async fn round_trip_export_then_import() {
     require_db!();
     let app = TestApp::spawn().await;

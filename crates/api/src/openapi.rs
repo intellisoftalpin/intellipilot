@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.5.14",
+        version = "0.5.15",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -198,6 +198,8 @@ use crate::problem::{FieldErrorView, Problem};
         crate::issue_relations::CreateLinkRequest,
         crate::issue_relations::AddWatcherRequest,
         intellipilot_core::customer::Customer,
+        intellipilot_core::board::BoardView,
+        crate::board_views::BoardViewRequest,
         intellipilot_core::release::Release,
         intellipilot_core::release::ReleaseVersion,
         intellipilot_core::release::ReleaseStatus,
