@@ -121,6 +121,14 @@ pub async fn create_with_defaults(
         .await?;
     }
 
+    // Seed the project's default shared board (visible to every member).
+    tx.execute(
+        "INSERT INTO boards (project_id, owner_id, visibility, name, config, \"order\") \
+         VALUES ($1, $2, 'shared', 'Board', '{}'::jsonb, 0)",
+        &[&project.id, &new.owner_id],
+    )
+    .await?;
+
     tx.commit().await?;
     Ok(project)
 }

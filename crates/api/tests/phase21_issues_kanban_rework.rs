@@ -238,101 +238,231 @@ async fn resolve_issue_by_ref() {
 }
 
 // ---------------------------------------------------------------------------
-// per-user kanban board views
+// multiple boards (personal + shared) + per-column board data
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn board_views_crud_last_used_and_isolation() {
+async fn boards_crud_default_and_permissions() {
     require_db!();
     let app = TestApp::spawn().await;
     let (token, pid) = owner_with_project(&app, "boards").await;
 
-    // Empty to start.
-    let empty = app
+    // A new project ships with one seeded SHARED default board.
+    let list0 = app
         .send(get_with_bearer(
-            &format!("/api/v1/projects/{pid}/board-views"),
+            &format!("/api/v1/projects/{pid}/boards"),
             &token,
         ))
         .await;
-    assert_eq!(empty.json["views"].as_array().unwrap().len(), 0);
+    let boards0 = list0.json["boards"].as_array().unwrap();
+    assert_eq!(boards0.len(), 1);
+    assert_eq!(boards0[0]["visibility"], "shared");
+    assert_eq!(boards0[0]["name"], "Board");
 
-    // Create a saved view.
-    let cfg = json!({ "hidden": ["x"], "order": ["a", "b"], "group": "component" });
-    let created = app
+    // Create a PERSONAL board (shared omitted → personal).
+    let personal = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/board-views"),
+            &format!("/api/v1/projects/{pid}/boards"),
             &token,
-            &json!({ "name": "My board", "config": cfg }),
+            &json!({ "name": "My WIP", "color": "#ff8a84", "config": { "group": "assignee" } }),
         ))
         .await;
-    assert_eq!(created.status, 201, "{:?}", created.json);
-    let view_id = created.json["id"].as_str().unwrap().to_owned();
-    assert_eq!(created.json["config"]["group"], "component");
+    assert_eq!(personal.status, 201, "{:?}", personal.json);
+    assert_eq!(personal.json["visibility"], "personal");
+    let bid = personal.json["id"].as_str().unwrap().to_owned();
 
-    // Update it.
+    // Create a SHARED board (owner is admin → holds board.shared.create).
+    let shared = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/boards"),
+            &token,
+            &json!({ "name": "Team", "shared": true }),
+        ))
+        .await;
+    assert_eq!(shared.status, 201, "{:?}", shared.json);
+    assert_eq!(shared.json["visibility"], "shared");
+
+    // Update + last-opened round trip.
     let upd = app
         .send(req(
             "PUT",
-            &format!("/api/v1/projects/{pid}/board-views/{view_id}"),
+            &format!("/api/v1/projects/{pid}/boards/{bid}"),
             Some(&token),
             &[],
-            Some(&json!({ "name": "Renamed", "config": { "group": "assignee" } })),
+            Some(&json!({ "name": "My WIP 2", "color": "#669900", "config": { "group": "epic" } })),
         ))
         .await;
     assert_eq!(upd.status, 200, "{:?}", upd.json);
-    assert_eq!(upd.json["name"], "Renamed");
-    assert_eq!(upd.json["config"]["group"], "assignee");
+    assert_eq!(upd.json["name"], "My WIP 2");
+    assert_eq!(upd.json["config"]["group"], "epic");
 
-    // last-used round trip.
-    let put_last = app
+    let setlast = app
         .send(req(
             "PUT",
-            &format!("/api/v1/projects/{pid}/board-views/last-used"),
+            &format!("/api/v1/projects/{pid}/boards/{bid}/last-opened"),
             Some(&token),
             &[],
-            Some(&json!({ "group": "epic", "search": "foo" })),
+            None,
         ))
         .await;
-    assert_eq!(put_last.status, 204);
-    let last = app
+    assert_eq!(setlast.status, 204);
+    let getlast = app
         .send(get_with_bearer(
-            &format!("/api/v1/projects/{pid}/board-views/last-used"),
+            &format!("/api/v1/projects/{pid}/boards/last-opened"),
             &token,
         ))
         .await;
-    assert_eq!(last.json["config"]["group"], "epic");
+    assert_eq!(getlast.json["board_id"], bid);
 
-    // A second project member sees none of the owner's views (per-user).
-    let _ = app.register("other@x", "otheruser", STRONG_PW).await;
-    let other = app
-        .login("other@x", STRONG_PW)
-        .await
-        .access_token()
-        .unwrap();
-    let me = app.send(get_with_bearer("/api/v1/me", &other)).await;
-    let oid = me.json["id"].as_str().unwrap().to_owned();
-    let add = app
+    // A stakeholder (view-only) member: sees shared boards, NOT the owner's
+    // personal one; may create personal but NOT shared.
+    let _ = app.register("sh@x", "shuser", STRONG_PW).await;
+    let sh = app.login("sh@x", STRONG_PW).await.access_token().unwrap();
+    let me = app.send(get_with_bearer("/api/v1/me", &sh)).await;
+    let sid = me.json["id"].as_str().unwrap().to_owned();
+    let addm = app
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/members"),
             &token,
-            &json!({ "user_id": oid, "role": "stakeholder" }),
+            &json!({ "user_id": sid, "role": "stakeholder" }),
         ))
         .await;
-    assert_eq!(add.status, 201, "{:?}", add.json);
-    let other_views = app
-        .send(get_with_bearer(
-            &format!("/api/v1/projects/{pid}/board-views"),
-            &other,
-        ))
-        .await;
-    assert_eq!(other_views.json["views"].as_array().unwrap().len(), 0);
+    assert_eq!(addm.status, 201, "{:?}", addm.json);
 
-    // Delete the owner's view.
+    let sh_list = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/boards"),
+            &sh,
+        ))
+        .await;
+    let names: Vec<&str> = sh_list.json["boards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"Board") && names.contains(&"Team"),
+        "sees shared boards"
+    );
+    assert!(
+        !names.contains(&"My WIP 2"),
+        "does not see owner's personal board"
+    );
+
+    let sh_personal = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/boards"),
+            &sh,
+            &json!({ "name": "Mine" }),
+        ))
+        .await;
+    assert_eq!(sh_personal.status, 201, "{:?}", sh_personal.json);
+    let sh_shared = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/boards"),
+            &sh,
+            &json!({ "name": "Nope", "shared": true }),
+        ))
+        .await;
+    assert_eq!(
+        sh_shared.status, 403,
+        "stakeholder may not create shared boards"
+    );
+
+    // The owner's personal board is invisible to the stakeholder (404 on write).
+    let sh_upd = app
+        .send(req(
+            "PUT",
+            &format!("/api/v1/projects/{pid}/boards/{bid}"),
+            Some(&sh),
+            &[],
+            Some(&json!({ "name": "hax" })),
+        ))
+        .await;
+    assert_eq!(sh_upd.status, 404);
+
+    // Owner deletes their personal board.
     let del = app
         .send(delete_bearer(
-            &format!("/api/v1/projects/{pid}/board-views/{view_id}"),
+            &format!("/api/v1/projects/{pid}/boards/{bid}"),
             &token,
         ))
         .await;
     assert_eq!(del.status, 204);
+}
+
+#[tokio::test]
+async fn board_data_columns_and_lanes() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_with_project(&app, "bdata").await;
+    let st = statuses(&app, &token, &pid).await;
+    let new_id = st.iter().find(|s| s["name"] == "New").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let done_id = st.iter().find(|s| s["name"] == "Done").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Two issues land in New (default), one explicitly in Done.
+    let _ = create_issue(&app, &token, &pid, &json!({ "subject": "A" })).await;
+    let _ = create_issue(&app, &token, &pid, &json!({ "subject": "B" })).await;
+    let _ = create_issue(
+        &app,
+        &token,
+        &pid,
+        &json!({ "subject": "C", "status_id": done_id }),
+    )
+    .await;
+
+    // Flat board data: per-column counts + cards.
+    let bd = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/board"),
+            &token,
+        ))
+        .await;
+    assert_eq!(bd.status, 200, "{:?}", bd.json);
+    assert!(bd.json["group"].is_null());
+    let cols = bd.json["columns"].as_array().unwrap();
+    let new_col = cols.iter().find(|c| c["status_id"] == new_id).unwrap();
+    assert_eq!(new_col["total"], 2);
+    assert_eq!(new_col["cards"].as_array().unwrap().len(), 2);
+    let done_col = cols.iter().find(|c| c["status_id"] == done_id).unwrap();
+    assert_eq!(done_col["total"], 1);
+
+    // column_limit caps the cards but not the total.
+    let capped = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/board?column_limit=1"),
+            &token,
+        ))
+        .await;
+    let new_capped = capped.json["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["status_id"] == new_id)
+        .unwrap()
+        .clone();
+    assert_eq!(new_capped["total"], 2);
+    assert_eq!(new_capped["cards"].as_array().unwrap().len(), 1);
+
+    // Swimlanes: group by assignee → lanes envelope.
+    let grouped = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/board?group=assignee"),
+            &token,
+        ))
+        .await;
+    assert_eq!(grouped.json["group"], "assignee");
+    assert!(grouped.json["lanes"].is_array());
+    // Everything is unassigned → a single "none" lane.
+    let lanes = grouped.json["lanes"].as_array().unwrap();
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0]["key"], "none");
+    assert_eq!(lanes[0]["total"], 3);
 }

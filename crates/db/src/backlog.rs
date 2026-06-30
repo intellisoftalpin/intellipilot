@@ -10,6 +10,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use intellipilot_core::backlog::{Epic, Issue, IssueCategory, Resolution};
+use intellipilot_core::board::{BoardColumn, BoardLane};
 use intellipilot_core::ordering::{normalized_ranks, rank_between};
 use time::{Date, OffsetDateTime};
 use tokio_postgres::Row;
@@ -850,6 +851,194 @@ pub async fn list_issues_paged(
     let mut issues: Vec<Issue> = rows.iter().map(row_to_issue).collect();
     hydrate_issue_relations(client, &mut issues).await?;
     Ok((issues, total))
+}
+
+/// Base filter params (`$1..$16`) for the board-data queries.
+///
+/// Same binding order as `list_issues_paged`; `search_like` must outlive the
+/// returned vec (hence the shared lifetime).
+#[allow(clippy::ref_option)]
+fn board_base_params<'a>(
+    project_id: &'a Uuid,
+    q: &'a IssueQuery,
+    search_like: &'a Option<String>,
+) -> Vec<&'a (dyn ToSql + Sync)> {
+    vec![
+        project_id,
+        &q.status_id,
+        &q.type_id,
+        &q.priority_id,
+        &q.size_id,
+        &q.category,
+        &q.assignee_mode,
+        &q.assignee_id,
+        &q.epic_mode,
+        &q.epic_id,
+        &q.milestone_mode,
+        &q.milestone_id,
+        &q.label_id,
+        &q.component_id,
+        search_like,
+        &q.overdue,
+    ]
+}
+
+/// Flat board data: per-status-column counts plus a capped card slice.
+///
+/// For each status column matching the filter, returns the total count and the
+/// first `column_limit` top-level cards (ordered by `"order"`); restricts to
+/// `columns` when provided. One windowed query + one batch hydrate.
+pub async fn board_columns(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    q: &IssueQuery,
+    columns: Option<&[Uuid]>,
+    column_limit: i64,
+) -> Result<Vec<BoardColumn>, DbError> {
+    let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
+    let cols: Option<Vec<Uuid>> = columns.map(<[Uuid]>::to_vec);
+    let mut params = board_base_params(&project_id, q, &search_like);
+    params.push(&column_limit); // $17
+    params.push(&cols); // $18
+    let sql = format!(
+        "WITH ranked AS ( \
+           SELECT {ISSUE_COLS}, \
+             row_number() OVER (PARTITION BY status_id ORDER BY \"order\", id) AS rn, \
+             count(*)     OVER (PARTITION BY status_id)                        AS col_total \
+           FROM issues \
+           WHERE {ISSUE_FILTER_WHERE} AND parent_id IS NULL \
+             AND ($18::uuid[] IS NULL OR status_id = ANY($18)) \
+         ) \
+         SELECT * FROM ranked WHERE rn <= $17 ORDER BY status_id, \"order\", id"
+    );
+    let rows = client.query(&sql, &params).await?;
+
+    let mut totals: std::collections::HashMap<Option<Uuid>, i64> = std::collections::HashMap::new();
+    let mut order: Vec<Option<Uuid>> = Vec::new();
+    let mut issues: Vec<Issue> = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let sid: Option<Uuid> = r.get("status_id");
+        if totals.insert(sid, r.get::<_, i64>("col_total")).is_none() {
+            order.push(sid);
+        }
+        issues.push(row_to_issue(r));
+    }
+    hydrate_issue_relations(client, &mut issues).await?;
+
+    let mut by_status: std::collections::HashMap<Option<Uuid>, Vec<Issue>> =
+        std::collections::HashMap::new();
+    for iss in issues {
+        by_status.entry(iss.status_id).or_default().push(iss);
+    }
+    Ok(order
+        .into_iter()
+        .map(|sid| BoardColumn {
+            status_id: sid,
+            total: totals.get(&sid).copied().unwrap_or(0),
+            cards: by_status.remove(&sid).unwrap_or_default(),
+        })
+        .collect())
+}
+
+/// Per-(lane, column) metadata carried alongside each hydrated card row.
+struct LaneMeta {
+    grp: String,
+    status: Option<Uuid>,
+    cell_total: i64,
+    lane_total: i64,
+}
+
+/// Swimlane board data: cards split into lanes, then into status columns.
+///
+/// `group` is one of `component | assignee | epic | priority`. `component` is
+/// many-to-many, so a card appears in each of its component lanes. One windowed
+/// query + one batch hydrate.
+#[allow(clippy::indexing_slicing)]
+pub async fn board_lanes(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    q: &IssueQuery,
+    group: &str,
+    columns: Option<&[Uuid]>,
+    column_limit: i64,
+) -> Result<Vec<BoardLane>, DbError> {
+    let (from, grp): (&str, &str) = match group {
+        "assignee" => ("issues", "COALESCE(issues.assigned_to::text, 'none')"),
+        "epic" => ("issues", "COALESCE(issues.epic_id::text, 'none')"),
+        "priority" => ("issues", "COALESCE(issues.priority_id::text, 'none')"),
+        "component" => (
+            "issues LEFT JOIN issue_components ic ON ic.issue_id = issues.id",
+            "COALESCE(ic.component_id::text, 'none')",
+        ),
+        _ => return Ok(Vec::new()),
+    };
+    let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
+    let cols: Option<Vec<Uuid>> = columns.map(<[Uuid]>::to_vec);
+    let mut params = board_base_params(&project_id, q, &search_like);
+    params.push(&column_limit); // $17
+    params.push(&cols); // $18
+    let sql = format!(
+        "WITH ranked AS ( \
+           SELECT {ISSUE_COLS}, {grp} AS grp, \
+             row_number() OVER (PARTITION BY {grp}, issues.status_id \
+                                ORDER BY issues.\"order\", issues.id) AS rn, \
+             count(*) OVER (PARTITION BY {grp}, issues.status_id) AS cell_total, \
+             count(*) OVER (PARTITION BY {grp})                   AS lane_total \
+           FROM {from} \
+           WHERE {ISSUE_FILTER_WHERE} AND issues.parent_id IS NULL \
+             AND ($18::uuid[] IS NULL OR issues.status_id = ANY($18)) \
+         ) \
+         SELECT * FROM ranked WHERE rn <= $17 ORDER BY grp, status_id, \"order\", id"
+    );
+    let rows = client.query(&sql, &params).await?;
+
+    let mut meta: Vec<LaneMeta> = Vec::with_capacity(rows.len());
+    let mut issues: Vec<Issue> = Vec::with_capacity(rows.len());
+    for r in &rows {
+        meta.push(LaneMeta {
+            grp: r.get("grp"),
+            status: r.get("status_id"),
+            cell_total: r.get("cell_total"),
+            lane_total: r.get("lane_total"),
+        });
+        issues.push(row_to_issue(r));
+    }
+    hydrate_issue_relations(client, &mut issues).await?;
+
+    let mut lanes: Vec<BoardLane> = Vec::new();
+    let mut lane_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut col_idx: std::collections::HashMap<(String, Option<Uuid>), usize> =
+        std::collections::HashMap::new();
+    for (i, iss) in issues.into_iter().enumerate() {
+        let m = &meta[i];
+        let li = if let Some(&x) = lane_idx.get(&m.grp) {
+            x
+        } else {
+            let x = lanes.len();
+            lane_idx.insert(m.grp.clone(), x);
+            lanes.push(BoardLane {
+                key: m.grp.clone(),
+                total: m.lane_total,
+                columns: Vec::new(),
+            });
+            x
+        };
+        let ckey = (m.grp.clone(), m.status);
+        let ci = if let Some(&x) = col_idx.get(&ckey) {
+            x
+        } else {
+            let x = lanes[li].columns.len();
+            col_idx.insert(ckey, x);
+            lanes[li].columns.push(BoardColumn {
+                status_id: m.status,
+                total: m.cell_total,
+                cards: Vec::new(),
+            });
+            x
+        };
+        lanes[li].columns[ci].cards.push(iss);
+    }
+    Ok(lanes)
 }
 
 pub async fn update_issue(

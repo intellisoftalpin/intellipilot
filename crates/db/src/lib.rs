@@ -7,7 +7,7 @@ pub mod app_tokens;
 pub mod attachments;
 pub mod audit;
 pub mod backlog;
-pub mod board_views;
+pub mod boards;
 pub mod comments;
 pub mod component_releases;
 pub mod component_repositories;

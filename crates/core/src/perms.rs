@@ -140,11 +140,19 @@ pub enum Permission {
     ReleaseModify,
     #[serde(rename = "release.delete")]
     ReleaseDelete,
+    // Shared boards. Personal boards need only `project.view`; managing boards
+    // that are visible to the whole project is gated by these.
+    #[serde(rename = "board.shared.create")]
+    BoardSharedCreate,
+    #[serde(rename = "board.shared.modify")]
+    BoardSharedModify,
+    #[serde(rename = "board.shared.delete")]
+    BoardSharedDelete,
 }
 
 impl Permission {
     /// Every permission in catalog order.
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 56] = [
         Self::ProjectView,
         Self::ProjectModify,
         Self::ProjectDelete,
@@ -198,6 +206,9 @@ impl Permission {
         Self::ReleaseCreate,
         Self::ReleaseModify,
         Self::ReleaseDelete,
+        Self::BoardSharedCreate,
+        Self::BoardSharedModify,
+        Self::BoardSharedDelete,
     ];
 
     /// Stable wire string for this permission.
@@ -259,6 +270,9 @@ impl Permission {
             Self::ReleaseCreate => "release.create",
             Self::ReleaseModify => "release.modify",
             Self::ReleaseDelete => "release.delete",
+            Self::BoardSharedCreate => "board.shared.create",
+            Self::BoardSharedModify => "board.shared.modify",
+            Self::BoardSharedDelete => "board.shared.delete",
         }
     }
 }
@@ -313,16 +327,20 @@ fn developer_perms() -> Vec<Permission> {
 /// delete on work items + comment moderation.
 fn product_owner_perms() -> Vec<Permission> {
     use Permission::{
-        CommentModerate, ComponentCreate, ComponentDelete, ComponentModify, CustomerCreate,
-        CustomerDelete, CustomerModify, EpicDelete, IssueDelete, LabelCreate, LabelDelete,
-        LabelModify, MemberAdd, MemberModifyRole, MemberRemove, MemberView, MilestoneDelete,
-        ProjectModify, ReleaseCreate, ReleaseDelete, ReleaseModify, RepositoryCreate,
-        RepositoryDelete, RepositoryModify, RoleCreate, RoleDelete, RoleModify, RoleView,
-        TaxonomyCreate, TaxonomyDelete, TaxonomyModify, TimeViewAll, WikiDelete,
+        BoardSharedCreate, BoardSharedDelete, BoardSharedModify, CommentModerate, ComponentCreate,
+        ComponentDelete, ComponentModify, CustomerCreate, CustomerDelete, CustomerModify,
+        EpicDelete, IssueDelete, LabelCreate, LabelDelete, LabelModify, MemberAdd,
+        MemberModifyRole, MemberRemove, MemberView, MilestoneDelete, ProjectModify, ReleaseCreate,
+        ReleaseDelete, ReleaseModify, RepositoryCreate, RepositoryDelete, RepositoryModify,
+        RoleCreate, RoleDelete, RoleModify, RoleView, TaxonomyCreate, TaxonomyDelete,
+        TaxonomyModify, TimeViewAll, WikiDelete,
     };
     let mut perms = developer_perms();
     perms.extend([
         ProjectModify,
+        BoardSharedCreate,
+        BoardSharedModify,
+        BoardSharedDelete,
         MemberView,
         MemberAdd,
         MemberRemove,
@@ -413,7 +431,7 @@ mod tests {
                 p.as_str()
             );
         }
-        assert_eq!(Permission::ALL.len(), 53);
+        assert_eq!(Permission::ALL.len(), 56);
     }
 
     #[test]

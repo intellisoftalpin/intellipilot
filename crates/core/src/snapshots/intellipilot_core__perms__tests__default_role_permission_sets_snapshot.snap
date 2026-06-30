@@ -8,6 +8,9 @@ expression: snapshot
     [
       "attachment.create",
       "attachment.delete",
+      "board.shared.create",
+      "board.shared.delete",
+      "board.shared.modify",
       "comment.create",
       "comment.moderate",
       "component.create",
@@ -66,6 +69,9 @@ expression: snapshot
     [
       "attachment.create",
       "attachment.delete",
+      "board.shared.create",
+      "board.shared.delete",
+      "board.shared.modify",
       "comment.create",
       "comment.moderate",
       "component.create",
