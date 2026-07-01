@@ -10,8 +10,8 @@
 #![allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
 
 use intellipilot_core::time_tracking::{
-    Availability, DayMinutes, EntryKind, PeriodLock, TeamMemberMonth, TimeEntry, TimeEntryDetail,
-    TimesheetSummary, VacationAllowance, VacationBalance, VacationYear,
+    Availability, DayMinutes, EntryKind, MeetingType, PeriodLock, TeamMemberMonth, TimeEntry,
+    TimeEntryDetail, TimesheetSummary, VacationAllowance, VacationBalance, VacationYear,
 };
 use std::collections::BTreeMap;
 use time::{Date, Duration, Month, OffsetDateTime, Weekday};
@@ -61,11 +61,17 @@ fn kind_from_row(row: &Row) -> EntryKind {
     EntryKind::parse(&s).unwrap_or(EntryKind::Work)
 }
 
+fn meeting_type_from_row(row: &Row) -> Option<MeetingType> {
+    row.get::<_, Option<String>>("meeting_type")
+        .and_then(|s| MeetingType::parse(&s))
+}
+
 fn row_to_entry(row: &Row) -> TimeEntry {
     TimeEntry {
         id: row.get("id"),
         user_id: row.get("user_id"),
         kind: kind_from_row(row),
+        meeting_type: meeting_type_from_row(row),
         project_id: row.get("project_id"),
         issue_id: row.get("issue_id"),
         entry_date: row.get("entry_date"),
@@ -83,6 +89,7 @@ fn row_to_detail(row: &Row) -> TimeEntryDetail {
         id: row.get("id"),
         user_id: row.get("user_id"),
         kind: kind_from_row(row),
+        meeting_type: meeting_type_from_row(row),
         project_id: row.get("project_id"),
         issue_id: row.get("issue_id"),
         entry_date: row.get("entry_date"),
@@ -135,6 +142,8 @@ fn row_to_allowance(row: &Row) -> VacationAllowance {
 pub struct NewEntry<'a> {
     pub user_id: Uuid,
     pub kind: EntryKind,
+    /// Only for `kind = meeting` (a DB CHECK enforces this).
+    pub meeting_type: Option<&'a str>,
     pub project_id: Option<Uuid>,
     pub issue_id: Option<Uuid>,
     pub entry_date: Date,
@@ -143,8 +152,8 @@ pub struct NewEntry<'a> {
     pub booking_id: Option<Uuid>,
 }
 
-const ENTRY_COLS: &str = "id, user_id, kind, project_id, issue_id, entry_date, minutes, note, \
-                          booking_id, created_at, modified_at, version";
+const ENTRY_COLS: &str = "id, user_id, kind, meeting_type, project_id, issue_id, entry_date, \
+                          minutes, note, booking_id, created_at, modified_at, version";
 
 /// Insert a single entry.
 pub async fn create_entry(
@@ -155,13 +164,15 @@ pub async fn create_entry(
         .query_one(
             &format!(
                 "INSERT INTO time_entries \
-                   (user_id, kind, project_id, issue_id, entry_date, minutes, note, booking_id) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                   (user_id, kind, meeting_type, project_id, issue_id, entry_date, minutes, note, \
+                    booking_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
                  RETURNING {ENTRY_COLS}"
             ),
             &[
                 &e.user_id,
                 &e.kind.as_str(),
+                &e.meeting_type,
                 &e.project_id,
                 &e.issue_id,
                 &e.entry_date,
@@ -232,10 +243,10 @@ pub async fn delete_entry(client: &deadpool_postgres::Client, id: Uuid) -> Resul
     Ok(n > 0)
 }
 
-const DETAIL_SELECT: &str = "SELECT te.id, te.user_id, te.kind, te.project_id, te.issue_id, \
-        te.entry_date, te.minutes, te.note, te.booking_id, te.created_at, te.modified_at, \
-        te.version, i.ref AS issue_ref, i.subject AS issue_subject, p.name AS project_name, \
-        p.slug AS project_slug, u.username, u.full_name \
+const DETAIL_SELECT: &str = "SELECT te.id, te.user_id, te.kind, te.meeting_type, te.project_id, \
+        te.issue_id, te.entry_date, te.minutes, te.note, te.booking_id, te.created_at, \
+        te.modified_at, te.version, i.ref AS issue_ref, i.subject AS issue_subject, \
+        p.name AS project_name, p.slug AS project_slug, u.username, u.full_name \
      FROM time_entries te \
      LEFT JOIN issues i ON i.id = te.issue_id \
      LEFT JOIN projects p ON p.id = te.project_id \
@@ -279,7 +290,7 @@ pub async fn list_for_project(
         .query(
             &format!(
                 "{DETAIL_SELECT} \
-                 WHERE te.project_id = $1 AND te.kind = 'work' \
+                 WHERE te.project_id = $1 AND te.kind IN ('work', 'meeting') \
                    AND te.entry_date BETWEEN $2 AND $3 \
                    AND ($4::uuid IS NULL OR te.user_id = $4) \
                  ORDER BY u.full_name, te.entry_date, te.created_at"
@@ -661,7 +672,7 @@ pub async fn team_month(
                     sum(te.minutes)::bigint AS mins \
              FROM memberships m JOIN users u ON u.id = m.user_id \
              LEFT JOIN time_entries te ON te.user_id = m.user_id AND te.project_id = $1 \
-                  AND te.kind = 'work' AND te.entry_date BETWEEN $2 AND $3 \
+                  AND te.kind IN ('work', 'meeting') AND te.entry_date BETWEEN $2 AND $3 \
              WHERE m.project_id = $1 \
              GROUP BY m.user_id, u.username, u.full_name, te.entry_date \
              ORDER BY u.full_name",
@@ -669,10 +680,15 @@ pub async fn team_month(
         )
         .await?;
 
-    // Preserve first-seen member order while accumulating days.
+    Ok(rows_to_team(&rows))
+}
+
+/// Fold `(user_id, username, full_name, entry_date, mins)` rows into per-member
+/// day grids, preserving first-seen order.
+fn rows_to_team(rows: &[Row]) -> Vec<TeamMemberMonth> {
     let mut order: Vec<Uuid> = Vec::new();
     let mut acc: BTreeMap<Uuid, TeamMemberMonth> = BTreeMap::new();
-    for r in &rows {
+    for r in rows {
         let uid: Uuid = r.get("user_id");
         let entry = acc.entry(uid).or_insert_with(|| {
             order.push(uid);
@@ -694,7 +710,58 @@ pub async fn team_month(
             });
         }
     }
-    Ok(order.into_iter().filter_map(|u| acc.remove(&u)).collect())
+    order.into_iter().filter_map(|u| acc.remove(&u)).collect()
+}
+
+/// Cross-project grid (superadmin): every non-deleted user's worked minutes
+/// (work + meeting) per day, aggregated across ALL projects, for the month.
+pub async fn global_team_month(
+    client: &deadpool_postgres::Client,
+    year: i32,
+    month: u8,
+) -> Result<Vec<TeamMemberMonth>, DbError> {
+    let start = month_start(year, month)?;
+    let end = month_end(year, month)?;
+    let rows = client
+        .query(
+            "SELECT u.id AS user_id, u.username, u.full_name, te.entry_date, \
+                    sum(te.minutes)::bigint AS mins \
+             FROM users u \
+             LEFT JOIN time_entries te ON te.user_id = u.id \
+                  AND te.kind IN ('work', 'meeting') AND te.entry_date BETWEEN $1 AND $2 \
+             WHERE u.deleted_at IS NULL \
+             GROUP BY u.id, u.username, u.full_name, te.entry_date \
+             ORDER BY u.full_name",
+            &[&start, &end],
+        )
+        .await?;
+    Ok(rows_to_team(&rows))
+}
+
+/// Cross-project entry list (superadmin): all entries in a range, optionally
+/// filtered by user, project, or kind.
+pub async fn list_all_entries(
+    client: &deadpool_postgres::Client,
+    from: Date,
+    to: Date,
+    user_id: Option<Uuid>,
+    project_id: Option<Uuid>,
+    kind: Option<&str>,
+) -> Result<Vec<TimeEntryDetail>, DbError> {
+    let rows = client
+        .query(
+            &format!(
+                "{DETAIL_SELECT} \
+                 WHERE te.entry_date BETWEEN $1 AND $2 \
+                   AND ($3::uuid IS NULL OR te.user_id = $3) \
+                   AND ($4::uuid IS NULL OR te.project_id = $4) \
+                   AND ($5::text IS NULL OR te.kind = $5) \
+                 ORDER BY u.full_name, te.entry_date, te.created_at"
+            ),
+            &[&from, &to, &user_id, &project_id, &kind],
+        )
+        .await?;
+    Ok(rows.iter().map(row_to_detail).collect())
 }
 
 /// Project members who are unavailable on `date` (any non-work entry that day).
@@ -708,7 +775,8 @@ pub async fn availability(
             "SELECT DISTINCT u.id AS user_id, u.username, u.full_name, te.kind, te.minutes \
              FROM memberships m JOIN users u ON u.id = m.user_id \
              JOIN time_entries te ON te.user_id = m.user_id \
-             WHERE m.project_id = $1 AND te.entry_date = $2 AND te.kind <> 'work' \
+             WHERE m.project_id = $1 AND te.entry_date = $2 \
+               AND te.kind NOT IN ('work', 'meeting') \
              ORDER BY u.full_name",
             &[&project_id, &date],
         )
@@ -767,6 +835,51 @@ pub async fn assigned_issues_for_user(
              WHERE i.assigned_to = $1 AND i.deleted_at IS NULL \
              ORDER BY p.name, i.ref",
             &[&user_id],
+        )
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| AssignedTask {
+            id: r.get("id"),
+            project_id: r.get("project_id"),
+            project_name: r.get("project_name"),
+            project_slug: r.get("project_slug"),
+            reference: r.get("reference"),
+            subject: r.get("subject"),
+        })
+        .collect())
+}
+
+/// Issues the user may log time against (any task, not just assigned).
+///
+/// Live issues in any project they are a member of, optionally filtered by a
+/// text search (subject or ref) and/or project. Backs the searchable "log time"
+/// task picker.
+pub async fn loggable_issues_for_user(
+    client: &deadpool_postgres::Client,
+    user_id: Uuid,
+    search: Option<&str>,
+    project_id: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<intellipilot_core::time_tracking::AssignedTask>, DbError> {
+    use intellipilot_core::time_tracking::AssignedTask;
+    let like = search
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{s}%"));
+    let rows = client
+        .query(
+            "SELECT i.id, i.project_id, p.name AS project_name, p.slug AS project_slug, \
+                    i.ref AS reference, i.subject \
+             FROM issues i \
+             JOIN projects p ON p.id = i.project_id \
+             JOIN memberships m ON m.project_id = i.project_id AND m.user_id = $1 \
+             WHERE i.deleted_at IS NULL \
+               AND ($2::uuid IS NULL OR i.project_id = $2) \
+               AND ($3::text IS NULL OR i.subject ILIKE $3 OR i.ref::text ILIKE $3) \
+             ORDER BY p.name, i.ref \
+             LIMIT $4",
+            &[&user_id, &project_id, &like, &limit],
         )
         .await?;
     Ok(rows

@@ -81,10 +81,10 @@ async fn upload_list_sign_download_round_trip() {
     assert_eq!(signed.status, 200);
     let url = signed.json["url"].as_str().unwrap().to_owned();
 
-    // Download via the signed URL, with auth.
-    let (status, headers, body) = app
-        .download_bytes(req("GET", &url, Some(&token), &[], None))
-        .await;
+    // Download via the signed URL WITHOUT a Bearer token — the signature alone
+    // authorizes it, so a new browser tab (which drops the Authorization
+    // header) works. This is the 0.6.1 fix for the 401 download bug.
+    let (status, headers, body) = app.download_bytes(req("GET", &url, None, &[], None)).await;
     assert_eq!(status, 200);
     assert_eq!(body, PNG, "bytes round-trip");
     assert_eq!(

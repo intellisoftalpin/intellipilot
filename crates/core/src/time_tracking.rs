@@ -10,12 +10,14 @@ use time::{Date, OffsetDateTime};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// The category of a time entry. `Work` is logged against a project/task;
-/// every other variant is a person-level absence.
+/// The category of a time entry. `Work` is logged against a project/task and
+/// `Meeting` against a (optional) project; every other variant is a
+/// person-level absence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
     Work,
+    Meeting,
     Vacation,
     Illness,
     DayOff,
@@ -28,6 +30,7 @@ impl EntryKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Work => "work",
+            Self::Meeting => "meeting",
             Self::Vacation => "vacation",
             Self::Illness => "illness",
             Self::DayOff => "day_off",
@@ -40,6 +43,7 @@ impl EntryKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "work" => Some(Self::Work),
+            "meeting" => Some(Self::Meeting),
             "vacation" => Some(Self::Vacation),
             "illness" => Some(Self::Illness),
             "day_off" => Some(Self::DayOff),
@@ -48,10 +52,50 @@ impl EntryKind {
         }
     }
 
-    /// True for every kind except `Work` (i.e. an absence, person-level).
+    /// True for absences (person-level, project-less). `Work` and `Meeting` are
+    /// worked time, not absences.
     #[must_use]
     pub const fn is_absence(self) -> bool {
-        !matches!(self, Self::Work)
+        !matches!(self, Self::Work | Self::Meeting)
+    }
+}
+
+/// The kind of meeting a `Meeting` entry represents (optional).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MeetingType {
+    Daily,
+    Planning,
+    Troubleshooting,
+    Retro,
+    Refinement,
+    Other,
+}
+
+impl MeetingType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Planning => "planning",
+            Self::Troubleshooting => "troubleshooting",
+            Self::Retro => "retro",
+            Self::Refinement => "refinement",
+            Self::Other => "other",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "daily" => Some(Self::Daily),
+            "planning" => Some(Self::Planning),
+            "troubleshooting" => Some(Self::Troubleshooting),
+            "retro" => Some(Self::Retro),
+            "refinement" => Some(Self::Refinement),
+            "other" => Some(Self::Other),
+            _ => None,
+        }
     }
 }
 
@@ -62,6 +106,9 @@ pub struct TimeEntry {
     pub id: Uuid,
     pub user_id: Uuid,
     pub kind: EntryKind,
+    /// The meeting type (only for `kind = meeting`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meeting_type: Option<MeetingType>,
     pub project_id: Option<Uuid>,
     pub issue_id: Option<Uuid>,
     #[serde(with = "crate::serde_date::required")]
@@ -82,6 +129,8 @@ pub struct TimeEntryDetail {
     pub id: Uuid,
     pub user_id: Uuid,
     pub kind: EntryKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meeting_type: Option<MeetingType>,
     pub project_id: Option<Uuid>,
     pub issue_id: Option<Uuid>,
     #[serde(with = "crate::serde_date::required")]
@@ -216,6 +265,7 @@ mod tests {
     fn entry_kind_round_trips() {
         for k in [
             EntryKind::Work,
+            EntryKind::Meeting,
             EntryKind::Vacation,
             EntryKind::Illness,
             EntryKind::DayOff,
@@ -227,9 +277,25 @@ mod tests {
     }
 
     #[test]
-    fn only_work_is_not_absence() {
+    fn work_and_meeting_are_not_absences() {
         assert!(!EntryKind::Work.is_absence());
+        assert!(!EntryKind::Meeting.is_absence());
         assert!(EntryKind::Vacation.is_absence());
         assert!(EntryKind::Holiday.is_absence());
+    }
+
+    #[test]
+    fn meeting_type_round_trips() {
+        for m in [
+            MeetingType::Daily,
+            MeetingType::Planning,
+            MeetingType::Troubleshooting,
+            MeetingType::Retro,
+            MeetingType::Refinement,
+            MeetingType::Other,
+        ] {
+            assert_eq!(MeetingType::parse(m.as_str()), Some(m));
+        }
+        assert_eq!(MeetingType::parse("nope"), None);
     }
 }

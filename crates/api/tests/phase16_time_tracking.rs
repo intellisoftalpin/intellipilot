@@ -155,36 +155,37 @@ async fn log_list_update_delete_own_time() {
 }
 
 #[tokio::test]
-async fn cannot_log_to_unassigned_task() {
+async fn can_log_to_any_task_but_not_without_membership() {
     require_db!();
     let app = TestApp::spawn().await;
     let (owner, _oid, pid) = owner_project(&app).await;
-    let (dev, did) = user(&app, "dev@x", "devuser").await;
+    let (_dev, did) = user(&app, "dev@x", "devuser").await;
     add_member(&app, &owner, &pid, &did, "dev").await;
 
     // Task is assigned to dev, not to the owner.
     let issue = issue_for(&app, &owner, &pid, &did).await;
 
-    // Owner is not the assignee → 403.
-    let r = app
+    // The owner (a member with time.log) may now log time to ANY task, not just
+    // ones assigned to them.
+    let ok = app
         .send(post_json_bearer(
             "/api/v1/me/time-entries",
             &owner,
             &json!({ "issue_id": issue, "date": "2020-03-04", "minutes": 30 }),
         ))
         .await;
-    assert_eq!(r.status, 403, "{:?}", r.json);
-    assert_eq!(r.json["code"], "not_assigned");
+    assert_eq!(ok.status, 201, "{:?}", ok.json);
 
-    // Dev (the assignee, holds time.log) can log it.
-    let ok = app
+    // A non-member cannot log against the project's tasks → 403.
+    let (outsider, _) = user(&app, "out@x", "outsider").await;
+    let denied = app
         .send(post_json_bearer(
             "/api/v1/me/time-entries",
-            &dev,
+            &outsider,
             &json!({ "issue_id": issue, "date": "2020-03-04", "minutes": 30 }),
         ))
         .await;
-    assert_eq!(ok.status, 201, "{:?}", ok.json);
+    assert_eq!(denied.status, 403, "{:?}", denied.json);
 }
 
 #[tokio::test]
@@ -690,4 +691,168 @@ async fn export_csv_and_xlsx() {
     assert_eq!(xstatus, 200);
     assert!(xheaders["content-type"].contains("spreadsheetml"));
     assert_eq!(&xbytes[0..2], b"PK", "xlsx is a zip archive");
+}
+
+// ---------------------------------------------------------------------------
+// v0.6.1: log any/no task, meetings, loggable-issues, superadmin cross-project
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn log_work_without_task_requires_note() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (owner, _oid, pid) = owner_project(&app).await;
+
+    // No task + no note → 422.
+    let no_note = app
+        .send(post_json_bearer(
+            "/api/v1/me/time-entries",
+            &owner,
+            &json!({ "project_id": pid, "date": "2020-03-04", "minutes": 60 }),
+        ))
+        .await;
+    assert_eq!(no_note.status, 422, "{:?}", no_note.json);
+
+    // No task + note → 201 (work attributed to the project, no issue).
+    let ok = app
+        .send(post_json_bearer(
+            "/api/v1/me/time-entries",
+            &owner,
+            &json!({ "project_id": pid, "date": "2020-03-04", "minutes": 60, "note": "admin work" }),
+        ))
+        .await;
+    assert_eq!(ok.status, 201, "{:?}", ok.json);
+    assert_eq!(ok.json["kind"], "work");
+    assert!(ok.json["issue_id"].is_null());
+    assert_eq!(ok.json["project_id"], pid);
+}
+
+#[tokio::test]
+async fn log_meeting_with_type_and_projectless() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (owner, _oid, pid) = owner_project(&app).await;
+
+    // Project meeting with a type.
+    let m = app
+        .send(post_json_bearer(
+            "/api/v1/me/time-entries",
+            &owner,
+            &json!({ "kind": "meeting", "meeting_type": "daily", "project_id": pid,
+                     "date": "2020-03-04", "minutes": 15 }),
+        ))
+        .await;
+    assert_eq!(m.status, 201, "{:?}", m.json);
+    assert_eq!(m.json["kind"], "meeting");
+    assert_eq!(m.json["meeting_type"], "daily");
+    assert_eq!(m.json["project_id"], pid);
+
+    // Project-less meeting is allowed (company-wide).
+    let g = app
+        .send(post_json_bearer(
+            "/api/v1/me/time-entries",
+            &owner,
+            &json!({ "kind": "meeting", "date": "2020-03-04", "minutes": 30, "note": "all-hands" }),
+        ))
+        .await;
+    assert_eq!(g.status, 201, "{:?}", g.json);
+    assert!(g.json["project_id"].is_null());
+
+    // Unknown meeting type → 422.
+    let bad = app
+        .send(post_json_bearer(
+            "/api/v1/me/time-entries",
+            &owner,
+            &json!({ "kind": "meeting", "meeting_type": "party", "date": "2020-03-04", "minutes": 5 }),
+        ))
+        .await;
+    assert_eq!(bad.status, 422);
+}
+
+#[tokio::test]
+async fn loggable_issues_search_and_membership() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (owner, _oid, pid) = owner_project(&app).await;
+    for s in ["Alpha login", "Beta logout"] {
+        let _ = app
+            .send(post_json_bearer(
+                &format!("/api/v1/projects/{pid}/issues"),
+                &owner,
+                &json!({ "subject": s }),
+            ))
+            .await;
+    }
+
+    // A member sees all project issues (not just assigned).
+    let all = app
+        .send(get_with_bearer("/api/v1/me/loggable-issues", &owner))
+        .await;
+    assert_eq!(all.status, 200);
+    assert_eq!(all.json["issues"].as_array().unwrap().len(), 2);
+
+    // Search narrows by subject.
+    let s = app
+        .send(get_with_bearer(
+            "/api/v1/me/loggable-issues?search=logout",
+            &owner,
+        ))
+        .await;
+    assert_eq!(s.json["issues"].as_array().unwrap().len(), 1);
+    assert_eq!(s.json["issues"][0]["subject"], "Beta logout");
+
+    // A non-member sees nothing.
+    let (outsider, _) = user(&app, "out2@x", "outsider2").await;
+    let none = app
+        .send(get_with_bearer("/api/v1/me/loggable-issues", &outsider))
+        .await;
+    assert_eq!(none.json["issues"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn superadmin_cross_project_timesheet() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (owner, oid, pid) = owner_project(&app).await;
+    let issue = issue_for(&app, &owner, &pid, &oid).await;
+    let _ = app
+        .send(post_json_bearer(
+            "/api/v1/me/time-entries",
+            &owner,
+            &json!({ "issue_id": issue, "date": "2020-03-04", "minutes": 120, "note": "x" }),
+        ))
+        .await;
+
+    // Non-superadmin is blocked from the global views.
+    let blocked = app
+        .send(get_with_bearer(
+            "/api/v1/admin/time/summary?year=2020&month=3",
+            &owner,
+        ))
+        .await;
+    assert_eq!(blocked.status, 403);
+
+    promote_superadmin(&app, "owner@x").await;
+
+    // Global month grid includes the user with their total.
+    let grid = app
+        .send(get_with_bearer(
+            "/api/v1/admin/time/summary?year=2020&month=3",
+            &owner,
+        ))
+        .await;
+    assert_eq!(grid.status, 200, "{:?}", grid.json);
+    let members = grid.json["members"].as_array().unwrap();
+    let me = members.iter().find(|m| m["user_id"] == oid).unwrap();
+    assert_eq!(me["total_minutes"], 120);
+
+    // Global entry list returns the entry across projects.
+    let entries = app
+        .send(get_with_bearer(
+            "/api/v1/admin/time-entries?from=2020-03-01&to=2020-03-31",
+            &owner,
+        ))
+        .await;
+    assert_eq!(entries.status, 200);
+    assert!(!entries.json["entries"].as_array().unwrap().is_empty());
 }

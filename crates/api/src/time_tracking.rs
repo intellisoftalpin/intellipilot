@@ -187,11 +187,31 @@ pub struct ExportQuery {
     pub user_id: Option<Uuid>,
 }
 
-/// Log worked time against an assigned task.
+/// Log worked time. `kind` is `work` (default) or `meeting`.
+///
+/// - Work: against a task (`issue_id`) OR against a project with no task
+///   (`project_id` + a mandatory `note`).
+/// - Meeting: optionally against a project, with an optional `meeting_type`; no
+///   task.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct LogTimeRequest {
+    /// `work` (default) or `meeting`.
+    #[garde(length(max = 16))]
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The task to log against (work only). When omitted, `note` is required.
     #[garde(skip)]
-    pub issue_id: Uuid,
+    #[serde(default)]
+    pub issue_id: Option<Uuid>,
+    /// Explicit project when there is no task (work without a task; meeting).
+    #[garde(skip)]
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+    /// `daily`|`planning`|`troubleshooting`|`retro`|`refinement`|`other`
+    /// (meeting only).
+    #[garde(length(max = 16))]
+    #[serde(default)]
+    pub meeting_type: Option<String>,
     #[garde(length(min = 10, max = 10))]
     pub date: String,
     #[garde(range(min = 1, max = 1440))]
@@ -326,6 +346,42 @@ pub async fn list_my_assigned_issues(
     }
 }
 
+/// Query for the searchable log-time task picker.
+#[derive(Debug, Deserialize)]
+pub struct LoggableQuery {
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+}
+
+/// `GET /api/v1/me/loggable-issues?search=&project_id=` — issues in any project
+/// the caller belongs to (not just assigned), for logging time against any task.
+#[utoipa::path(get, path = "/api/v1/me/loggable-issues", responses((status = 200), (status = 401)))]
+pub async fn list_my_loggable_issues(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Query(q): Query<LoggableQuery>,
+) -> Response {
+    let rid = request_id(&headers);
+    let Ok(client) = state.auth().db.pool.get().await else {
+        return internal(&rid);
+    };
+    match ttdb::loggable_issues_for_user(
+        &client,
+        user.user_id,
+        q.search.as_deref(),
+        q.project_id,
+        50,
+    )
+    .await
+    {
+        Ok(issues) => Json(json!({ "issues": issues })).into_response(),
+        Err(_) => internal(&rid),
+    }
+}
+
 /// `POST /api/v1/me/time-entries` — log worked time against an assigned task.
 #[utoipa::path(post, path = "/api/v1/me/time-entries", request_body = LogTimeRequest,
     responses((status = 201), (status = 403), (status = 409), (status = 422)))]
@@ -348,56 +404,84 @@ pub async fn log_my_time(
         return internal(&rid);
     };
 
-    // The task must exist, be live, and be assigned to the caller.
-    let assignment = match ttdb::issue_assignment(&client, req.issue_id).await {
-        Ok(a) => a,
-        Err(_) => return internal(&rid),
+    // Kind: work (default) or meeting. Absences go through book_absence.
+    let kind = match req.kind.as_deref().unwrap_or("work") {
+        "work" => EntryKind::Work,
+        "meeting" => EntryKind::Meeting,
+        _ => return unprocessable(&rid, "kind must be 'work' or 'meeting'"),
     };
-    let Some((project_id, assigned_to, is_deleted)) = assignment else {
-        return unprocessable(&rid, "task not found");
+    let note = req.note.as_deref().unwrap_or("").trim();
+
+    // Meeting type is only valid for meetings.
+    let meeting_type = match &req.meeting_type {
+        Some(m) if kind == EntryKind::Meeting => {
+            match intellipilot_core::time_tracking::MeetingType::parse(m) {
+                Some(t) => Some(t.as_str()),
+                None => return unprocessable(&rid, "invalid meeting_type"),
+            }
+        }
+        _ => None,
     };
-    if is_deleted {
-        return unprocessable(&rid, "task no longer exists");
-    }
-    if assigned_to != Some(user.user_id) {
-        return problem(
-            StatusCode::FORBIDDEN,
-            "not_assigned",
-            "Not assigned",
-            Some("you can only log time on tasks assigned to you".to_owned()),
-            &rid,
-        );
+
+    // Resolve the project this entry attributes to (if any), and the task.
+    let issue_id = if kind == EntryKind::Work {
+        req.issue_id
+    } else {
+        None
+    };
+    let project_id: Option<Uuid> = if let Some(iid) = issue_id {
+        // Log to ANY task (no assigned-to check): the task must exist and be
+        // live; its project gates the permission.
+        match ttdb::issue_assignment(&client, iid).await {
+            Ok(Some((pid, _assigned, false))) => Some(pid),
+            Ok(Some((_, _, true))) => return unprocessable(&rid, "task no longer exists"),
+            Ok(None) => return unprocessable(&rid, "task not found"),
+            Err(_) => return internal(&rid),
+        }
+    } else {
+        req.project_id
+    };
+
+    // Work always needs a project; work without a task needs a note.
+    if kind == EntryKind::Work {
+        if project_id.is_none() {
+            return unprocessable(&rid, "work needs a task or a project");
+        }
+        if issue_id.is_none() && note.is_empty() {
+            return unprocessable(&rid, "a note is required when no task is selected");
+        }
     }
 
-    // Caller must hold time.log in that project.
-    let access = memdb::access(&client, project_id, user.user_id)
-        .await
-        .ok()
-        .flatten();
-    let can_log = access.as_ref().is_some_and(|a| a.has(Permission::TimeLog));
-    let can_manage = access
-        .as_ref()
-        .is_some_and(|a| a.has(Permission::TimeManage));
-    if !can_log {
-        return problem(StatusCode::FORBIDDEN, "forbidden", "Forbidden", None, &rid);
-    }
-
-    // Locked months are read-only to members without manage rights.
-    let (yr, mo) = year_month(date);
-    match ttdb::is_locked(&client, project_id, yr, mo).await {
-        Ok(true) if !can_manage => return locked(&rid),
-        Ok(_) => {}
-        Err(_) => return internal(&rid),
+    // When attributed to a project, require time.log there (and respect locks).
+    if let Some(pid) = project_id {
+        let access = memdb::access(&client, pid, user.user_id)
+            .await
+            .ok()
+            .flatten();
+        let can_log = access.as_ref().is_some_and(|a| a.has(Permission::TimeLog));
+        let can_manage = access
+            .as_ref()
+            .is_some_and(|a| a.has(Permission::TimeManage));
+        if !can_log {
+            return problem(StatusCode::FORBIDDEN, "forbidden", "Forbidden", None, &rid);
+        }
+        let (yr, mo) = year_month(date);
+        match ttdb::is_locked(&client, pid, yr, mo).await {
+            Ok(true) if !can_manage => return locked(&rid),
+            Ok(_) => {}
+            Err(_) => return internal(&rid),
+        }
     }
 
     let new = NewEntry {
         user_id: user.user_id,
-        kind: EntryKind::Work,
-        project_id: Some(project_id),
-        issue_id: Some(req.issue_id),
+        kind,
+        meeting_type,
+        project_id,
+        issue_id,
         entry_date: date,
         minutes: req.minutes,
-        note: req.note.as_deref().unwrap_or(""),
+        note,
         booking_id: None,
     };
     match ttdb::create_entry(&client, &new).await {
@@ -798,6 +882,7 @@ pub async fn admin_log_time(
     let new = NewEntry {
         user_id: req.user_id,
         kind: EntryKind::Work,
+        meeting_type: None,
         project_id: Some(ctx.project.id),
         issue_id: req.issue_id,
         entry_date: date,
@@ -1192,6 +1277,71 @@ pub async fn set_user_work_settings(
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => not_found(&rid),
+        Err(_) => internal(&rid),
+    }
+}
+
+/// `GET /api/v1/admin/time/summary?year=&month=` — cross-project team grid
+/// (all users, all projects) for a month. Superadmin only.
+#[utoipa::path(get, path = "/api/v1/admin/time/summary", responses((status = 200), (status = 403)))]
+pub async fn global_team_month(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+    Query(q): Query<MonthQuery>,
+) -> Response {
+    let rid = request_id(&headers);
+    let today = ttdb::today_utc();
+    let year = q.year.unwrap_or_else(|| today.year());
+    let month = q.month.unwrap_or_else(|| u8::from(today.month()));
+    if !(1..=12).contains(&month) {
+        return unprocessable(&rid, "month must be 1..12");
+    }
+    let Ok(client) = state.auth().db.pool.get().await else {
+        return internal(&rid);
+    };
+    match ttdb::global_team_month(&client, year, month).await {
+        Ok(members) => {
+            Json(json!({ "year": year, "month": month, "members": members })).into_response()
+        }
+        Err(_) => internal(&rid),
+    }
+}
+
+/// Query for the cross-project entry list.
+#[derive(Debug, Deserialize)]
+pub struct AdminTimeQuery {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub user_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub kind: Option<String>,
+}
+
+/// `GET /api/v1/admin/time-entries?from=&to=&user_id=&project_id=&kind=` —
+/// cross-project entry list. Superadmin only.
+#[utoipa::path(get, path = "/api/v1/admin/time-entries", responses((status = 200), (status = 403)))]
+pub async fn list_all_time(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+    Query(q): Query<AdminTimeQuery>,
+) -> Response {
+    let rid = request_id(&headers);
+    let (from, to) = match resolve_range(q.from.as_deref(), q.to.as_deref(), &rid) {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    // Validate the optional kind filter.
+    let kind = match &q.kind {
+        Some(k) if EntryKind::parse(k).is_none() => return unprocessable(&rid, "invalid kind"),
+        other => other.as_deref(),
+    };
+    let Ok(client) = state.auth().db.pool.get().await else {
+        return internal(&rid);
+    };
+    match ttdb::list_all_entries(&client, from, to, q.user_id, q.project_id, kind).await {
+        Ok(entries) => Json(json!({ "entries": entries })).into_response(),
         Err(_) => internal(&rid),
     }
 }

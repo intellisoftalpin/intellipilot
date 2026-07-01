@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.5.18",
+        version = "0.6.1",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -83,6 +83,9 @@ use crate::problem::{FieldErrorView, Problem};
         crate::admin::handlers::delete_branding_icon,
         crate::branding::get_icon,
         crate::time_tracking::list_my_assigned_issues,
+        crate::time_tracking::list_my_loggable_issues,
+        crate::time_tracking::global_team_month,
+        crate::time_tracking::list_all_time,
         crate::time_tracking::list_my_entries,
         crate::time_tracking::log_my_time,
         crate::time_tracking::update_my_entry,
@@ -254,6 +257,7 @@ use crate::problem::{FieldErrorView, Problem};
         intellipilot_core::time_tracking::TimeEntry,
         intellipilot_core::time_tracking::TimeEntryDetail,
         intellipilot_core::time_tracking::EntryKind,
+        intellipilot_core::time_tracking::MeetingType,
         intellipilot_core::time_tracking::PeriodLock,
         intellipilot_core::time_tracking::VacationAllowance,
         intellipilot_core::time_tracking::VacationBalance,

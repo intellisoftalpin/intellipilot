@@ -409,6 +409,10 @@ pub fn build_router(state: AppState) -> Router {
                 get(time_tracking::list_my_assigned_issues),
             )
             .route(
+                "/api/v1/me/loggable-issues",
+                get(time_tracking::list_my_loggable_issues),
+            )
+            .route(
                 "/api/v1/me/time-entries",
                 get(time_tracking::list_my_entries).post(time_tracking::log_my_time),
             )
@@ -466,7 +470,15 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/projects/{project_id}/issues/{id}/time",
                 get(time_tracking::issue_time),
             )
-            // Time tracking — superadmin (vacation allowances + work settings)
+            // Time tracking — superadmin (cross-project timesheet + vacation)
+            .route(
+                "/api/v1/admin/time/summary",
+                get(time_tracking::global_team_month),
+            )
+            .route(
+                "/api/v1/admin/time-entries",
+                get(time_tracking::list_all_time),
+            )
             .route(
                 "/api/v1/admin/users/{id}/vacation-allowances",
                 get(time_tracking::list_user_allowances),

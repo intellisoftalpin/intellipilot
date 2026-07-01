@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hmac::{Hmac, Mac};
 use intellipilot_core::perms::Permission;
@@ -369,30 +369,40 @@ pub struct DownloadParams {
 
 /// `GET /api/v1/projects/{project_id}/attachments/{attachment_id}/download`
 ///
-/// Requires a valid signature AND an authenticated member with view rights
-/// (defense in depth for local FS). Always served as an opaque attachment.
+/// Authorized by the short-lived HMAC **signature** alone (no Bearer token),
+/// because `sign_url` already checked the caller's view permission before
+/// issuing the URL. This lets a browser open the URL in a new tab (which drops
+/// the `Authorization` header) and lets the SPA render authenticated image/video
+/// previews from the same signed URL. Always served as an opaque attachment.
 pub async fn download(
     State(state): State<AppState>,
-    ctx: ProjectContext,
+    headers: HeaderMap,
     Path(params): Path<HashMap<String, String>>,
     Query(q): Query<DownloadParams>,
 ) -> Response {
+    let rid = crate::auth::request_id(&headers);
+    let Some(project_id) = params
+        .get("project_id")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        return not_found(&rid);
+    };
     let Some(id) = params
         .get("attachment_id")
         .and_then(|s| Uuid::parse_str(s).ok())
     else {
-        return not_found(&ctx.rid);
+        return not_found(&rid);
     };
     let auth = state.auth();
 
-    // 1) Signature + expiry.
+    // Signature + expiry authorize the download.
     if q.exp < OffsetDateTime::now_utc().unix_timestamp() {
         return problem(
             StatusCode::FORBIDDEN,
             "url_expired",
             "Download URL expired",
             None,
-            &ctx.rid,
+            &rid,
         );
     }
     if !verify(&auth.attachments.signing_key, id, q.exp, &q.sig) {
@@ -401,31 +411,26 @@ pub async fn download(
             "bad_signature",
             "Invalid signature",
             None,
-            &ctx.rid,
+            &rid,
         );
     }
 
     let Ok(client) = auth.db.pool.get().await else {
-        return internal(&ctx.rid);
+        return internal(&rid);
     };
-    let Ok(Some(att)) = adb::get(&client, ctx.project.id, id).await else {
-        return not_found(&ctx.rid);
+    // The attachment must belong to the project in the path.
+    let Ok(Some(att)) = adb::get(&client, project_id, id).await else {
+        return not_found(&rid);
     };
-    // 2) Re-check permission.
-    match view_perm(&att.target_type) {
-        Some(perm) => {
-            if let Err(r) = ctx.require(perm) {
-                return r;
-            }
-        }
-        None => return not_found(&ctx.rid),
+    if view_perm(&att.target_type).is_none() {
+        return not_found(&rid);
     }
 
-    let Ok(Some(key)) = adb::storage_key(&client, ctx.project.id, id).await else {
-        return not_found(&ctx.rid);
+    let Ok(Some(key)) = adb::storage_key(&client, project_id, id).await else {
+        return not_found(&rid);
     };
     let Ok(bytes) = auth.attachments.storage.get(&key).await else {
-        return not_found(&ctx.rid);
+        return not_found(&rid);
     };
 
     // Always download, never render inline.
