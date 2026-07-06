@@ -773,6 +773,8 @@ pub struct IssueQuery {
     pub category: Option<String>,
     pub assignee_mode: Option<String>,
     pub assignee_id: Option<Uuid>,
+    pub qa_assignee_mode: Option<String>,
+    pub qa_assignee_id: Option<Uuid>,
     pub epic_mode: Option<String>,
     pub epic_id: Option<Uuid>,
     pub milestone_mode: Option<String>,
@@ -790,6 +792,8 @@ const ISSUE_FILTER_WHERE: &str = "issues.project_id = $1 AND issues.deleted_at I
      AND ($6::text IS NULL OR issues.category = $6) \
      AND ($7::text IS NULL OR ($7 = 'none' AND issues.assigned_to IS NULL) \
                           OR ($7 = 'is' AND issues.assigned_to = $8::uuid)) \
+     AND ($17::text IS NULL OR ($17 = 'none' AND issues.qa_assignee_id IS NULL) \
+                           OR ($17 = 'is' AND issues.qa_assignee_id = $18::uuid)) \
      AND ($9::text IS NULL OR ($9 = 'none' AND issues.epic_id IS NULL) \
                           OR ($9 = 'is' AND issues.epic_id = $10::uuid)) \
      AND ($11::text IS NULL OR ($11 = 'none' AND issues.milestone_id IS NULL) \
@@ -830,6 +834,8 @@ pub async fn list_issues_paged(
         &q.component_id,
         &search_like,
         &q.overdue,
+        &q.qa_assignee_mode, // $17
+        &q.qa_assignee_id,   // $18
     ];
 
     let total: i64 = client
@@ -846,13 +852,13 @@ pub async fn list_issues_paged(
         page_params.push(&off);
         format!(
             "SELECT {ISSUE_COLS} FROM issues WHERE {ISSUE_FILTER_WHERE} \
-             ORDER BY issues.\"order\", issues.id LIMIT $17 OFFSET $18"
+             ORDER BY issues.\"order\", issues.id LIMIT $19 OFFSET $20"
         )
     } else {
         page_params.push(&off);
         format!(
             "SELECT {ISSUE_COLS} FROM issues WHERE {ISSUE_FILTER_WHERE} \
-             ORDER BY issues.\"order\", issues.id OFFSET $17"
+             ORDER BY issues.\"order\", issues.id OFFSET $19"
         )
     };
     let rows = client.query(&page_sql, &page_params).await?;
@@ -861,7 +867,7 @@ pub async fn list_issues_paged(
     Ok((issues, total))
 }
 
-/// Base filter params (`$1..$16`) for the board-data queries.
+/// Base filter params (`$1..$18`) for the board-data queries.
 ///
 /// Same binding order as `list_issues_paged`; `search_like` must outlive the
 /// returned vec (hence the shared lifetime).
@@ -888,6 +894,8 @@ fn board_base_params<'a>(
         &q.component_id,
         search_like,
         &q.overdue,
+        &q.qa_assignee_mode, // $17
+        &q.qa_assignee_id,   // $18
     ]
 }
 
@@ -906,8 +914,8 @@ pub async fn board_columns(
     let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
     let cols: Option<Vec<Uuid>> = columns.map(<[Uuid]>::to_vec);
     let mut params = board_base_params(&project_id, q, &search_like);
-    params.push(&column_limit); // $17
-    params.push(&cols); // $18
+    params.push(&column_limit); // $19
+    params.push(&cols); // $20
     let sql = format!(
         "WITH ranked AS ( \
            SELECT {ISSUE_COLS}, \
@@ -915,9 +923,9 @@ pub async fn board_columns(
              count(*)     OVER (PARTITION BY status_id)                        AS col_total \
            FROM issues \
            WHERE {ISSUE_FILTER_WHERE} AND parent_id IS NULL \
-             AND ($18::uuid[] IS NULL OR status_id = ANY($18)) \
+             AND ($20::uuid[] IS NULL OR status_id = ANY($20)) \
          ) \
-         SELECT * FROM ranked WHERE rn <= $17 ORDER BY status_id, \"order\", id"
+         SELECT * FROM ranked WHERE rn <= $19 ORDER BY status_id, \"order\", id"
     );
     let rows = client.query(&sql, &params).await?;
 
@@ -983,8 +991,8 @@ pub async fn board_lanes(
     let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
     let cols: Option<Vec<Uuid>> = columns.map(<[Uuid]>::to_vec);
     let mut params = board_base_params(&project_id, q, &search_like);
-    params.push(&column_limit); // $17
-    params.push(&cols); // $18
+    params.push(&column_limit); // $19
+    params.push(&cols); // $20
     let sql = format!(
         "WITH ranked AS ( \
            SELECT {ISSUE_COLS}, {grp} AS grp, \
@@ -994,9 +1002,9 @@ pub async fn board_lanes(
              count(*) OVER (PARTITION BY {grp})                   AS lane_total \
            FROM {from} \
            WHERE {ISSUE_FILTER_WHERE} AND issues.parent_id IS NULL \
-             AND ($18::uuid[] IS NULL OR issues.status_id = ANY($18)) \
+             AND ($20::uuid[] IS NULL OR issues.status_id = ANY($20)) \
          ) \
-         SELECT * FROM ranked WHERE rn <= $17 ORDER BY grp, status_id, \"order\", id"
+         SELECT * FROM ranked WHERE rn <= $19 ORDER BY grp, status_id, \"order\", id"
     );
     let rows = client.query(&sql, &params).await?;
 

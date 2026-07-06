@@ -1052,6 +1052,8 @@ pub struct IssueListQuery {
     #[serde(default)]
     pub assignee: Option<String>,
     #[serde(default)]
+    pub qa_assignee: Option<String>,
+    #[serde(default)]
     pub epic: Option<String>,
     #[serde(default)]
     pub milestone: Option<String>,
@@ -1097,6 +1099,7 @@ pub async fn list_issues(
         return internal(&ctx.rid);
     };
     let (assignee_mode, assignee_id) = ref_filter(&q.assignee);
+    let (qa_assignee_mode, qa_assignee_id) = ref_filter(&q.qa_assignee);
     let (epic_mode, epic_id) = ref_filter(&q.epic);
     let (milestone_mode, milestone_id) = ref_filter(&q.milestone);
     let query = bl::IssueQuery {
@@ -1108,6 +1111,8 @@ pub async fn list_issues(
         category: opt_nonempty(&q.category),
         assignee_mode,
         assignee_id,
+        qa_assignee_mode,
+        qa_assignee_id,
         epic_mode,
         epic_id,
         milestone_mode,

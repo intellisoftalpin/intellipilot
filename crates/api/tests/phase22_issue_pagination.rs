@@ -187,3 +187,30 @@ async fn server_side_filters() {
     assert_eq!(stories.json["total"], 2);
     assert_eq!(stories.json["issues"].as_array().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn server_side_filter_by_qa_assignee() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid, uid) = owner_with_project(&app, "qafilter").await;
+
+    // One issue with a QA assignee, one without.
+    let _with_qa = create(
+        &app,
+        &token,
+        &pid,
+        &json!({ "subject": "Needs testing", "qa_assignee_id": uid }),
+    )
+    .await;
+    let _no_qa = create(&app, &token, &pid, &json!({ "subject": "No QA yet" })).await;
+
+    // qa_assignee = self → only the QA-assigned issue.
+    let mine = list(&app, &token, &pid, &format!("?qa_assignee={uid}")).await;
+    assert_eq!(mine.json["total"], 1, "{:?}", mine.json);
+    assert_eq!(mine.json["issues"][0]["subject"], "Needs testing");
+
+    // qa_assignee = none → only the issue without a QA assignee.
+    let none = list(&app, &token, &pid, "?qa_assignee=none").await;
+    assert_eq!(none.json["total"], 1, "{:?}", none.json);
+    assert_eq!(none.json["issues"][0]["subject"], "No QA yet");
+}
