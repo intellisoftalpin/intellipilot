@@ -657,6 +657,8 @@ fn write_from_create(req: &CreateIssueRequest) -> bl::IssueWrite<'_> {
         parent_id: req.parent_id,
         milestone_id: req.milestone_id,
         assigned_to: req.assigned_to,
+        qa_assignee_id: req.qa_assignee_id,
+        reviewer_id: req.reviewer_id,
         category: req
             .category
             .map(intellipilot_core::backlog::IssueCategory::as_str),
@@ -1233,6 +1235,8 @@ pub async fn update_issue(
     let parent_id = patch.parent_id.unwrap_or(old.parent_id);
     let milestone_id = patch.milestone_id.unwrap_or(old.milestone_id);
     let assigned_to = patch.assigned_to.unwrap_or(old.assigned_to);
+    let qa_assignee_id = patch.qa_assignee_id.unwrap_or(old.qa_assignee_id);
+    let reviewer_id = patch.reviewer_id.unwrap_or(old.reviewer_id);
     let category = patch.category.unwrap_or(old.category);
     // Effective customer set: the replacement if present, else unchanged.
     let customer_ids = new_customers
@@ -1332,6 +1336,18 @@ pub async fn update_issue(
     );
     diff_field(
         &mut diff,
+        "qa_assignee_id",
+        &json!(old.qa_assignee_id),
+        &json!(qa_assignee_id),
+    );
+    diff_field(
+        &mut diff,
+        "reviewer_id",
+        &json!(old.reviewer_id),
+        &json!(reviewer_id),
+    );
+    diff_field(
+        &mut diff,
         "category",
         &json!(old.category),
         &json!(category),
@@ -1384,6 +1400,8 @@ pub async fn update_issue(
         parent_id,
         milestone_id,
         assigned_to,
+        qa_assignee_id,
+        reviewer_id,
         category: category.map(intellipilot_core::backlog::IssueCategory::as_str),
         start_date,
         due_date,

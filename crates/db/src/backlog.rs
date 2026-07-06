@@ -398,6 +398,7 @@ pub async fn epic_in_project(
 
 const ISSUE_COLS: &str = "id, project_id, ref, subject, description, status_id, type_id, \
      priority_id, size_id, epic_id, parent_id, milestone_id, owner_id, assigned_to, \
+     qa_assignee_id, reviewer_id, \
      category, start_date, due_date, resolution, resolved_at, \
      release_version_id, release_text, \"order\", version, created_at, modified_at";
 
@@ -417,6 +418,8 @@ fn row_to_issue(r: &Row) -> Issue {
         milestone_id: r.get("milestone_id"),
         owner_id: r.get("owner_id"),
         assigned_to: r.get("assigned_to"),
+        qa_assignee_id: r.get("qa_assignee_id"),
+        reviewer_id: r.get("reviewer_id"),
         category: r
             .get::<_, Option<String>>("category")
             .and_then(|s| IssueCategory::parse(&s)),
@@ -470,6 +473,8 @@ pub struct IssueWrite<'a> {
     pub parent_id: Option<Uuid>,
     pub milestone_id: Option<Uuid>,
     pub assigned_to: Option<Uuid>,
+    pub qa_assignee_id: Option<Uuid>,
+    pub reviewer_id: Option<Uuid>,
     pub category: Option<&'a str>,
     pub start_date: Option<Date>,
     pub due_date: Option<Date>,
@@ -674,9 +679,10 @@ pub async fn create_issue(
             &format!(
                 "INSERT INTO issues (project_id, ref, subject, description, status_id, type_id, \
                    priority_id, size_id, epic_id, parent_id, milestone_id, owner_id, assigned_to, \
+                   qa_assignee_id, reviewer_id, \
                    category, start_date, due_date, resolution, release_version_id, \
                    release_text, \"order\", resolved_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22, \
                    CASE WHEN $5::uuid IS NOT NULL \
                           AND (SELECT is_closed FROM taxonomy_items WHERE id = $5::uuid) IS TRUE \
                         THEN now() END) \
@@ -696,6 +702,8 @@ pub async fn create_issue(
                 &w.milestone_id,
                 &owner_id,
                 &w.assigned_to,
+                &w.qa_assignee_id,
+                &w.reviewer_id,
                 &w.category,
                 &w.start_date,
                 &w.due_date,
@@ -1053,8 +1061,9 @@ pub async fn update_issue(
             &format!(
                 "UPDATE issues SET subject=$4, description=$5, status_id=$6, type_id=$7, \
                    priority_id=$8, size_id=$9, epic_id=$10, parent_id=$11, milestone_id=$12, \
-                   assigned_to=$13, category=$14, start_date=$15, due_date=$16, \
-                   resolution=$17, release_version_id=$18, release_text=$19, \
+                   assigned_to=$13, qa_assignee_id=$14, reviewer_id=$15, \
+                   category=$16, start_date=$17, due_date=$18, \
+                   resolution=$19, release_version_id=$20, release_text=$21, \
                    resolved_at = CASE WHEN $6::uuid IS NOT NULL \
                           AND (SELECT is_closed FROM taxonomy_items WHERE id = $6::uuid) IS TRUE \
                         THEN COALESCE(resolved_at, now()) ELSE NULL END, \
@@ -1076,6 +1085,8 @@ pub async fn update_issue(
                 &w.parent_id,
                 &w.milestone_id,
                 &w.assigned_to,
+                &w.qa_assignee_id,
+                &w.reviewer_id,
                 &w.category,
                 &w.start_date,
                 &w.due_date,

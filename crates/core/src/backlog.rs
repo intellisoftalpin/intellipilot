@@ -100,6 +100,10 @@ pub struct Issue {
     pub milestone_id: Option<Uuid>,
     pub owner_id: Option<Uuid>,
     pub assigned_to: Option<Uuid>,
+    /// Who tests this issue (informational; distinct from the assignee).
+    pub qa_assignee_id: Option<Uuid>,
+    /// Who reviews the implementation (informational; a second dev).
+    pub reviewer_id: Option<Uuid>,
     /// Business-driver category (fixed enum).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<IssueCategory>,

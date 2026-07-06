@@ -461,6 +461,12 @@ pub struct CreateIssueRequest {
     pub assigned_to: Option<Uuid>,
     #[garde(skip)]
     #[serde(default)]
+    pub qa_assignee_id: Option<Uuid>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub reviewer_id: Option<Uuid>,
+    #[garde(skip)]
+    #[serde(default)]
     pub category: Option<intellipilot_core::backlog::IssueCategory>,
     /// Requesting customers (many-to-many). Full set on create.
     #[garde(length(max = 50))]
@@ -514,6 +520,10 @@ pub struct UpdateIssueRequest {
     pub milestone_id: Option<Option<Uuid>>,
     #[serde(default, with = "serde_with::rust::double_option")]
     pub assigned_to: Option<Option<Uuid>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub qa_assignee_id: Option<Option<Uuid>>,
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub reviewer_id: Option<Option<Uuid>>,
     #[serde(default, with = "serde_with::rust::double_option")]
     pub category: Option<Option<intellipilot_core::backlog::IssueCategory>>,
     /// Full replacement of the issue's customers when present.

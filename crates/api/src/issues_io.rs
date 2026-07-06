@@ -893,6 +893,9 @@ pub async fn import_commit(
             parent_id: None,
             milestone_id: None,
             assigned_to: look(&user_map, &row.assignee),
+            // QA / reviewer are not part of the CSV import format.
+            qa_assignee_id: None,
+            reviewer_id: None,
             category: None,
             start_date: None,
             due_date: row.due_date,

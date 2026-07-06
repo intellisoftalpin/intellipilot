@@ -429,6 +429,80 @@ async fn history_records_field_changes() {
 }
 
 #[tokio::test]
+async fn issue_qa_and_reviewer_set_clear_and_history() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+    let me = app.send(get_with_bearer("/api/v1/me", &token)).await;
+    let uid = me.json["id"].as_str().unwrap().to_owned();
+
+    // Create an issue with QA + reviewer assigned up-front.
+    let created = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/issues"),
+            &token,
+            &json!({ "subject": "Ship it", "qa_assignee_id": uid, "reviewer_id": uid }),
+        ))
+        .await;
+    assert_eq!(created.status, 201, "{:?}", created.json);
+    assert_eq!(
+        created.json["qa_assignee_id"], uid,
+        "QA persisted on create"
+    );
+    assert_eq!(
+        created.json["reviewer_id"], uid,
+        "reviewer persisted on create"
+    );
+    let id = created.json["id"].as_str().unwrap().to_owned();
+    let etag = created.header("etag").unwrap().to_owned();
+
+    // GET returns both fields.
+    let got = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/issues/{id}"),
+            &token,
+        ))
+        .await;
+    assert_eq!(got.json["qa_assignee_id"], uid);
+    assert_eq!(got.json["reviewer_id"], uid);
+
+    // PATCH with explicit null clears QA; reviewer (absent) is left untouched.
+    let patched = app
+        .send(req(
+            "PATCH",
+            &format!("/api/v1/projects/{pid}/issues/{id}"),
+            Some(&token),
+            &[("if-match", &etag)],
+            Some(&json!({ "qa_assignee_id": null })),
+        ))
+        .await;
+    assert_eq!(patched.status, 200, "{:?}", patched.json);
+    assert!(
+        patched.json["qa_assignee_id"].is_null(),
+        "QA cleared by explicit null"
+    );
+    assert_eq!(
+        patched.json["reviewer_id"], uid,
+        "reviewer untouched when absent"
+    );
+
+    // History records the QA change as [old, new].
+    let hist = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/issues/{id}/history"),
+            &token,
+        ))
+        .await;
+    assert_eq!(hist.status, 200);
+    let entries = hist.json["history"].as_array().unwrap();
+    let last = entries.last().unwrap();
+    assert!(
+        last["diff"]["qa_assignee_id"].is_array(),
+        "diff records qa_assignee_id [old,new]"
+    );
+}
+
+#[tokio::test]
 async fn comments_lifecycle() {
     require_db!();
     let app = TestApp::spawn().await;
