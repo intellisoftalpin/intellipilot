@@ -49,12 +49,25 @@ async fn releases_and_versions_crud() {
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/releases"),
             &token,
-            &json!({ "name": "PSBP", "description": "Main product" }),
+            &json!({ "name": "PSBP", "description": "Main product", "color": "#336699" }),
         ))
         .await;
     assert_eq!(rel.status, 201, "{:?}", rel.json);
     assert_eq!(rel.json["name"], "PSBP");
+    assert_eq!(rel.json["color"], "#336699");
     let rid = rel.json["id"].as_str().unwrap().to_owned();
+
+    // Update the color.
+    let recolor = app
+        .send(patch_json_bearer(
+            &format!("/api/v1/projects/{pid}/releases/{rid}"),
+            &token,
+            &json!({ "color": "#aa3311" }),
+        ))
+        .await;
+    assert_eq!(recolor.status, 200, "{:?}", recolor.json);
+    assert_eq!(recolor.json["color"], "#aa3311");
+    assert_eq!(recolor.json["name"], "PSBP");
 
     // Duplicate name → 409.
     let dup = app
@@ -152,7 +165,7 @@ async fn component_release_link_drives_fix_version() {
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/releases"),
             &token,
-            &json!({ "name": "PSBP" }),
+            &json!({ "name": "PSBP", "color": "#f0ad4e" }),
         ))
         .await;
     let rid = rel.json["id"].as_str().unwrap().to_owned();
@@ -176,7 +189,8 @@ async fn component_release_link_drives_fix_version() {
     assert_eq!(link.status, 201, "{:?}", link.json);
     assert_eq!(link.json["release_name"], "PSBP");
 
-    // The picker returns versions for the component's linked releases.
+    // The picker returns versions for the component's linked releases,
+    // enriched with the parent release's name and color.
     let picker = app
         .send(post_json_bearer(
             &format!("/api/v1/projects/{pid}/release-versions/for-components"),
@@ -187,6 +201,22 @@ async fn component_release_link_drives_fix_version() {
     let avail = picker.json["versions"].as_array().unwrap();
     assert_eq!(avail.len(), 1);
     assert_eq!(avail[0]["id"].as_str().unwrap(), vid);
+    assert_eq!(avail[0]["release_name"], "PSBP");
+    assert_eq!(avail[0]["release_color"], "#f0ad4e");
+
+    // The flat project-wide endpoint returns the same enriched shape.
+    let all_versions = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/release-versions"),
+            &token,
+        ))
+        .await;
+    assert_eq!(all_versions.status, 200, "{:?}", all_versions.json);
+    let all = all_versions.json["versions"].as_array().unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0]["id"].as_str().unwrap(), vid);
+    assert_eq!(all[0]["release_name"], "PSBP");
+    assert_eq!(all[0]["release_color"], "#f0ad4e");
 
     // Create an issue with the structured fix-version.
     let issue = app

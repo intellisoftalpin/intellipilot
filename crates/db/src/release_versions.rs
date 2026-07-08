@@ -1,6 +1,6 @@
 //! Release version persistence (versions belong to a release).
 
-use intellipilot_core::release::{ReleaseStatus, ReleaseVersion};
+use intellipilot_core::release::{ReleaseStatus, ReleaseVersion, ReleaseVersionRef};
 use time::{Date, OffsetDateTime};
 use tokio_postgres::Row;
 use uuid::Uuid;
@@ -26,6 +26,22 @@ fn row_to_version(r: &Row) -> ReleaseVersion {
         git_tag: r.get("git_tag"),
         order: r.get("order"),
         created_at: r.get("created_at"),
+    }
+}
+
+fn row_to_ref(r: &Row) -> ReleaseVersionRef {
+    ReleaseVersionRef {
+        id: r.get("id"),
+        release_id: r.get("release_id"),
+        release_name: r.get("release_name"),
+        release_color: r.get("release_color"),
+        version: r.get("version"),
+        status: r
+            .get::<_, Option<String>>("status")
+            .and_then(|s| ReleaseStatus::parse(&s))
+            .unwrap_or(ReleaseStatus::Planned),
+        target_date: r.get("target_date"),
+        order: r.get("order"),
     }
 }
 
@@ -182,20 +198,42 @@ pub async fn in_project(
 pub async fn for_components(
     client: &deadpool_postgres::Client,
     component_ids: &[Uuid],
-) -> Result<Vec<ReleaseVersion>, DbError> {
+) -> Result<Vec<ReleaseVersionRef>, DbError> {
     if component_ids.is_empty() {
         return Ok(Vec::new());
     }
     let rows = client
         .query(
-            "SELECT DISTINCT rv.id, rv.release_id, rv.version, rv.status, rv.target_date, \
-                    rv.released_at, rv.notes, rv.repository_id, rv.git_tag, rv.\"order\", \
-                    rv.created_at \
+            "SELECT DISTINCT rv.id, rv.release_id, r.name AS release_name, \
+                    r.color AS release_color, rv.version, rv.status, rv.target_date, \
+                    rv.\"order\" \
              FROM release_versions rv \
+             JOIN releases r ON r.id = rv.release_id \
              JOIN component_releases cr ON cr.release_id = rv.release_id \
-             WHERE cr.component_id = ANY($1) ORDER BY rv.version",
+             WHERE cr.component_id = ANY($1) ORDER BY r.name, rv.version",
             &[&component_ids],
         )
         .await?;
-    Ok(rows.iter().map(row_to_version).collect())
+    Ok(rows.iter().map(row_to_ref).collect())
+}
+
+/// All release versions in the project, enriched with their parent release's
+/// name and badge color (flat, for pages that resolve many issues' fix
+/// versions at once).
+pub async fn list_all_for_project(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+) -> Result<Vec<ReleaseVersionRef>, DbError> {
+    let rows = client
+        .query(
+            "SELECT rv.id, rv.release_id, r.name AS release_name, \
+                    r.color AS release_color, rv.version, rv.status, rv.target_date, \
+                    rv.\"order\" \
+             FROM release_versions rv \
+             JOIN releases r ON r.id = rv.release_id \
+             WHERE r.project_id = $1 ORDER BY r.name, rv.version",
+            &[&project_id],
+        )
+        .await?;
+    Ok(rows.iter().map(row_to_ref).collect())
 }

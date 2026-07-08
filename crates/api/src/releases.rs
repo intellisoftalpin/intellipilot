@@ -32,6 +32,10 @@ pub struct CreateReleaseRequest {
     #[garde(length(max = 5000))]
     #[serde(default)]
     pub description: Option<String>,
+    /// Badge color (hex). Defaults to empty (no color) when omitted.
+    #[garde(length(max = 16))]
+    #[serde(default)]
+    pub color: String,
 }
 
 #[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
@@ -42,6 +46,9 @@ pub struct UpdateReleaseRequest {
     #[garde(skip)]
     #[serde(default, with = "serde_with::rust::double_option")]
     pub description: Option<Option<String>>,
+    #[garde(length(max = 16))]
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
@@ -210,6 +217,7 @@ pub async fn create_release(
         ctx.actor_id,
         &req.name,
         req.description.as_deref(),
+        &req.color,
     )
     .await
     {
@@ -240,7 +248,16 @@ pub async fn update_release(
         return internal(&ctx.rid);
     };
     let desc = req.description.as_ref().map(|o| o.as_deref());
-    match reldb::update(&client, ctx.project.id, id, req.name.as_deref(), desc).await {
+    match reldb::update(
+        &client,
+        ctx.project.id,
+        id,
+        req.name.as_deref(),
+        desc,
+        req.color.as_deref(),
+    )
+    .await
+    {
         Ok(Some(rel)) => Json(rel).into_response(),
         Ok(None) => not_found(&ctx.rid),
         Err(e) if e.is_unique_violation() => conflict(&ctx.rid, "release name already used"),
@@ -425,6 +442,27 @@ pub async fn versions_for_components(
         return internal(&ctx.rid);
     };
     match rvdb::for_components(&client, &req.component_ids).await {
+        Ok(items) => Json(json!({ "versions": items })).into_response(),
+        Err(_) => internal(&ctx.rid),
+    }
+}
+
+/// `GET /api/v1/projects/{project_id}/release-versions`
+///
+/// All release versions in the project, enriched with their parent release's
+/// name and badge color — a flat list for pages that resolve many issues'
+/// `release_version_id` at once (issues list, board).
+pub async fn list_all_release_versions(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+) -> Response {
+    if let Err(r) = ctx.require(Permission::ProjectView) {
+        return r;
+    }
+    let Ok(client) = state.auth().db.pool.get().await else {
+        return internal(&ctx.rid);
+    };
+    match rvdb::list_all_for_project(&client, ctx.project.id).await {
         Ok(items) => Json(json!({ "versions": items })).into_response(),
         Err(_) => internal(&ctx.rid),
     }

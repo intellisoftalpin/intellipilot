@@ -19,6 +19,8 @@ pub struct Release {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Badge color (hex), shared by all versions under this release.
+    pub color: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -83,4 +85,19 @@ pub struct ComponentReleaseLink {
     pub release_name: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+}
+
+/// A release version enriched with its parent release's name and badge
+/// color, for the issue fix-version picker and flat project-wide listings.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ReleaseVersionRef {
+    pub id: Uuid,
+    pub release_id: Uuid,
+    pub release_name: String,
+    pub release_color: String,
+    pub version: String,
+    pub status: ReleaseStatus,
+    #[serde(with = "crate::serde_date::option")]
+    pub target_date: Option<time::Date>,
+    pub order: f64,
 }

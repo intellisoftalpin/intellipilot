@@ -351,6 +351,7 @@ pub fn build_router(state: AppState) -> Router {
             // Releases + versions
             .route("/api/v1/projects/{project_id}/releases", get(releases::list_releases))
             .route("/api/v1/projects/{project_id}/releases", post(releases::create_release))
+            .route("/api/v1/projects/{project_id}/release-versions", get(releases::list_all_release_versions))
             .route("/api/v1/projects/{project_id}/release-versions/for-components", post(releases::versions_for_components))
             .route("/api/v1/projects/{project_id}/releases/{release_id}", patch(releases::update_release))
             .route("/api/v1/projects/{project_id}/releases/{release_id}", delete(releases::delete_release))

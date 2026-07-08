@@ -4,6 +4,35 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.7] - 2026-07-09
+
+Version bump only (lockstep with the frontend release), no backend changes.
+
+## [0.6.6] - 2026-07-09
+
+Version bump only (lockstep with the frontend release), no backend changes.
+
+## [0.6.5] - 2026-07-09
+
+Version bump only (lockstep with the frontend release), no backend changes.
+
+## [0.6.4] - 2026-07-09
+
+### Added
+- **Release badge color** — `Release` now has a `color` (hex) field, settable
+  via `POST /releases` and `PATCH /releases/{release_id}`. All versions under
+  a release share its color.
+- **`GET /api/v1/projects/{project_id}/release-versions`** — flat list of
+  every release version in the project, each enriched with its parent
+  release's name and color, for surfaces that resolve many issues' fix
+  versions at once (issues list, board).
+
+### Fixed
+- `POST /release-versions/for-components` (the issue fix-version picker
+  endpoint) now actually returns each version's parent release name and
+  color — previously it only returned raw `release_versions` columns, so
+  `release_name` was always empty despite being part of the response shape.
+
 ## [0.4.3] - 2026-06-19
 
 ### Added

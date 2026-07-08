@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::DbError;
 
-const COLS: &str = "id, project_id, name, description, created_at";
+const COLS: &str = "id, project_id, name, description, color, created_at";
 
 fn row_to_release(r: &Row) -> Release {
     Release {
@@ -14,6 +14,7 @@ fn row_to_release(r: &Row) -> Release {
         project_id: r.get("project_id"),
         name: r.get("name"),
         description: r.get("description"),
+        color: r.get("color"),
         created_at: r.get("created_at"),
     }
 }
@@ -51,14 +52,15 @@ pub async fn create(
     created_by: Uuid,
     name: &str,
     description: Option<&str>,
+    color: &str,
 ) -> Result<Release, DbError> {
     let row = client
         .query_one(
             &format!(
-                "INSERT INTO releases (project_id, name, description, created_by) \
-                 VALUES ($1,$2,$3,$4) RETURNING {COLS}"
+                "INSERT INTO releases (project_id, name, description, color, created_by) \
+                 VALUES ($1,$2,$3,$4,$5) RETURNING {COLS}"
             ),
-            &[&project_id, &name, &description, &created_by],
+            &[&project_id, &name, &description, &color, &created_by],
         )
         .await?;
     Ok(row_to_release(&row))
@@ -70,16 +72,18 @@ pub async fn update(
     id: Uuid,
     name: Option<&str>,
     description: Option<Option<&str>>,
+    color: Option<&str>,
 ) -> Result<Option<Release>, DbError> {
     let (set_desc, desc) = description.map_or((false, None), |v| (true, v));
     let row = client
         .query_opt(
             &format!(
                 "UPDATE releases SET name=COALESCE($3,name), \
-                   description = CASE WHEN $4 THEN $5 ELSE description END \
+                   description = CASE WHEN $4 THEN $5 ELSE description END, \
+                   color=COALESCE($6,color) \
                  WHERE id=$1 AND project_id=$2 RETURNING {COLS}"
             ),
-            &[&id, &project_id, &name, &set_desc, &desc],
+            &[&id, &project_id, &name, &set_desc, &desc, &color],
         )
         .await?;
     Ok(row.as_ref().map(row_to_release))
