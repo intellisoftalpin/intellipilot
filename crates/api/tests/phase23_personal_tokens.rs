@@ -360,6 +360,24 @@ async fn my_issues_filters_by_role() {
     assert!(key.ends_with(&format!("-{reference}")), "key: {key}");
     assert_eq!(item["project_id"], pid.as_str());
     assert_eq!(r.json["total"], 1);
+
+    // Scoping the feed to a project keeps matches inside it and drops the
+    // rest.
+    let scoped = app
+        .send(get_with_bearer(
+            &format!("/api/v1/me/issues?role=assignee&project={pid}"),
+            &bob_token,
+        ))
+        .await;
+    assert_eq!(scoped.json["total"], 1, "{:?}", scoped.json);
+    let other = create_project(&app, &alice, "Elsewhere", "internal").await;
+    let elsewhere = app
+        .send(get_with_bearer(
+            &format!("/api/v1/me/issues?role=assignee&project={other}"),
+            &bob_token,
+        ))
+        .await;
+    assert_eq!(elsewhere.json["total"], 0, "{:?}", elsewhere.json);
 }
 
 #[tokio::test]

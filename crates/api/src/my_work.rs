@@ -27,6 +27,8 @@ pub struct MyIssuesQuery {
     /// Relation to the issue: `assignee` (default), `reporter`, `reviewer`,
     /// `qa`, or `mentioned`.
     pub role: Option<MyIssueRole>,
+    /// Narrow the feed to one project.
+    pub project: Option<uuid::Uuid>,
     /// Include issues whose status is closed (default false).
     pub include_closed: Option<bool>,
     /// Case-insensitive substring match on the subject.
@@ -81,6 +83,7 @@ pub async fn list_my_issues(
         user.user_id,
         &username,
         role,
+        q.project,
         include_closed,
         search,
         limit,

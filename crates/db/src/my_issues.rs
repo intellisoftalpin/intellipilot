@@ -81,15 +81,18 @@ const fn role_condition(role: MyIssueRole) -> &'static str {
     }
 }
 
-/// List the user's issues for one role, newest-modified first, with the total
-/// row count for paging. `username` is only consulted for
-/// [`MyIssueRole::Mentioned`].
+/// List the user's issues for one role, newest-modified first.
+///
+/// Returns the page plus the total row count for paging. `username` is only
+/// consulted for [`MyIssueRole::Mentioned`]; `project_id` optionally narrows
+/// the feed to one project.
 #[allow(clippy::too_many_arguments)]
 pub async fn list(
     client: &deadpool_postgres::Client,
     user_id: Uuid,
     username: &str,
     role: MyIssueRole,
+    project_id: Option<Uuid>,
     include_closed: bool,
     search: Option<&str>,
     limit: i64,
@@ -104,6 +107,10 @@ pub async fn list(
     }
 
     let mut where_sql = format!("i.deleted_at IS NULL AND {cond}");
+    if let Some(pid) = project_id {
+        params.push(Box::new(pid));
+        let _ = write!(where_sql, " AND i.project_id = ${}", params.len());
+    }
     if !include_closed {
         where_sql.push_str(" AND st.is_closed IS NOT TRUE");
     }
