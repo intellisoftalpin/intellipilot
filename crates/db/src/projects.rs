@@ -213,6 +213,28 @@ pub async fn list_for_member(
     Ok(rows.iter().map(row_to_project).collect())
 }
 
+/// Every non-deleted project among `ids`, newest first. For app tokens,
+/// which are scoped to an explicit set of project ids rather than
+/// memberships.
+pub async fn list_by_ids(
+    client: &deadpool_postgres::Client,
+    ids: &[Uuid],
+) -> Result<Vec<Project>, DbError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = client
+        .query(
+            &format!(
+                "SELECT {PROJECT_COLS} FROM projects \
+                 WHERE id = ANY($1) AND deleted_at IS NULL ORDER BY created_at DESC"
+            ),
+            &[&ids],
+        )
+        .await?;
+    Ok(rows.iter().map(row_to_project).collect())
+}
+
 pub async fn update(
     client: &deadpool_postgres::Client,
     id: Uuid,

@@ -23,6 +23,11 @@ pub const INTELLIBOT_USERNAME: &str = "INTELLIBOT";
 /// apart from Paseto access tokens in the same `Authorization: Bearer` header.
 pub const TOKEN_PREFIX: &str = "ipat_";
 
+/// Raw personal-token secrets carry this prefix. A personal token
+/// authenticates as its owning user (unlike `ipat_` tokens, which act as
+/// INTELLIBOT), so the auth layer needs to tell the two kinds apart.
+pub const PERSONAL_TOKEN_PREFIX: &str = "ippt_";
+
 /// An app token as returned to the admin UI. Never carries the secret — only
 /// the [`prefix`](Self::prefix) + [`last4`](Self::last4) display hints.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -49,6 +54,33 @@ pub struct AppToken {
 
 impl AppToken {
     /// A short masked identifier for logs/UI, e.g. `ipat_Ab12cd…wx90`.
+    #[must_use]
+    pub fn masked(&self) -> String {
+        format!("{}…{}", self.prefix, self.last4)
+    }
+}
+
+/// A user's personal app token as returned to its owner. Never carries the
+/// secret — only the [`prefix`](Self::prefix) + [`last4`](Self::last4)
+/// display hints. At most one exists per user.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PersonalAppToken {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    /// Leading hint of the secret, e.g. `ippt_Ab12cd`.
+    pub prefix: String,
+    /// Last 4 chars of the secret.
+    pub last4: String,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub disabled_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub last_used_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+impl PersonalAppToken {
+    /// A short masked identifier for logs/UI, e.g. `ippt_Ab12cd…wx90`.
     #[must_use]
     pub fn masked(&self) -> String {
         format!("{}…{}", self.prefix, self.last4)

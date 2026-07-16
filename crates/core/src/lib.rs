@@ -16,6 +16,7 @@ pub mod dashboard;
 pub mod error;
 pub mod ids;
 pub mod milestone;
+pub mod my_work;
 pub mod ordering;
 pub mod perms;
 pub mod project;

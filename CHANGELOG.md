@@ -4,6 +4,15 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.8] - 2026-07-09
+
+### Fixed
+- **`GET /api/v1/projects` now works with app tokens** — previously it only
+  accepted a user login token and always returned `401` for an `ipat_…`
+  bearer, with no way for a token to discover which project(s) it's scoped
+  to. It now returns the projects the app token is scoped to (a human caller
+  still sees their memberships, or every project if superadmin).
+
 ## [0.6.7] - 2026-07-09
 
 Version bump only (lockstep with the frontend release), no backend changes.

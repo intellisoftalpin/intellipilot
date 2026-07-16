@@ -170,6 +170,29 @@ async fn app_token_acts_in_scope_and_is_attributed_to_intellibot() {
 }
 
 #[tokio::test]
+async fn app_token_lists_only_its_scoped_projects() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let admin = admin(&app).await;
+    let in_scope = create_project(&app, &admin, "InScope", "private").await;
+    let _out_of_scope = create_project(&app, &admin, "OutOfScope", "private").await;
+
+    let r = create_token(
+        &app,
+        &admin,
+        &json!({ "name": "lister", "permissions": ["issue.view"], "project_ids": [in_scope] }),
+    )
+    .await;
+    let secret = r.json["secret"].as_str().unwrap().to_owned();
+
+    let list = app.send(get_with_bearer("/api/v1/projects", &secret)).await;
+    assert_eq!(list.status, 200, "{:?}", list.json);
+    let projects = list.json["projects"].as_array().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0]["id"], in_scope);
+}
+
+#[tokio::test]
 async fn app_token_denied_without_permission() {
     require_db!();
     let app = TestApp::spawn().await;

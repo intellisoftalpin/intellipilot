@@ -34,7 +34,7 @@ use serde_json::json;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::auth::{AuthUser, client_ip, request_id, user_agent};
+use crate::auth::{AuthUser, Caller, client_ip, request_id, user_agent};
 use crate::dto::{
     AcceptInviteRequest, AddMemberRequest, ChangeMemberRoleRequest, CreateProjectRequest,
     CreateRoleRequest, InviteRequest, InviteResponse, UpdateProjectRequest, UpdateRoleRequest,
@@ -426,11 +426,13 @@ async fn unique_slug(
     Ok(format!("{base}-{}", Uuid::now_v7().simple()))
 }
 
-/// `GET /api/v1/projects` — projects the caller is a member of.
+/// `GET /api/v1/projects` — projects the caller can access: a user sees
+/// their memberships (or every project, if superadmin); an app token sees
+/// the projects it's scoped to.
 #[utoipa::path(get, path = "/api/v1/projects", responses((status = 200)))]
 pub async fn list_projects(
     State(state): State<AppState>,
-    user: AuthUser,
+    caller: Caller,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let rid = request_id(&headers);
@@ -438,14 +440,19 @@ pub async fn list_projects(
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);
     };
-    // Superadmins see every project; everyone else sees their memberships.
-    let is_superadmin = udb::is_active_superadmin(&client, user.user_id)
-        .await
-        .unwrap_or(false);
-    let listing = if is_superadmin {
-        projdb::list_all(&client).await
-    } else {
-        projdb::list_for_member(&client, user.user_id).await
+    let listing = match caller {
+        Caller::User(user_id) => {
+            // Superadmins see every project; everyone else sees their memberships.
+            let is_superadmin = udb::is_active_superadmin(&client, user_id)
+                .await
+                .unwrap_or(false);
+            if is_superadmin {
+                projdb::list_all(&client).await
+            } else {
+                projdb::list_for_member(&client, user_id).await
+            }
+        }
+        Caller::AppToken(tok) => projdb::list_by_ids(&client, &tok.project_ids).await,
     };
     match listing {
         Ok(projects) => Json(json!({ "projects": projects })).into_response(),

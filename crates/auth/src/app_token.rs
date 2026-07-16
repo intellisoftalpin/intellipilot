@@ -11,6 +11,10 @@ use rand::rngs::OsRng;
 /// Raw secret prefix. Mirrors `intellipilot_core::app_token::TOKEN_PREFIX`.
 pub const PREFIX: &str = "ipat_";
 
+/// Raw personal-token secret prefix. Mirrors
+/// `intellipilot_core::app_token::PERSONAL_TOKEN_PREFIX`.
+pub const PERSONAL_PREFIX: &str = "ippt_";
+
 /// A freshly minted app token: the raw secret goes to the client once; the
 /// hash + display hints are stored.
 #[derive(Debug, Clone)]
@@ -28,12 +32,22 @@ pub struct NewAppToken {
 /// Generate a new opaque app token.
 #[must_use]
 pub fn generate() -> NewAppToken {
+    generate_with_prefix(PREFIX)
+}
+
+/// Generate a new opaque personal app token (`ippt_…`).
+#[must_use]
+pub fn generate_personal() -> NewAppToken {
+    generate_with_prefix(PERSONAL_PREFIX)
+}
+
+fn generate_with_prefix(secret_prefix: &str) -> NewAppToken {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    let raw = format!("{PREFIX}{}", crate::refresh::base64url(&bytes));
+    let raw = format!("{secret_prefix}{}", crate::refresh::base64url(&bytes));
     let hash = hash_token(&raw);
     // `raw` is pure ASCII (prefix + base64url alphabet), so byte slicing is
-    // char-safe.
+    // char-safe. Display hint = the 5-char prefix + 6 leading secret chars.
     let prefix = raw.chars().take(11).collect();
     let len = raw.len();
     let last4 = raw.get(len.saturating_sub(4)..).unwrap_or("").to_owned();
@@ -57,6 +71,16 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn personal_tokens_carry_their_own_prefix() {
+        let t = generate_personal();
+        assert!(t.raw.starts_with(PERSONAL_PREFIX), "prefix: {}", t.raw);
+        assert!(!t.raw.starts_with(PREFIX));
+        assert_eq!(t.hash, hash_token(&t.raw));
+        assert!(t.raw.starts_with(&t.prefix));
+        assert!(t.raw.ends_with(&t.last4));
+    }
 
     #[test]
     fn generates_unique_prefixed_tokens() {

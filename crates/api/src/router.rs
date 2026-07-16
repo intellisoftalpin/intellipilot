@@ -16,8 +16,9 @@ use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
     admin, attachments, auth, avatar, backlog, boards, branding, catalog, customers, dashboard,
-    epic_cover, health, issue_relations, issues_io, me, mfa, milestones, openapi, passkeys,
-    project_icon, projects, releases, repositories, search, taxonomy, time_tracking, wiki,
+    epic_cover, health, issue_relations, issues_io, me, me_token, mfa, milestones, my_work,
+    openapi, passkeys, project_icon, projects, releases, repositories, search, taxonomy,
+    time_tracking, wiki,
 };
 
 #[allow(clippy::too_many_lines)] // a flat, readable route table
@@ -61,6 +62,18 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/me", delete(me::delete_me))
             .route("/api/v1/me/password", post(me::change_password))
             .route("/api/v1/me/export", get(me::export_me))
+            // Personal app token (one per user, acts as the user)
+            .route(
+                "/api/v1/me/app-token",
+                get(me_token::get_token)
+                    .post(me_token::create_token)
+                    .delete(me_token::delete_token),
+            )
+            .route("/api/v1/me/app-token/reset", post(me_token::reset_token))
+            .route("/api/v1/me/app-token/disable", post(me_token::disable_token))
+            .route("/api/v1/me/app-token/enable", post(me_token::enable_token))
+            // Cross-project personal work feed
+            .route("/api/v1/me/issues", get(my_work::list_my_issues))
             // Avatars: upload (raised body limit) / delete / emoji / serve.
             .route(
                 "/api/v1/me/avatar",
