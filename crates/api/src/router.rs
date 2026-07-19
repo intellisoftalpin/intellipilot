@@ -116,6 +116,13 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects", post(projects::create_project))
             .route("/api/v1/projects", get(projects::list_projects))
             .route(
+                // Short deep-link resolver: prefix → project, case-agnostic,
+                // with rename-history fallback. Registered before the
+                // `{project_id}` routes; the literal segment wins.
+                "/api/v1/projects/by-prefix/{prefix}",
+                get(projects::resolve_by_prefix),
+            )
+            .route(
                 "/api/v1/projects/{project_id}/dashboard",
                 get(dashboard::get_project),
             )
@@ -196,6 +203,14 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/admin/app-tokens/{id}/revoke",
                 post(admin::handlers::revoke_app_token),
+            )
+            .route(
+                "/api/v1/admin/short-link-history",
+                get(admin::handlers::list_short_link_history),
+            )
+            .route(
+                "/api/v1/admin/short-link-history/delete",
+                post(admin::handlers::delete_short_link_history),
             )
             .route("/api/v1/admin/settings", get(admin::handlers::get_settings))
             .route(

@@ -1053,6 +1053,14 @@ pub struct IssueListQuery {
     pub assignee: Option<String>,
     #[serde(default)]
     pub qa_assignee: Option<String>,
+    /// Matches issues where the user is assignee, QA or reviewer (not
+    /// reporter); `none` matches issues with none of the three set.
+    #[serde(default)]
+    pub involved: Option<String>,
+    /// Release id: matches issues whose fix version belongs to the release;
+    /// `none` matches issues without a release version.
+    #[serde(default)]
+    pub release: Option<String>,
     #[serde(default)]
     pub epic: Option<String>,
     #[serde(default)]
@@ -1100,6 +1108,8 @@ pub async fn list_issues(
     };
     let (assignee_mode, assignee_id) = ref_filter(&q.assignee);
     let (qa_assignee_mode, qa_assignee_id) = ref_filter(&q.qa_assignee);
+    let (involved_mode, involved_id) = ref_filter(&q.involved);
+    let (release_mode, release_id) = ref_filter(&q.release);
     let (epic_mode, epic_id) = ref_filter(&q.epic);
     let (milestone_mode, milestone_id) = ref_filter(&q.milestone);
     let query = bl::IssueQuery {
@@ -1120,6 +1130,10 @@ pub async fn list_issues(
         label_id: opt_uuid(&q.label),
         component_id: opt_uuid(&q.component),
         overdue: q.overdue.unwrap_or(false),
+        involved_mode,
+        involved_id,
+        release_mode,
+        release_id,
     };
     let limit = q.limit.map(|l| i64::from(l.clamp(1, 200)));
     let offset = i64::from(q.offset.unwrap_or(0));
@@ -1282,6 +1296,20 @@ pub async fn update_issue(
             &ctx.rid,
             "invalid_association",
             "an issue cannot be its own parent",
+        );
+    }
+    // Multi-level nesting is allowed, but the new parent must not descend
+    // from this issue (that would close a cycle in the hierarchy).
+    if parent_changed
+        && let Some(pid) = parent_id
+        && bl::parent_chain_contains(&client, ctx.project.id, pid, id)
+            .await
+            .unwrap_or(false)
+    {
+        return unprocessable(
+            &ctx.rid,
+            "invalid_association",
+            "parent would create a cycle in the issue hierarchy",
         );
     }
     if let Err(r) = validate_issue_extras(

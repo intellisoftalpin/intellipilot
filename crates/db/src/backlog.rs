@@ -782,6 +782,10 @@ pub struct IssueQuery {
     pub label_id: Option<Uuid>,
     pub component_id: Option<Uuid>,
     pub overdue: bool,
+    pub involved_mode: Option<String>,
+    pub involved_id: Option<Uuid>,
+    pub release_mode: Option<String>,
+    pub release_id: Option<Uuid>,
 }
 
 const ISSUE_FILTER_WHERE: &str = "issues.project_id = $1 AND issues.deleted_at IS NULL \
@@ -805,7 +809,15 @@ const ISSUE_FILTER_WHERE: &str = "issues.project_id = $1 AND issues.deleted_at I
      AND ($15::text IS NULL OR issues.subject ILIKE $15 OR issues.description ILIKE $15 \
                            OR issues.ref::text ILIKE $15) \
      AND ($16::boolean IS NOT TRUE OR (issues.due_date < CURRENT_DATE \
-            AND NOT COALESCE((SELECT is_closed FROM taxonomy_items WHERE id = issues.status_id), false)))";
+            AND NOT COALESCE((SELECT is_closed FROM taxonomy_items WHERE id = issues.status_id), false))) \
+     AND ($19::text IS NULL OR ($19 = 'none' AND issues.assigned_to IS NULL \
+                                  AND issues.qa_assignee_id IS NULL AND issues.reviewer_id IS NULL) \
+                           OR ($19 = 'is' AND $20::uuid IN (issues.assigned_to, \
+                                  issues.qa_assignee_id, issues.reviewer_id))) \
+     AND ($21::text IS NULL OR ($21 = 'none' AND issues.release_version_id IS NULL) \
+                           OR ($21 = 'is' AND EXISTS \
+                                 (SELECT 1 FROM release_versions rv \
+                                  WHERE rv.id = issues.release_version_id AND rv.release_id = $22::uuid)))";
 
 pub async fn list_issues_paged(
     client: &deadpool_postgres::Client,
@@ -836,6 +848,10 @@ pub async fn list_issues_paged(
         &q.overdue,
         &q.qa_assignee_mode, // $17
         &q.qa_assignee_id,   // $18
+        &q.involved_mode,    // $19
+        &q.involved_id,      // $20
+        &q.release_mode,     // $21
+        &q.release_id,       // $22
     ];
 
     let total: i64 = client
@@ -852,13 +868,13 @@ pub async fn list_issues_paged(
         page_params.push(&off);
         format!(
             "SELECT {ISSUE_COLS} FROM issues WHERE {ISSUE_FILTER_WHERE} \
-             ORDER BY issues.\"order\", issues.id LIMIT $19 OFFSET $20"
+             ORDER BY issues.\"order\", issues.id LIMIT $23 OFFSET $24"
         )
     } else {
         page_params.push(&off);
         format!(
             "SELECT {ISSUE_COLS} FROM issues WHERE {ISSUE_FILTER_WHERE} \
-             ORDER BY issues.\"order\", issues.id OFFSET $19"
+             ORDER BY issues.\"order\", issues.id OFFSET $23"
         )
     };
     let rows = client.query(&page_sql, &page_params).await?;
@@ -896,6 +912,10 @@ fn board_base_params<'a>(
         &q.overdue,
         &q.qa_assignee_mode, // $17
         &q.qa_assignee_id,   // $18
+        &q.involved_mode,    // $19
+        &q.involved_id,      // $20
+        &q.release_mode,     // $21
+        &q.release_id,       // $22
     ]
 }
 
@@ -914,8 +934,8 @@ pub async fn board_columns(
     let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
     let cols: Option<Vec<Uuid>> = columns.map(<[Uuid]>::to_vec);
     let mut params = board_base_params(&project_id, q, &search_like);
-    params.push(&column_limit); // $19
-    params.push(&cols); // $20
+    params.push(&column_limit); // $23
+    params.push(&cols); // $24
     let sql = format!(
         "WITH ranked AS ( \
            SELECT {ISSUE_COLS}, \
@@ -923,9 +943,9 @@ pub async fn board_columns(
              count(*)     OVER (PARTITION BY status_id)                        AS col_total \
            FROM issues \
            WHERE {ISSUE_FILTER_WHERE} AND parent_id IS NULL \
-             AND ($20::uuid[] IS NULL OR status_id = ANY($20)) \
+             AND ($24::uuid[] IS NULL OR status_id = ANY($24)) \
          ) \
-         SELECT * FROM ranked WHERE rn <= $19 ORDER BY status_id, \"order\", id"
+         SELECT * FROM ranked WHERE rn <= $23 ORDER BY status_id, \"order\", id"
     );
     let rows = client.query(&sql, &params).await?;
 
@@ -991,8 +1011,8 @@ pub async fn board_lanes(
     let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
     let cols: Option<Vec<Uuid>> = columns.map(<[Uuid]>::to_vec);
     let mut params = board_base_params(&project_id, q, &search_like);
-    params.push(&column_limit); // $19
-    params.push(&cols); // $20
+    params.push(&column_limit); // $23
+    params.push(&cols); // $24
     let sql = format!(
         "WITH ranked AS ( \
            SELECT {ISSUE_COLS}, {grp} AS grp, \
@@ -1002,9 +1022,9 @@ pub async fn board_lanes(
              count(*) OVER (PARTITION BY {grp})                   AS lane_total \
            FROM {from} \
            WHERE {ISSUE_FILTER_WHERE} AND issues.parent_id IS NULL \
-             AND ($20::uuid[] IS NULL OR issues.status_id = ANY($20)) \
+             AND ($24::uuid[] IS NULL OR issues.status_id = ANY($24)) \
          ) \
-         SELECT * FROM ranked WHERE rn <= $19 ORDER BY grp, status_id, \"order\", id"
+         SELECT * FROM ranked WHERE rn <= $23 ORDER BY grp, status_id, \"order\", id"
     );
     let rows = client.query(&sql, &params).await?;
 
@@ -1136,6 +1156,34 @@ pub async fn issue_in_project(
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM issues WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL) AS e",
             &[&issue_id, &project_id],
+        )
+        .await?;
+    Ok(row.get("e"))
+}
+
+/// Whether `needle` appears in the ancestor chain starting at `start`.
+///
+/// The chain includes `start` itself. Used to reject parent assignments that
+/// would create a cycle; the walk is depth-capped so pre-existing bad data
+/// cannot loop forever.
+pub async fn parent_chain_contains(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    start: Uuid,
+    needle: Uuid,
+) -> Result<bool, DbError> {
+    let row = client
+        .query_one(
+            "WITH RECURSIVE chain AS ( \
+               SELECT id, parent_id, 1 AS depth FROM issues \
+                 WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL \
+               UNION ALL \
+               SELECT i.id, i.parent_id, c.depth + 1 FROM issues i \
+                 JOIN chain c ON i.id = c.parent_id \
+                 WHERE i.deleted_at IS NULL AND c.depth < 100 \
+             ) \
+             SELECT EXISTS(SELECT 1 FROM chain WHERE id=$3) AS e",
+            &[&start, &project_id, &needle],
         )
         .await?;
     Ok(row.get("e"))

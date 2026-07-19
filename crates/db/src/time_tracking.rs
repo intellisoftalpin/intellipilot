@@ -207,12 +207,14 @@ pub enum EntryUpdate {
     Missing,
 }
 
-/// Update an entry's minutes/note, guarded by `expected_version`.
+/// Update an entry's minutes/note (and optionally its date), guarded by
+/// `expected_version`. `entry_date = None` leaves the date unchanged.
 pub async fn update_entry(
     client: &deadpool_postgres::Client,
     id: Uuid,
     minutes: i32,
     note: &str,
+    entry_date: Option<Date>,
     expected_version: i32,
 ) -> Result<EntryUpdate, DbError> {
     let Some(current) = get_entry(client, id).await? else {
@@ -224,10 +226,11 @@ pub async fn update_entry(
     let row = client
         .query_opt(
             &format!(
-                "UPDATE time_entries SET minutes = $2, note = $3, version = version + 1 \
+                "UPDATE time_entries SET minutes = $2, note = $3, \
+                   entry_date = COALESCE($5, entry_date), version = version + 1 \
                  WHERE id = $1 AND version = $4 RETURNING {ENTRY_COLS}"
             ),
-            &[&id, &minutes, &note, &expected_version],
+            &[&id, &minutes, &note, &expected_version, &entry_date],
         )
         .await?;
     row.map_or(Ok(EntryUpdate::Stale), |r| {

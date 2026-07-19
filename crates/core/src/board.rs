@@ -54,6 +54,9 @@ pub struct Board {
     pub owner_id: Option<Uuid>,
     pub visibility: BoardVisibility,
     pub name: String,
+    /// Short lowercase slug, unique per project — the board's URL segment
+    /// (`/projects/ip/boards/sb`). Auto-derived from the name; editable.
+    pub key: String,
     pub color: String,
     #[schema(value_type = Object)]
     pub config: serde_json::Value,

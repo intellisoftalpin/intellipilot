@@ -221,7 +221,7 @@ pub struct LogTimeRequest {
     pub note: Option<String>,
 }
 
-/// Update an entry's minutes/note (optimistic concurrency via `version`).
+/// Update an entry's minutes/note/date (optimistic concurrency via `version`).
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct UpdateTimeRequest {
     #[garde(range(min = 1, max = 1440))]
@@ -229,6 +229,10 @@ pub struct UpdateTimeRequest {
     #[garde(length(max = 2000))]
     #[serde(default)]
     pub note: Option<String>,
+    /// New entry date (YYYY-MM-DD); omitted → unchanged.
+    #[garde(length(min = 10, max = 10))]
+    #[serde(default)]
+    pub date: Option<String>,
     #[garde(range(min = 1, max = 1_000_000))]
     pub version: i32,
 }
@@ -528,9 +532,26 @@ pub async fn update_my_entry(
     if let Some(resp) = guard_locked(&client, &entry, user.user_id, &rid).await {
         return resp;
     }
+    // A date move must also respect the lock on the target month.
+    let new_date = match &req.date {
+        None => None,
+        Some(s) => match parse_date(s, &rid) {
+            Ok(d) => Some(d),
+            Err(r) => return r,
+        },
+    };
+    if let Some(d) = new_date
+        && d != entry.entry_date
+    {
+        let mut moved = entry.clone();
+        moved.entry_date = d;
+        if let Some(resp) = guard_locked(&client, &moved, user.user_id, &rid).await {
+            return resp;
+        }
+    }
 
     let note = req.note.clone().unwrap_or_else(|| entry.note.clone());
-    match ttdb::update_entry(&client, id, req.minutes, &note, req.version).await {
+    match ttdb::update_entry(&client, id, req.minutes, &note, new_date, req.version).await {
         Ok(EntryUpdate::Updated(e)) => {
             audit::record(
                 &client,
@@ -934,7 +955,14 @@ pub async fn admin_update_entry(
         Err(_) => return internal(&ctx.rid),
     }
     let note = req.note.clone().unwrap_or_default();
-    match ttdb::update_entry(&client, entry_id, req.minutes, &note, req.version).await {
+    let new_date = match &req.date {
+        None => None,
+        Some(s) => match parse_date(s, &ctx.rid) {
+            Ok(d) => Some(d),
+            Err(r) => return r,
+        },
+    };
+    match ttdb::update_entry(&client, entry_id, req.minutes, &note, new_date, req.version).await {
         Ok(EntryUpdate::Updated(e)) => {
             audit::record(
                 &client,

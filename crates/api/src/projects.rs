@@ -469,6 +469,56 @@ pub async fn get_project(ctx: ProjectContext) -> Response {
     Json(ctx.project).into_response()
 }
 
+/// `GET /api/v1/projects/by-prefix/{prefix}` — short deep-link resolution.
+///
+/// Case-insensitive; a renamed-away prefix resolves through its history
+/// (live prefixes always win). Applies the same visibility rule as loading
+/// by id: a private project the caller cannot see is a plain 404, so prefix
+/// probing discloses nothing.
+pub async fn resolve_by_prefix(
+    State(state): State<AppState>,
+    user: AuthUser,
+    headers: axum::http::HeaderMap,
+    Path(prefix): Path<String>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let needle = prefix.trim().to_ascii_uppercase();
+    let live = match projdb::find_by_prefix(&client, &needle).await {
+        Ok(v) => v,
+        Err(_) => return internal(&rid),
+    };
+    let project = match live {
+        Some(p) => Some(p),
+        None => match projdb::find_id_by_historic_prefix(&client, &needle).await {
+            Ok(Some(id)) => match projdb::find_by_id(&client, id).await {
+                Ok(v) => v,
+                Err(_) => return internal(&rid),
+            },
+            Ok(None) => None,
+            Err(_) => return internal(&rid),
+        },
+    };
+    let Some(project) = project else {
+        return not_found(&rid);
+    };
+    if project.visibility == Visibility::Private {
+        let access = memdb::access(&client, project.id, user.user_id)
+            .await
+            .unwrap_or(None);
+        let is_superadmin = udb::is_active_superadmin(&client, user.user_id)
+            .await
+            .unwrap_or(false);
+        if access.is_none() && !is_superadmin {
+            return not_found(&rid);
+        }
+    }
+    Json(project).into_response()
+}
+
 /// `PATCH /api/v1/projects/{project_id}`
 #[utoipa::path(patch, path = "/api/v1/projects/{project_id}", request_body = UpdateProjectRequest,
     responses((status = 200), (status = 403), (status = 404)))]
@@ -513,6 +563,11 @@ pub async fn update_project(
         }
         None => None,
     };
+    // Remember the outgoing prefix so already-shared short links keep
+    // resolving (see `resolve_by_prefix`).
+    let prefix_changed = issue_prefix
+        .as_deref()
+        .is_some_and(|p| p != ctx.project.issue_prefix);
     let upd = ProjectUpdate {
         name: req.name.clone(),
         description: req.description.clone(),
@@ -526,7 +581,17 @@ pub async fn update_project(
         epic_board: req.epic_board.clone(),
     };
     match projdb::update(&client, ctx.project.id, &upd).await {
-        Ok(Some(p)) => Json(p).into_response(),
+        Ok(Some(p)) => {
+            if prefix_changed
+                && projdb::record_prefix_history(&client, ctx.project.id, &ctx.project.issue_prefix)
+                    .await
+                    .is_err()
+            {
+                // History is best-effort: the rename itself already stuck.
+                tracing::warn!(project = %ctx.project.id, "failed to record prefix history");
+            }
+            Json(p).into_response()
+        }
         Ok(None) => not_found(&ctx.rid),
         Err(_) => internal(&ctx.rid),
     }

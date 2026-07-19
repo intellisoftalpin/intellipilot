@@ -70,6 +70,11 @@ pub struct CreateBoardRequest {
 pub struct UpdateBoardRequest {
     #[garde(length(min = 1, max = 120))]
     pub name: String,
+    /// New short key (URL segment). Omitted → unchanged. Normalised to
+    /// lowercase; must be unique within the project (409 otherwise).
+    #[garde(length(min = 1, max = 12))]
+    #[serde(default)]
+    pub key: Option<String>,
     #[garde(length(max = 16))]
     #[serde(default)]
     pub color: String,
@@ -81,6 +86,17 @@ pub struct UpdateBoardRequest {
 
 fn board_id(params: &HashMap<String, String>) -> Option<Uuid> {
     params.get("board_id").and_then(|s| Uuid::parse_str(s).ok())
+}
+
+/// Format for a board's short key (post-lowercasing): alphanumeric with
+/// inner dashes, max 12 chars. Mirrors the DB CHECK constraint.
+fn valid_key(key: &str) -> bool {
+    let b = key.as_bytes();
+    !b.is_empty()
+        && b.len() <= 12
+        && b.first().is_some_and(u8::is_ascii_alphanumeric)
+        && b.last().is_some_and(u8::is_ascii_alphanumeric)
+        && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'-')
 }
 
 fn parse_create(
@@ -171,12 +187,16 @@ pub async fn create(
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
     };
+    let Ok(key) = bdb::generate_key(&client, ctx.project.id, &req.name).await else {
+        return internal(&ctx.rid);
+    };
     match bdb::create(
         &client,
         ctx.project.id,
         Some(ctx.actor_id),
         visibility,
         &req.name,
+        &key,
         &req.color,
         &req.config,
     )
@@ -210,6 +230,9 @@ async fn load_for_write(
 }
 
 /// `GET /api/v1/projects/{project_id}/boards/{board_id}`
+///
+/// The path segment accepts a board UUID (legacy links) or the board's short
+/// key in any letter-case; a renamed-away key still resolves via its history.
 pub async fn get(
     State(state): State<AppState>,
     ctx: ProjectContext,
@@ -218,14 +241,29 @@ pub async fn get(
     if let Err(r) = ctx.require(Permission::ProjectView) {
         return r;
     }
-    let Some(id) = board_id(&params) else {
-        return not_found(&ctx.rid);
-    };
     let auth = state.auth();
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
     };
-    match bdb::get(&client, ctx.project.id, id).await {
+    let board = if let Some(id) = board_id(&params) {
+        bdb::get(&client, ctx.project.id, id).await
+    } else {
+        let key = params
+            .get("board_id")
+            .map(|s| s.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        match bdb::get_by_key(&client, ctx.project.id, &key).await {
+            Ok(Some(b)) => Ok(Some(b)),
+            // Live keys shadow history; fall back to the old owner.
+            Ok(None) => match bdb::find_id_by_historic_key(&client, ctx.project.id, &key).await {
+                Ok(Some(id)) => bdb::get(&client, ctx.project.id, id).await,
+                Ok(None) => Ok(None),
+                Err(e) => Err(e),
+            },
+            Err(e) => Err(e),
+        }
+    };
+    match board {
         Ok(Some(b)) if b.visibility.is_shared() || b.owner_id == Some(ctx.actor_id) => {
             Json(b).into_response()
         }
@@ -255,20 +293,64 @@ pub async fn update(
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
     };
-    if let Err(r) = load_for_write(&client, &ctx, id, Permission::BoardSharedModify).await {
-        return r;
+    let board = match load_for_write(&client, &ctx, id, Permission::BoardSharedModify).await {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    // A changed key is lowercased, format-checked, and must stay unique in
+    // the project; the old key goes into history so shared links survive.
+    let key = match req.key.as_deref() {
+        None => board.key.clone(),
+        Some(raw) => {
+            let k = raw.trim().to_ascii_lowercase();
+            if !valid_key(&k) {
+                return problem(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "invalid_key",
+                    "Invalid board key",
+                    &ctx.rid,
+                );
+            }
+            k
+        }
+    };
+    let key_changed = key != board.key;
+    if key_changed {
+        match bdb::get_by_key(&client, ctx.project.id, &key).await {
+            Ok(Some(other)) if other.id != id => {
+                return problem(
+                    StatusCode::CONFLICT,
+                    "key_taken",
+                    "Board key already in use",
+                    &ctx.rid,
+                );
+            }
+            Ok(_) => {}
+            Err(_) => return internal(&ctx.rid),
+        }
     }
     match bdb::update(
         &client,
         ctx.project.id,
         id,
         &req.name,
+        &key,
         &req.color,
         &req.config,
     )
     .await
     {
-        Ok(Some(b)) => Json(b).into_response(),
+        Ok(Some(b)) => {
+            if key_changed
+                && bdb::record_key_history(&client, ctx.project.id, id, &board.key)
+                    .await
+                    .is_err()
+            {
+                // History is best-effort: the rename itself already stuck.
+                tracing::warn!(board = %id, "failed to record board key history");
+            }
+            Json(b).into_response()
+        }
         Ok(None) => not_found(&ctx.rid),
         Err(_) => internal(&ctx.rid),
     }
@@ -367,6 +449,10 @@ pub struct BoardDataQuery {
     #[serde(default)]
     pub qa_assignee: Option<String>,
     #[serde(default)]
+    pub involved: Option<String>,
+    #[serde(default)]
+    pub release: Option<String>,
+    #[serde(default)]
     pub epic: Option<String>,
     #[serde(default)]
     pub milestone: Option<String>,
@@ -411,6 +497,8 @@ pub async fn board_data(
     };
     let (assignee_mode, assignee_id) = ref_filter(&q.assignee);
     let (qa_assignee_mode, qa_assignee_id) = ref_filter(&q.qa_assignee);
+    let (involved_mode, involved_id) = ref_filter(&q.involved);
+    let (release_mode, release_id) = ref_filter(&q.release);
     let (epic_mode, epic_id) = ref_filter(&q.epic);
     let (milestone_mode, milestone_id) = ref_filter(&q.milestone);
     let query = bl::IssueQuery {
@@ -431,6 +519,10 @@ pub async fn board_data(
         label_id: opt_uuid(&q.label),
         component_id: opt_uuid(&q.component),
         overdue: q.overdue.unwrap_or(false),
+        involved_mode,
+        involved_id,
+        release_mode,
+        release_id,
     };
     let column_limit = i64::from(q.column_limit.unwrap_or(50).clamp(1, 200));
     let columns: Option<Vec<Uuid>> = q.columns.as_deref().map(|s| {

@@ -1716,6 +1716,95 @@ pub async fn test_telegram(
     test_outcome(result)
 }
 
+// ---------------------------------------------------------------------------
+// Short-link rename history (project prefixes + board keys)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/admin/short-link-history` — every remembered renamed-away
+/// project prefix and board key, for inspection and pruning.
+pub async fn list_short_link_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let Ok(projects) = intellipilot_db::projects::list_prefix_history(&client).await else {
+        return internal(&rid);
+    };
+    let Ok(boards) = intellipilot_db::boards::list_key_history(&client).await else {
+        return internal(&rid);
+    };
+    Json(json!({ "projects": projects, "boards": boards })).into_response()
+}
+
+/// Ids to prune from the short-link history — either list may be empty, so
+/// one call covers single-entry and bulk deletion alike.
+#[derive(Debug, Deserialize)]
+pub struct DeleteShortLinkHistoryRequest {
+    #[serde(default)]
+    pub project_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub board_ids: Vec<Uuid>,
+}
+
+/// `POST /api/v1/admin/short-link-history/delete` — the affected old links
+/// stop resolving (the UUID links always keep working).
+pub async fn delete_short_link_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    body: Result<Json<DeleteShortLinkHistoryRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let Ok(Json(req)) = body else {
+        return problem(
+            StatusCode::BAD_REQUEST,
+            "invalid_body",
+            "Invalid Request Body",
+            None,
+            &rid,
+        );
+    };
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let deleted_projects = if req.project_ids.is_empty() {
+        0
+    } else {
+        match intellipilot_db::projects::delete_prefix_history(&client, &req.project_ids).await {
+            Ok(n) => n,
+            Err(_) => return internal(&rid),
+        }
+    };
+    let deleted_boards = if req.board_ids.is_empty() {
+        0
+    } else {
+        match intellipilot_db::boards::delete_key_history(&client, &req.board_ids).await {
+            Ok(n) => n,
+            Err(_) => return internal(&rid),
+        }
+    };
+    audit::record(
+        &client,
+        Some(admin.user_id),
+        "short_link_history_pruned",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({ "projects": deleted_projects, "boards": deleted_boards }),
+    )
+    .await;
+    Json(json!({
+        "deleted_projects": deleted_projects,
+        "deleted_boards": deleted_boards,
+    }))
+    .into_response()
+}
+
 #[allow(unused_imports)]
 pub use {
     create_invitation as create_invitation_handler, create_user as create_user_handler,

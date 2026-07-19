@@ -123,8 +123,8 @@ pub async fn create_with_defaults(
 
     // Seed the project's default shared board (visible to every member).
     tx.execute(
-        "INSERT INTO boards (project_id, owner_id, visibility, name, config, \"order\") \
-         VALUES ($1, $2, 'shared', 'Board', '{}'::jsonb, 0)",
+        "INSERT INTO boards (project_id, owner_id, visibility, name, key, config, \"order\") \
+         VALUES ($1, $2, 'shared', 'Board', 'board', '{}'::jsonb, 0)",
         &[&project.id, &new.owner_id],
     )
     .await?;
@@ -144,6 +144,106 @@ pub async fn find_by_id(
         )
         .await?;
     Ok(row.as_ref().map(row_to_project))
+}
+
+/// Project by its (globally unique) issue prefix. The caller normalises the
+/// input to uppercase.
+pub async fn find_by_prefix(
+    client: &deadpool_postgres::Client,
+    prefix: &str,
+) -> Result<Option<Project>, DbError> {
+    let row = client
+        .query_opt(
+            &format!(
+                "SELECT {PROJECT_COLS} FROM projects \
+                 WHERE issue_prefix = $1 AND deleted_at IS NULL"
+            ),
+            &[&prefix],
+        )
+        .await?;
+    Ok(row.as_ref().map(row_to_project))
+}
+
+/// The project a historic (renamed-away) prefix pointed to, if recorded.
+pub async fn find_id_by_historic_prefix(
+    client: &deadpool_postgres::Client,
+    prefix: &str,
+) -> Result<Option<Uuid>, DbError> {
+    let row = client
+        .query_opt(
+            "SELECT project_id FROM project_prefix_history WHERE prefix = $1",
+            &[&prefix],
+        )
+        .await?;
+    Ok(row.map(|r| r.get("project_id")))
+}
+
+/// Remember a renamed-away prefix so old short links keep resolving. Last
+/// claim of a prefix wins.
+pub async fn record_prefix_history(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    old_prefix: &str,
+) -> Result<(), DbError> {
+    client
+        .execute(
+            "INSERT INTO project_prefix_history (project_id, prefix) VALUES ($1, $2) \
+             ON CONFLICT (prefix) \
+               DO UPDATE SET project_id = excluded.project_id, replaced_at = now()",
+            &[&project_id, &old_prefix],
+        )
+        .await?;
+    Ok(())
+}
+
+/// One historic project-prefix entry, enriched for the superadmin listing.
+#[derive(Debug, serde::Serialize)]
+pub struct PrefixHistoryEntry {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub project_name: String,
+    pub prefix: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub replaced_at: time::OffsetDateTime,
+}
+
+/// All historic project prefixes, newest first (superadmin maintenance view).
+pub async fn list_prefix_history(
+    client: &deadpool_postgres::Client,
+) -> Result<Vec<PrefixHistoryEntry>, DbError> {
+    let rows = client
+        .query(
+            "SELECT h.id, h.project_id, p.name AS project_name, h.prefix, h.replaced_at \
+             FROM project_prefix_history h \
+             JOIN projects p ON p.id = h.project_id \
+             ORDER BY h.replaced_at DESC",
+            &[],
+        )
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| PrefixHistoryEntry {
+            id: r.get("id"),
+            project_id: r.get("project_id"),
+            project_name: r.get("project_name"),
+            prefix: r.get("prefix"),
+            replaced_at: r.get("replaced_at"),
+        })
+        .collect())
+}
+
+/// Delete historic prefixes by id; returns how many rows went away.
+pub async fn delete_prefix_history(
+    client: &deadpool_postgres::Client,
+    ids: &[Uuid],
+) -> Result<u64, DbError> {
+    let n = client
+        .execute(
+            "DELETE FROM project_prefix_history WHERE id = ANY($1)",
+            &[&ids],
+        )
+        .await?;
+    Ok(n)
 }
 
 pub async fn slug_exists(client: &deadpool_postgres::Client, slug: &str) -> Result<bool, DbError> {
