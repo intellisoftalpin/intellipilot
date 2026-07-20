@@ -139,6 +139,15 @@ pub struct Issue {
     pub modified_at: OffsetDateTime,
 }
 
+/// A soft-deleted issue reference returned by delta sync so cached clients
+/// can drop the corresponding card.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct IssueTombstone {
+    pub id: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub modified_at: OffsetDateTime,
+}
+
 /// Business-driver category for an issue (why we're doing it). Fixed set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]

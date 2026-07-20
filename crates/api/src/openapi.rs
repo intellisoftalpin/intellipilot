@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.6.11",
+        version = "0.6.14",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -178,6 +178,7 @@ use crate::problem::{FieldErrorView, Problem};
         crate::dto::CommentRequest,
         intellipilot_core::backlog::Epic,
         intellipilot_core::backlog::Issue,
+        intellipilot_core::backlog::IssueTombstone,
         intellipilot_core::backlog::Comment,
         intellipilot_core::backlog::EntityKind,
         crate::dto::CreateLabelRequest,

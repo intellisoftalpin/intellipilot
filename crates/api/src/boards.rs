@@ -349,6 +349,9 @@ pub async fn update(
                 // History is best-effort: the rename itself already stuck.
                 tracing::warn!(board = %id, "failed to record board key history");
             }
+            state
+                .events
+                .publish_board_changed(ctx.project.id, ctx.actor_id, id);
             Json(b).into_response()
         }
         Ok(None) => not_found(&ctx.rid),
@@ -376,7 +379,12 @@ pub async fn delete(
         return r;
     }
     match bdb::delete(&client, ctx.project.id, id).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(true) => {
+            state
+                .events
+                .publish_board_changed(ctx.project.id, ctx.actor_id, id);
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(false) => not_found(&ctx.rid),
         Err(_) => internal(&ctx.rid),
     }
@@ -532,19 +540,31 @@ pub async fn board_data(
     });
     let cols_ref = columns.as_deref();
 
+    // Delta-sync cursor, read from the DB clock BEFORE the data queries so
+    // changes committing while they run land after it (re-delivered by the
+    // next delta; duplicates are absorbed by the client's version gate).
+    let rfc3339 = &time::format_description::well_known::Rfc3339;
+    let cursor = match bl::db_now(&client).await {
+        Ok(t) => t.format(rfc3339).unwrap_or_default(),
+        Err(_) => return internal(&ctx.rid),
+    };
+
     let group = q.group.as_deref().filter(|g| *g != "none" && !g.is_empty());
     match group {
         Some(g) => {
             match bl::board_lanes(&client, ctx.project.id, &query, g, cols_ref, column_limit).await
             {
-                Ok(lanes) => Json(json!({ "group": g, "lanes": lanes })).into_response(),
+                Ok(lanes) => {
+                    Json(json!({ "group": g, "lanes": lanes, "cursor": cursor })).into_response()
+                }
                 Err(_) => internal(&ctx.rid),
             }
         }
         None => {
             match bl::board_columns(&client, ctx.project.id, &query, cols_ref, column_limit).await {
                 Ok(columns) => {
-                    Json(json!({ "group": Value::Null, "columns": columns })).into_response()
+                    Json(json!({ "group": Value::Null, "columns": columns, "cursor": cursor }))
+                        .into_response()
                 }
                 Err(_) => internal(&ctx.rid),
             }

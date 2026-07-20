@@ -19,6 +19,7 @@ pub mod customers;
 pub mod dashboard;
 pub mod dto;
 pub mod epic_cover;
+pub mod events;
 pub mod health;
 pub mod issue_relations;
 pub mod issues_io;

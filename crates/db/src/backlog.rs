@@ -9,7 +9,7 @@
 //! concurrency via a `version` column, soft-delete, and fractional ordering.
 #![allow(clippy::too_many_arguments)]
 
-use intellipilot_core::backlog::{Epic, Issue, IssueCategory, Resolution};
+use intellipilot_core::backlog::{Epic, Issue, IssueCategory, IssueTombstone, Resolution};
 use intellipilot_core::board::{BoardColumn, BoardLane};
 use intellipilot_core::ordering::{normalized_ranks, rank_between};
 use time::{Date, OffsetDateTime};
@@ -881,6 +881,78 @@ pub async fn list_issues_paged(
     let mut issues: Vec<Issue> = rows.iter().map(row_to_issue).collect();
     hydrate_issue_relations(client, &mut issues).await?;
     Ok((issues, total))
+}
+
+/// Changes since a sync cursor: live issues (paged by `modified_at`) plus
+/// tombstones for soft-deleted ones, and the next cursor.
+#[derive(Debug)]
+pub struct IssueDelta {
+    pub issues: Vec<Issue>,
+    pub tombstones: Vec<IssueTombstone>,
+    pub cursor: OffsetDateTime,
+    pub has_more: bool,
+}
+
+/// Current database time — the single clock authority for sync cursors
+/// (client clocks are never trusted).
+pub async fn db_now(client: &deadpool_postgres::Client) -> Result<OffsetDateTime, DbError> {
+    Ok(client.query_one("SELECT now() AS n", &[]).await?.get("n"))
+}
+
+/// Issues changed since `since` (delta sync).
+///
+/// The cursor is read from the DB clock *before* the row queries so anything
+/// committing concurrently lands after the returned cursor and is
+/// re-delivered on the next round; when the page is full the cursor
+/// regresses to the last row's `modified_at` so the client can continue
+/// paging. Duplicate delivery is expected and absorbed by the client's
+/// version gate.
+pub async fn list_issues_delta(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    since: OffsetDateTime,
+    limit: i64,
+) -> Result<IssueDelta, DbError> {
+    let db_now = db_now(client).await?;
+    let rows = client
+        .query(
+            &format!(
+                "SELECT {ISSUE_COLS} FROM issues \
+                 WHERE project_id=$1 AND deleted_at IS NULL AND modified_at > $2 \
+                 ORDER BY modified_at, id LIMIT $3"
+            ),
+            &[&project_id, &since, &limit],
+        )
+        .await?;
+    let mut issues: Vec<Issue> = rows.iter().map(row_to_issue).collect();
+    hydrate_issue_relations(client, &mut issues).await?;
+    let has_more = i64::try_from(issues.len()).unwrap_or(i64::MAX) >= limit;
+    let trows = client
+        .query(
+            "SELECT id, modified_at FROM issues \
+             WHERE project_id=$1 AND deleted_at IS NOT NULL AND modified_at > $2 \
+             ORDER BY modified_at LIMIT $3",
+            &[&project_id, &since, &limit],
+        )
+        .await?;
+    let tombstones = trows
+        .iter()
+        .map(|r| IssueTombstone {
+            id: r.get("id"),
+            modified_at: r.get("modified_at"),
+        })
+        .collect();
+    let cursor = if has_more {
+        issues.last().map_or(db_now, |i| i.modified_at)
+    } else {
+        db_now
+    };
+    Ok(IssueDelta {
+        issues,
+        tombstones,
+        cursor,
+        has_more,
+    })
 }
 
 /// Base filter params (`$1..$18`) for the board-data queries.

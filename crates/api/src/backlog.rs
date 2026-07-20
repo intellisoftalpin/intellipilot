@@ -50,6 +50,14 @@ const COMMENT_EDIT_WINDOW_SECS: i64 = 24 * 60 * 60;
 const IDEMPOTENCY_TTL_SECS: i64 = 24 * 60 * 60;
 const ERASE_GRACE_DAYS: i64 = 30;
 
+/// Overlap subtracted from the client's delta cursor: `modified_at` is
+/// statement time while visibility is commit time, so a transaction can
+/// become visible *after* a cursor that postdates its timestamp. Re-delivered
+/// rows are absorbed client-side by the version gate.
+const DELTA_OVERLAP_SECS: i64 = 5;
+/// Max issues per delta page (`has_more` + cursor continue the scan).
+const DELTA_PAGE_LIMIT: i64 = 500;
+
 // --------------------------------------------------------------------------
 // response/error helpers
 // --------------------------------------------------------------------------
@@ -822,6 +830,9 @@ pub async fn create_issue(
         &body,
     )
     .await;
+    state
+        .events
+        .publish_issue(crate::events::IssueEventKind::Created, ctx.actor_id, &full);
     with_etag(StatusCode::CREATED, full.id, full.version, &full)
 }
 
@@ -921,6 +932,11 @@ pub async fn bulk_create_issues(
             _ => return internal(&ctx.rid),
         }
     }
+    for f in &created {
+        state
+            .events
+            .publish_issue(crate::events::IssueEventKind::Created, ctx.actor_id, f);
+    }
     (StatusCode::CREATED, Json(json!({ "issues": created }))).into_response()
 }
 
@@ -949,7 +965,7 @@ pub async fn move_issue(
     let Ok(items) = bl::list_issues(&client, ctx.project.id).await else {
         return internal(&ctx.rid);
     };
-    reorder(
+    let resp = reorder(
         &mut client,
         "issues",
         ctx.project.id,
@@ -959,7 +975,17 @@ pub async fn move_issue(
         items.iter().map(|i| (i.id, i.order)).collect(),
         &ctx.rid,
     )
-    .await
+    .await;
+    // A reorder bumps `modified_at` (trigger) but not `version`; broadcast
+    // the fresh entity so cached clients pick up the new rank.
+    if resp.status() == StatusCode::NO_CONTENT
+        && let Ok(Some(fresh)) = bl::get_issue(&client, ctx.project.id, id).await
+    {
+        state
+            .events
+            .publish_issue(crate::events::IssueEventKind::Updated, ctx.actor_id, &fresh);
+    }
+    resp
 }
 
 /// Validate an issue→milestone assignment: the milestone must be in the
@@ -1143,6 +1169,68 @@ pub async fn list_issues(
             "total": total,
             "limit": limit,
             "offset": offset,
+        }))
+        .into_response(),
+        Err(_) => internal(&ctx.rid),
+    }
+}
+
+/// Query string for the issues delta endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub struct IssuesDeltaQuery {
+    /// RFC 3339 cursor from a prior board/delta response.
+    #[serde(default)]
+    pub since: Option<String>,
+}
+
+/// `GET /api/v1/projects/{project_id}/issues/delta?since=<rfc3339>`
+///
+/// Changes since the cursor: created/updated issues (full entities),
+/// tombstones for deletions, and the next cursor. Responds 410
+/// (`resync_required`) when the cursor is older than the erase grace window —
+/// tombstones past it may be hard-purged, so the client must fully reload.
+pub async fn issues_delta(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    Query(q): Query<IssuesDeltaQuery>,
+) -> Response {
+    if let Err(r) = ctx.require(Permission::IssueView) {
+        return r;
+    }
+    let rfc3339 = &time::format_description::well_known::Rfc3339;
+    let Some(since) = q
+        .since
+        .as_deref()
+        .and_then(|s| OffsetDateTime::parse(s, rfc3339).ok())
+    else {
+        return problem(
+            StatusCode::BAD_REQUEST,
+            "invalid_since",
+            "Invalid Cursor",
+            Some("`since` must be an RFC 3339 timestamp".to_owned()),
+            &ctx.rid,
+        );
+    };
+    if since < OffsetDateTime::now_utc() - TimeDuration::days(ERASE_GRACE_DAYS) {
+        return problem(
+            StatusCode::GONE,
+            "resync_required",
+            "Resync Required",
+            Some("cursor is older than the deletion grace window; reload fully".to_owned()),
+            &ctx.rid,
+        );
+    }
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&ctx.rid);
+    };
+    let overlapped = since - TimeDuration::seconds(DELTA_OVERLAP_SECS);
+    match bl::list_issues_delta(&client, ctx.project.id, overlapped, DELTA_PAGE_LIMIT).await {
+        Ok(d) => Json(json!({
+            "issues": d.issues,
+            "tombstones": d.tombstones,
+            "cursor": d.cursor.format(rfc3339).unwrap_or_default(),
+            "has_more": d.has_more,
         }))
         .into_response(),
         Err(_) => internal(&ctx.rid),
@@ -1484,6 +1572,9 @@ pub async fn update_issue(
                 Ok(Some(f)) => f,
                 _ => return internal(&ctx.rid),
             };
+            state
+                .events
+                .publish_issue(crate::events::IssueEventKind::Updated, ctx.actor_id, &full);
             with_etag(StatusCode::OK, full.id, full.version, &full)
         }
         Ok(UpdateOutcome::NotFound) => not_found(&ctx.rid),
@@ -1857,6 +1948,11 @@ async fn delete_entity(
             )
             .await;
             crate::backlog::audit_delete(&client, &ctx, headers, kind, id).await;
+            if kind == "issue" {
+                state
+                    .events
+                    .publish_issue_deleted(ctx.project.id, ctx.actor_id, id);
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => not_found(&ctx.rid),

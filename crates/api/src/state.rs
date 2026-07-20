@@ -114,6 +114,8 @@ pub struct AppState {
     pub readiness: Arc<Vec<Arc<dyn ReadyCheck>>>,
     pub dev: DevToggles,
     pub auth: Option<AuthContext>,
+    /// In-process change-feed bus backing the per-project SSE endpoint.
+    pub events: Arc<crate::events::EventBus>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -122,7 +124,7 @@ impl std::fmt::Debug for AppState {
             .field("readiness_count", &self.readiness.len())
             .field("dev", &self.dev)
             .field("has_auth", &self.auth.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -185,6 +187,7 @@ impl AppStateBuilder {
             readiness: Arc::new(self.readiness),
             dev: self.dev,
             auth: self.auth,
+            events: Arc::new(crate::events::EventBus::default()),
         }
     }
 }

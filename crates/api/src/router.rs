@@ -16,7 +16,7 @@ use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
     admin, attachments, auth, avatar, backlog, boards, branding, catalog, customers, dashboard,
-    epic_cover, health, issue_relations, issues_io, me, me_token, mfa, milestones, my_work,
+    epic_cover, events, health, issue_relations, issues_io, me, me_token, mfa, milestones, my_work,
     openapi, passkeys, project_icon, projects, releases, repositories, search, taxonomy,
     time_tracking, wiki,
 };
@@ -296,6 +296,7 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/issues", post(backlog::create_issue))
             .route("/api/v1/projects/{project_id}/issues", delete(backlog::purge_issues))
             .route("/api/v1/projects/{project_id}/issues/bulk", post(backlog::bulk_create_issues))
+            .route("/api/v1/projects/{project_id}/issues/delta", get(backlog::issues_delta))
             .route("/api/v1/projects/{project_id}/issues/by-ref/{ref}", get(backlog::get_issue_by_ref))
             .route("/api/v1/projects/{project_id}/issues/{id}", get(backlog::get_issue))
             .route("/api/v1/projects/{project_id}/issues/{id}", patch(backlog::update_issue))
@@ -359,6 +360,14 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/projects/{project_id}/board",
                 get(boards::board_data),
+            )
+            // Live change feed (SSE): best-effort latency layer over delta sync.
+            // The query-token layer serves browser EventSource clients, which
+            // cannot set an Authorization header.
+            .route(
+                "/api/v1/projects/{project_id}/events",
+                get(events::project_events)
+                    .layer(axum::middleware::from_fn(events::promote_query_token)),
             )
             .route(
                 "/api/v1/projects/{project_id}/boards",

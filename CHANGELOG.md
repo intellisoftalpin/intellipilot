@@ -4,6 +4,41 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.11] - 2026-07-19
+
+### Added
+- **Short deep links** (migration V016):
+  - Boards gain a `key` — a short lowercase slug, unique per project, used as
+    the URL segment instead of the board UUID. Auto-derived from the board
+    name on create (initials for multi-word names, suffixed on collision;
+    existing boards backfilled), editable via `PUT /boards/{board_id}`
+    (`409` on duplicate, case-insensitive).
+  - `GET /api/v1/projects/by-prefix/{prefix}` resolves a project's issue
+    prefix (any letter-case) to the project — private projects invisible to
+    the caller stay a plain 404.
+  - `GET .../boards/{segment}` accepts a board UUID **or** its key in any
+    letter-case.
+  - **Rename history**: changing a project prefix or board key records the
+    old value, so previously shared short links keep resolving (live values
+    always win over history). Superadmin maintenance via
+    `GET /api/v1/admin/short-link-history` and
+    `POST /api/v1/admin/short-link-history/delete` (single or bulk).
+- **`involved` issue filter** — matches issues where the user is assignee,
+  QA, or reviewer (never just reporter); `none` matches issues with no
+  people set. Available on the issues list and the board data endpoint.
+- **`release` issue filter** — matches issues whose fix version belongs to
+  the given release; `none` matches issues without a fix version.
+- **Work-log date editing** — `PATCH /me/time-entries/{id}` and the admin
+  counterpart accept a `date`; moving an entry into a locked month is
+  blocked for members (managers bypass, as with other corrections).
+- **Multi-level issue hierarchy** — an issue whose parent has its own parent
+  is now a valid parent; assignments that would close a cycle are rejected
+  with `422`.
+
+## [0.6.10] / [0.6.9]
+
+Version bumps in lockstep with frontend releases.
+
 ## [0.6.8] - 2026-07-09
 
 ### Fixed
