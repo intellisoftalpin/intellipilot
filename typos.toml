@@ -20,3 +20,6 @@ extend-exclude = [
 [default.extend-words]
 # Add project-specific allowed terms here.
 crate = "crate"
+# `flate2` is the gzip crate that unpacks the geolocation database; typos
+# splits the identifier and reads "flate" as a misspelling of "flat".
+flate = "flate"

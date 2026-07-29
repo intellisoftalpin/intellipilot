@@ -4,11 +4,12 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
-## [0.6.17] - 2026-07-29
+## [0.6.18] - 2026-07-29
 
 Account security: admin-driven 2FA recovery, real bans, session visibility and
 optional local IP geolocation (migration V018). Frontend companion release is
-also 0.6.17 — the two version lines are realigned.
+also 0.6.18 — the two version lines are realigned. (0.6.17 was burned by a
+CI failure and never released.)
 
 ### Fixed
 - **2FA lockout was unrecoverable.** A user who lost every second factor could
