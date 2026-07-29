@@ -54,14 +54,50 @@ impl FromRequestParts<AppState> for AuthUser {
             return Ok(Self { user_id });
         }
 
-        verify_access_token(&auth.access_key, token).map_or_else(
-            |_| Err(unauthorized(&rid)),
-            |claims| {
-                Ok(Self {
-                    user_id: claims.user_id,
-                })
-            },
+        let claims =
+            verify_access_token(&auth.access_key, token).map_err(|_| unauthorized(&rid))?;
+        // A valid signature is not enough: access tokens are stateless and live
+        // 15 minutes, so a ban imposed mid-token would otherwise go unnoticed
+        // until it expired. The check is cached, so this is not a per-request
+        // query — see `crate::presence`.
+        enforce_account_status(state, claims.user_id, &rid).await?;
+        Ok(Self {
+            user_id: claims.user_id,
+        })
+    }
+}
+
+/// Reject a request whose account has since been banned, deactivated or
+/// deleted.
+///
+/// `403` rather than `401` for a banned account: the credential is valid, the
+/// principal is not permitted, and a client that sees `401` would try to
+/// refresh in a loop.
+async fn enforce_account_status(
+    state: &AppState,
+    user_id: Uuid,
+    rid: &str,
+) -> Result<(), Response> {
+    let auth = state.auth.as_ref().ok_or_else(|| internal(rid))?;
+    let client = auth.db.pool.get().await.map_err(|_| internal(rid))?;
+    match state.presence.check(&client, user_id).await {
+        Some(status) if status.may_authenticate() => Ok(()),
+        Some(status) if status.is_banned => Err(Problem::new(
+            StatusCode::FORBIDDEN,
+            "account_banned",
+            "Forbidden",
+            Some("this account has been banned".to_owned()),
+            rid,
         )
+        .into_response_with_status(StatusCode::FORBIDDEN)),
+        _ => Err(Problem::new(
+            StatusCode::FORBIDDEN,
+            "account_inactive",
+            "Forbidden",
+            Some("this account is not active".to_owned()),
+            rid,
+        )
+        .into_response_with_status(StatusCode::FORBIDDEN)),
     }
 }
 
@@ -150,9 +186,10 @@ pub async fn authenticate(parts: &Parts, state: &AppState) -> Result<Caller, Res
             _ => Err(unauthorized(&rid)),
         }
     } else {
-        verify_access_token(&auth.access_key, token)
-            .map(|c| Caller::User(c.user_id))
-            .map_err(|_| unauthorized(&rid))
+        let claims =
+            verify_access_token(&auth.access_key, token).map_err(|_| unauthorized(&rid))?;
+        enforce_account_status(state, claims.user_id, &rid).await?;
+        Ok(Caller::User(claims.user_id))
     }
 }
 
@@ -219,7 +256,7 @@ impl FromRequestParts<AppState> for SuperadminUser {
 
         let row = client
             .query_opt(
-                "SELECT is_superadmin, is_active FROM users \
+                "SELECT is_superadmin, is_active, banned_at IS NULL AS not_banned FROM users \
                  WHERE id = $1 AND deleted_at IS NULL",
                 &[&user.user_id],
             )
@@ -235,9 +272,13 @@ impl FromRequestParts<AppState> for SuperadminUser {
                 .into_response_with_status(StatusCode::INTERNAL_SERVER_ERROR)
             })?;
 
-        let allowed = row
-            .as_ref()
-            .is_some_and(|r| r.get::<_, bool>("is_superadmin") && r.get::<_, bool>("is_active"));
+        // A banned superadmin keeps the flag but loses the surface — otherwise
+        // banning one would be cosmetic.
+        let allowed = row.as_ref().is_some_and(|r| {
+            r.get::<_, bool>("is_superadmin")
+                && r.get::<_, bool>("is_active")
+                && r.get::<_, bool>("not_banned")
+        });
 
         if !allowed {
             return Err(Problem::new(

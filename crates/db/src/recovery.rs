@@ -65,6 +65,20 @@ pub async fn mark_used(client: &deadpool_postgres::Client, id: Uuid) -> Result<b
     Ok(n > 0)
 }
 
+/// Delete every recovery code a user holds, used or not. Returns the count.
+///
+/// Part of the admin 2FA reset: leaving codes behind would keep a factor alive
+/// that the locked-out user, by definition, cannot produce.
+pub async fn delete_all_for_user(
+    client: &deadpool_postgres::Client,
+    user_id: Uuid,
+) -> Result<u64, DbError> {
+    let n = client
+        .execute("DELETE FROM recovery_codes WHERE user_id = $1", &[&user_id])
+        .await?;
+    Ok(n)
+}
+
 /// Count remaining unused codes.
 pub async fn count_unused(
     client: &deadpool_postgres::Client,

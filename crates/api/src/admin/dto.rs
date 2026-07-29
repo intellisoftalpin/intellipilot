@@ -5,7 +5,7 @@ use garde::Validate;
 use intellipilot_core::activity::ActivityEvent;
 use intellipilot_core::app_token::AppToken;
 use intellipilot_core::perms::Permission;
-use intellipilot_core::user::User;
+use intellipilot_core::user::{AdminUserRow, SessionInfo, User};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
@@ -26,10 +26,111 @@ pub struct ActivityListResponse {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserListResponse {
-    pub items: Vec<User>,
+    pub items: Vec<AdminUserRow>,
     pub total: i64,
     pub limit: u32,
     pub offset: u32,
+}
+
+/// Ban request. The reason is optional but recorded when given — it is shown
+/// to the admin later and written to the audit log.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct BanUserRequest {
+    #[garde(length(max = 500))]
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// What an admin 2FA reset actually removed.
+///
+/// Reported back so the admin can tell the user what to re-enrol, and so the
+/// action is not a silent no-op when the account had nothing configured.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TwoFactorResetResponse {
+    pub totp_cleared: bool,
+    pub passkeys_removed: u64,
+    pub recovery_codes_removed: u64,
+    /// Sessions revoked as part of the reset — the user must sign in again.
+    pub sessions_revoked: u64,
+}
+
+/// A user's live sessions.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SessionListResponse {
+    pub items: Vec<SessionInfo>,
+    pub total: i64,
+}
+
+/// Result of revoking every session for a user.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SessionsRevokedResponse {
+    pub sessions_revoked: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Geolocation
+// ---------------------------------------------------------------------------
+
+/// Geolocation configuration plus the state of the installed database.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GeoipStatusResponse {
+    /// Off by default; only a superadmin can turn it on.
+    pub enabled: bool,
+    /// `country` or `city`.
+    pub variant: String,
+    pub auto_update: bool,
+    /// Whether a database is currently loaded and answering lookups.
+    pub database_loaded: bool,
+    /// Variant actually installed, which may lag `variant` until the next
+    /// refresh completes.
+    pub installed_variant: Option<String>,
+    /// Publication month of the installed file, `YYYY-MM`.
+    pub build_month: Option<String>,
+    pub file_size: Option<i64>,
+    pub sha256: Option<String>,
+    /// `download` or `upload`.
+    pub source: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub downloaded_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub checked_at: Option<OffsetDateTime>,
+    /// Message from the last failed refresh; `null` after a success. Surfaced
+    /// so a silently failing monthly update stays visible.
+    pub last_error: Option<String>,
+    /// Attribution required by the database licence (CC BY 4.0). The client
+    /// must display this wherever geolocation results are shown.
+    pub attribution: String,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct UpdateGeoipSettingsRequest {
+    #[garde(skip)]
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// `country` or `city`.
+    #[garde(skip)]
+    #[serde(default)]
+    pub variant: Option<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub auto_update: Option<bool>,
+}
+
+/// Outcome of a manual "update now".
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GeoipUpdateResponse {
+    /// False when the installed database was already the newest published one.
+    pub installed: bool,
+    pub build_month: Option<String>,
+    pub file_size: Option<i64>,
+    pub status: GeoipStatusResponse,
+}
+
+/// Result of clearing collected location data.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GeoipPurgeResponse {
+    /// Sessions whose stored country/city was erased.
+    pub sessions_cleared: u64,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -187,6 +288,8 @@ pub struct PlatformSettingsResponse {
     /// When the custom icon was last changed — clients use it for cache-busting.
     #[serde(with = "time::serde::rfc3339::option")]
     pub app_icon_updated_at: Option<OffsetDateTime>,
+    /// Whether IP geolocation is switched on (V018). Off by default.
+    pub geoip_enabled: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
     pub updated_by: Option<Uuid>,

@@ -4,6 +4,73 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.17] - 2026-07-29
+
+Account security: admin-driven 2FA recovery, real bans, session visibility and
+optional local IP geolocation (migration V018). Frontend companion release is
+also 0.6.17 — the two version lines are realigned.
+
+### Fixed
+- **2FA lockout was unrecoverable.** A user who lost every second factor could
+  not be helped by anyone: the only disable path (`DELETE /me/totp`) requires
+  an authenticated session, which is exactly what the lockout prevents.
+  `POST /admin/users/{id}/reset-2fa` clears the TOTP secret, **all passkeys**
+  and **all recovery codes**, then revokes the account's sessions. Clearing all
+  three matters — `has_active_2fa` counts passkeys as a factor, so a
+  TOTP-only reset would have left a passkey-only user just as locked out.
+- **Deactivating an LDAP user did not stick.** `find_or_link_ldap_user` runs
+  `SET ... is_active = true` on every directory login, silently undoing an
+  admin's deactivation at the user's next sign-in. Bans now live in their own
+  columns (`banned_at`/`banned_by`/`ban_reason`) that the directory sync never
+  writes, and the login path checks them after the link/sync.
+- A banned superadmin no longer counts towards the "don't remove the last
+  superadmin" guard — previously the last *usable* admin could be demoted,
+  deactivated or deleted while a banned one stood in for them.
+
+### Added
+- `POST /admin/users/{id}/ban` (with an optional reason) and `.../unban`.
+  Banning revokes every session, and is refused for the caller's own account
+  (400) or the last usable superadmin (409). Enforced across password login,
+  LDAP login, refresh rotation, personal tokens and the superadmin gate.
+- `GET`/`DELETE /admin/users/{id}/sessions` — inspect live sessions or sign a
+  user out everywhere.
+- `GET /admin/users` now returns each account's security posture: `status`
+  (active/inactive/banned), `two_factor` (TOTP, passkey and recovery-code
+  counts), `active_sessions`, `last_session` (device, address, location),
+  `last_seen_at`, `last_login_at` and ban details. Computed with lateral joins
+  in one query — no N+1. New `?status=` filter accepts
+  `active`/`inactive`/`banned`/`no_2fa`.
+- **Local IP geolocation**, off by default and superadmin-only. Resolution
+  reads a MaxMind-format database on disk; the only outbound request the
+  feature ever makes is fetching that database, so no address is ever sent to
+  a third party. Source is DB-IP Lite (no account or licence key), refreshed
+  monthly by a background task or on demand via
+  `POST /admin/geoip/update`. `POST /admin/geoip/purge` erases collected
+  locations, since IP-derived city is personal data. The licence (CC BY 4.0)
+  requires the attribution returned in `GET /admin/geoip`.
+- Activity tracking: `users.last_seen_at` and `last_login_at`, plus
+  `last_seen_at`/`last_ip`/`country_code`/`city` per session. Existing installs
+  are backfilled from the audit log by the migration.
+- Audit events: `admin_user_2fa_reset`, `admin_user_banned`,
+  `admin_user_unbanned`, `admin_sessions_revoked`, `admin_geoip_updated`,
+  `admin_geoip_settings_updated`, `admin_geoip_purged`.
+
+### Changed
+- Access tokens are stateless with a 15-minute life, so a ban imposed mid-token
+  would previously have gone unnoticed until it expired. A new in-process
+  presence cache (`crate::presence`) re-checks each user's status at most once
+  per 30 seconds and stamps `last_seen_at` in the same statement, bounding ban
+  lag without adding a database round trip to every authenticated request.
+  Banning invalidates the cache entry, so on the acting node the ban applies to
+  the very next request.
+- Dependencies: added `maxminddb` (ISC) and `flate2`. `maxminddb`'s `mmap`
+  feature is deliberately **not** enabled — `Reader::open_mmap` is an
+  `unsafe fn` and this workspace sets `unsafe_code = "forbid"`, so the database
+  is read into memory instead (~4 MB country, ~62 MB city, only while the
+  feature is switched on).
+- Updated `ammonia` 4.1.3 → 4.1.4 for RUSTSEC-2026-0213 (XSS via SVG
+  `set`/`animate` attribute values). Pre-existing, unrelated to this release.
+
 ## [0.6.11] - 2026-07-19
 
 ### Added

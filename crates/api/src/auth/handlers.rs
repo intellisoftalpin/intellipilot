@@ -436,6 +436,30 @@ pub async fn login(
                 else {
                     return internal(&rid);
                 };
+                // Checked AFTER the link/sync above, which is the whole point:
+                // `find_or_link_ldap_user` re-enables `is_active` on every
+                // directory login, so a ban that lived in `is_active` would be
+                // silently undone here. `banned_at` is never touched by the
+                // sync, so it survives.
+                if users::is_banned(&client, user.id).await.unwrap_or(false) {
+                    login_attempts::record(&client, &id_hash, ip, false).await;
+                    audit::record(
+                        &client,
+                        Some(user.id),
+                        "login_failure",
+                        Some(ip),
+                        Some(&ua),
+                        &json!({ "reason": "account_banned", "identifier": req.email, "via": "ldap" }),
+                    )
+                    .await;
+                    return problem(
+                        StatusCode::FORBIDDEN,
+                        "account_banned",
+                        "Forbidden",
+                        Some("this account has been banned".to_owned()),
+                        &rid,
+                    );
+                }
                 if !user.is_active {
                     login_attempts::record(&client, &id_hash, ip, false).await;
                     audit::record(
@@ -480,7 +504,16 @@ pub async fn login(
                     }))
                     .into_response();
                 }
-                issue_session(auth, &client, user.id, &headers, jar, "login_success_ldap").await
+                issue_session(
+                    auth,
+                    &state.geoip,
+                    &client,
+                    user.id,
+                    &headers,
+                    jar,
+                    "login_success_ldap",
+                )
+                .await
             }
             Err(LdapError::InvalidCredentials) => {
                 login_attempts::record(&client, &id_hash, ip, false).await;
@@ -566,6 +599,31 @@ pub async fn login(
         return internal(&rid);
     };
     let user = found_user.user;
+
+    // A ban is independent of `is_active`, so the check above does not cover
+    // it. Deliberately reported distinctly from bad credentials: the operator
+    // took this action knowingly, and leaving the user to guess at a password
+    // that is not the problem helps nobody.
+    if users::is_banned(&client, user.id).await.unwrap_or(false) {
+        login_attempts::record(&client, &id_hash, ip, false).await;
+        audit::record(
+            &client,
+            Some(user.id),
+            "login_failure",
+            Some(ip),
+            Some(&user_agent(&headers)),
+            &json!({ "reason": "account_banned", "identifier": req.email, "via": "password" }),
+        )
+        .await;
+        return problem(
+            StatusCode::FORBIDDEN,
+            "account_banned",
+            "Forbidden",
+            Some("this account has been banned".to_owned()),
+            &rid,
+        );
+    }
+
     login_attempts::record(&client, &id_hash, ip, true).await;
 
     // If the user has a second factor, issue a short-lived MFA challenge
@@ -595,7 +653,16 @@ pub async fn login(
         .into_response();
     }
 
-    issue_session(auth, &client, user.id, &headers, jar, "login_success").await
+    issue_session(
+        auth,
+        &state.geoip,
+        &client,
+        user.id,
+        &headers,
+        jar,
+        "login_success",
+    )
+    .await
 }
 
 /// Create a session (refresh family + access token), set the cookie, write an
@@ -603,6 +670,7 @@ pub async fn login(
 /// and passkey authentication.
 pub(crate) async fn issue_session(
     auth: &AuthContext,
+    geoip: &crate::geoip::GeoIp,
     client: &deadpool_postgres::Client,
     user_id: Uuid,
     headers: &HeaderMap,
@@ -616,6 +684,17 @@ pub(crate) async fn issue_session(
     let Ok(family_id) = sessions::create_family(client, user_id, &ua, Some(ip)).await else {
         return internal(&rid);
     };
+    // Resolve where this session started. Inert unless a superadmin enabled
+    // geolocation and a database is installed; entirely local either way.
+    if let Some(loc) = geoip.lookup(ip) {
+        sessions::set_family_location(
+            client,
+            family_id,
+            loc.country_code.as_deref(),
+            loc.city.as_deref(),
+        )
+        .await;
+    }
     let new_refresh = refresh::generate();
     let expires = now() + TimeDuration::seconds(REFRESH_TTL_SECS);
     if sessions::insert_token(client, family_id, &new_refresh.hash, None, expires)
@@ -658,6 +737,10 @@ pub(crate) async fn issue_session(
             &json!({ "via": via }),
         )
         .await;
+    }
+    if let Err(e) = users::stamp_login(client, user_id).await {
+        // Cosmetic for the admin list — never fail a login over it.
+        tracing::warn!(error = %e, "failed to stamp last_login_at");
     }
 
     let dev_refresh = auth.config.env.is_dev().then(|| new_refresh.raw.clone());
@@ -730,6 +813,18 @@ pub async fn refresh(
         return unauthorized_clear(&rid, jar);
     }
 
+    // A banned or deactivated account must not be able to extend its session.
+    // Without this a ban would only bite once the 15-minute access token ran
+    // out AND the client stopped refreshing — i.e. never.
+    match users::touch_last_seen(&client, lk.user_id).await {
+        Ok(Some(status)) if status.may_authenticate() => {}
+        Ok(_) => {
+            sessions::revoke_family(&client, lk.family_id, "account_blocked").await;
+            return unauthorized_clear(&rid, jar);
+        }
+        Err(_) => return internal(&rid),
+    }
+
     // Atomic rotate: if we lose the race, treat as reuse.
     match sessions::mark_used(&client, lk.token_id).await {
         Ok(true) => {}
@@ -767,9 +862,35 @@ pub async fn refresh(
     )
     .await;
 
+    stamp_session_activity(&state, &client, lk.family_id, &headers).await;
+
     let dev_refresh = auth.config.env.is_dev().then(|| new_refresh.raw.clone());
     let jar = set_refresh_cookie(jar, &new_refresh.raw, auth);
     (jar, Json(token_response(access, dev_refresh))).into_response()
+}
+
+/// Record where and when a session was last used.
+///
+/// Refresh rotation is the only regular signal we get about a long-lived
+/// session, so this is the source of both the admin list's "last active" and
+/// the location shown for that session. The geolocation lookup is local and
+/// inert unless a superadmin enabled it.
+async fn stamp_session_activity(
+    state: &AppState,
+    client: &deadpool_postgres::Client,
+    family_id: Uuid,
+    headers: &HeaderMap,
+) {
+    let ip = client_ip(headers);
+    let loc = state.geoip.lookup(ip);
+    sessions::touch_family(
+        client,
+        family_id,
+        Some(ip),
+        loc.as_ref().and_then(|l| l.country_code.as_deref()),
+        loc.as_ref().and_then(|l| l.city.as_deref()),
+    )
+    .await;
 }
 
 fn unauthorized_clear(rid: &str, jar: CookieJar) -> Response {

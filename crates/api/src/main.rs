@@ -105,9 +105,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 },
                 attachments,
             };
+            // Geolocation: restore the configured state and any installed
+            // database, then start the monthly refresh. All of it is inert
+            // unless a superadmin has switched the feature on.
+            let geoip = Arc::new(build_geoip());
+            init_geoip(&db, &geoip).await;
+            spawn_geoip_refresher(db.clone(), Arc::clone(&geoip));
+
             builder = builder
                 .readiness_checks(vec![Arc::new(DbReadyCheck { db })])
-                .auth_context(auth);
+                .auth_context(auth)
+                .geoip(geoip);
             tracing::info!("identity/session endpoints enabled");
         }
         Err(_) => {
@@ -259,6 +267,143 @@ fn build_access_key(env: Env) -> Result<AccessKey, Box<dyn std::error::Error + S
         }
         Err(_) => Err("INTELLIPILOT_PASETO_SECRET must be set in production".into()),
     }
+}
+
+/// How often the refresher wakes to consider a monthly update.
+///
+/// The data is published monthly, so this only needs to be often enough to
+/// notice a new build within a day and to recover from a failed attempt.
+const GEOIP_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// Where the `.mmdb` lives: a `geoip` subdirectory of the storage root.
+fn build_geoip() -> intellipilot_api::geoip::GeoIp {
+    let root = std::env::var("INTELLIPILOT_STORAGE_DIR")
+        .unwrap_or_else(|_| "./data/attachments".to_owned());
+    intellipilot_api::geoip::GeoIp::new(std::path::PathBuf::from(root).join("geoip"))
+}
+
+/// Restore the enabled flag and load the installed database, if any.
+///
+/// Failures are logged and swallowed: geolocation is a display nicety, and a
+/// missing or corrupt database must never stop the server from starting.
+async fn init_geoip(db: &Db, geoip: &intellipilot_api::geoip::GeoIp) {
+    let Ok(client) = db.pool.get().await else {
+        return;
+    };
+    match intellipilot_db::platform_settings::get(&client).await {
+        Ok(settings) => geoip.set_enabled(settings.geoip_enabled),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read geoip settings");
+            return;
+        }
+    }
+    let Ok(meta) = intellipilot_db::geoip::get(&client).await else {
+        return;
+    };
+    let Some(rel) = meta.file_path.as_deref() else {
+        return;
+    };
+    let path = geoip.dir().join(rel);
+    match geoip.load(&path) {
+        Ok(()) => {
+            tracing::info!(
+                variant = meta.variant.as_deref().unwrap_or("?"),
+                build = meta.build_month.as_deref().unwrap_or("?"),
+                "geoip database loaded"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "could not load geoip database");
+        }
+    }
+}
+
+/// Refresh the geolocation database monthly.
+///
+/// Runs on a timer rather than a calendar: it wakes every few hours, and the
+/// month comparison inside `Updater::update` decides whether there is anything
+/// to do. That makes a missed window (server down on the 1st) self-healing.
+fn spawn_geoip_refresher(db: Db, geoip: Arc<intellipilot_api::geoip::GeoIp>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(GEOIP_CHECK_INTERVAL);
+        loop {
+            ticker.tick().await;
+            if let Err(e) = geoip_refresh_once(&db, &geoip).await {
+                tracing::warn!(error = %e, "scheduled geoip refresh failed");
+            }
+        }
+    });
+}
+
+async fn geoip_refresh_once(
+    db: &Db,
+    geoip: &intellipilot_api::geoip::GeoIp,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let client = db.pool.get().await?;
+    let settings = intellipilot_db::platform_settings::get(&client).await?;
+    // Both switches must be on. Keep the cached flag in step while we are here,
+    // which also picks up a change made on another instance.
+    geoip.set_enabled(settings.geoip_enabled);
+    if !settings.geoip_enabled || !settings.geoip_auto_update {
+        return Ok(());
+    }
+
+    // Skip if an admin's manual update is already running.
+    if !intellipilot_db::geoip::try_lock_download(&client).await? {
+        tracing::debug!("geoip refresh skipped; another update holds the lock");
+        return Ok(());
+    }
+
+    let meta = intellipilot_db::geoip::get(&client).await?;
+    let variant = intellipilot_api::geoip::Variant::parse(&settings.geoip_variant);
+    // A variant change forces a download even when the month matches.
+    let installed_month = (meta.variant.as_deref() == Some(variant.as_str()))
+        .then_some(meta.build_month.clone())
+        .flatten();
+
+    let base_url = std::env::var("INTELLIPILOT_GEOIP_BASE_URL")
+        .unwrap_or_else(|_| intellipilot_api::geoip::DEFAULT_BASE_URL.to_owned());
+    let result = intellipilot_api::geoip::Updater::new(base_url)
+        .update(
+            geoip,
+            variant,
+            installed_month.as_deref(),
+            false,
+            time::OffsetDateTime::now_utc(),
+        )
+        .await;
+    intellipilot_db::geoip::unlock_download(&client).await;
+
+    match result {
+        Ok(intellipilot_api::geoip::UpdateOutcome::Installed {
+            variant,
+            build_month,
+            file_size,
+            sha256,
+        }) => {
+            intellipilot_db::geoip::set_installed(
+                &client,
+                variant.as_str(),
+                &build_month,
+                &format!("dbip-{}-{build_month}.mmdb", variant.as_str()),
+                file_size,
+                &sha256,
+                "download",
+            )
+            .await?;
+            tracing::info!(variant = variant.as_str(), build = %build_month, "geoip database updated");
+        }
+        Ok(intellipilot_api::geoip::UpdateOutcome::AlreadyCurrent) => {
+            intellipilot_db::geoip::mark_checked(&client).await?;
+        }
+        Err(e) => {
+            // Recorded rather than only logged, so the admin card shows a
+            // refresh that has been quietly failing for months.
+            intellipilot_db::geoip::mark_error(&client, &e.to_string()).await?;
+            return Err(Box::new(e));
+        }
+    }
+    Ok(())
 }
 
 /// Build the attachment subsystem: local FS storage + size limit + a signing

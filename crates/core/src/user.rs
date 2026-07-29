@@ -77,6 +77,71 @@ pub struct User {
     pub card: ProfileCard,
 }
 
+/// Which second factors an account actually has.
+///
+/// `enabled` is the value the login path gates on — a user is challenged when
+/// *any* factor is present. It matters for recovery: clearing TOTP alone
+/// leaves a passkey-only user just as locked out, so the admin reset clears
+/// every factor listed here.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct TwoFactorStatus {
+    /// True when at least one factor is active (confirmed TOTP or a passkey).
+    pub enabled: bool,
+    /// A confirmed TOTP authenticator is registered.
+    pub totp: bool,
+    /// Number of registered passkeys.
+    pub passkeys: i64,
+    /// Unused single-use recovery codes remaining.
+    pub recovery_codes_left: i64,
+}
+
+/// One logical session (a refresh-token family), as shown to an admin.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SessionInfo {
+    pub id: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub last_seen_at: OffsetDateTime,
+    /// Most recent address seen on this session.
+    pub ip: Option<String>,
+    /// ISO 3166-1 alpha-2. `None` when geolocation is disabled (the default),
+    /// the address is private, or the database has no entry.
+    pub country_code: Option<String>,
+    /// `None` for country-only databases and unresolved ranges.
+    pub city: Option<String>,
+    pub user_agent: String,
+}
+
+/// Security posture of an account, shown only on the admin user list.
+///
+/// Carried separately from [`User`] so the fields never leak into `/me` or the
+/// embedded [`UserBrief`] that rides along with every issue and comment.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AdminUserRow {
+    #[serde(flatten)]
+    pub user: User,
+    /// `active` | `inactive` | `banned`. Precomputed because the three inputs
+    /// (`is_active`, `banned_at`, deletion) have a precedence the client
+    /// should not have to reimplement.
+    pub status: String,
+    pub two_factor: TwoFactorStatus,
+    /// Sessions that are neither revoked nor fully expired.
+    pub active_sessions: i64,
+    /// The most recently active session, source of the country/city shown in
+    /// the list. `None` when the user has no live session.
+    pub last_session: Option<SessionInfo>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub last_seen_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub last_login_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub banned_at: Option<OffsetDateTime>,
+    pub ban_reason: Option<String>,
+    /// Who imposed the ban; `None` if that admin has since been deleted.
+    pub banned_by: Option<Uuid>,
+}
+
 /// Fields accepted when creating a user.
 #[derive(Debug, Clone)]
 pub struct NewUser {

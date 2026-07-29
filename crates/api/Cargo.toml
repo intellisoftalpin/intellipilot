@@ -70,6 +70,8 @@ ammonia = { workspace = true }
 similar = { workspace = true }
 rust_xlsxwriter = { workspace = true }
 csv = { workspace = true }
+maxminddb = { workspace = true }
+flate2 = { workspace = true }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
@@ -78,6 +80,9 @@ tower = { workspace = true }
 http-body-util = "0.1"
 serde_json = { workspace = true }
 insta = { workspace = true }
+# Builds a tiny in-memory .mmdb so the geolocation tests exercise real decoding
+# without a network fetch or a committed binary blob. Test-only.
+maxminddb-writer = "0.1"
 proptest = { workspace = true }
 assert-json-diff = { workspace = true }
 serial_test = { workspace = true }

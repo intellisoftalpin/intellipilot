@@ -18,12 +18,21 @@ pub struct PlatformSettings {
     pub app_icon_mime: Option<String>,
     /// When the custom icon was last set — clients use it for cache-busting.
     pub app_icon_updated_at: Option<OffsetDateTime>,
+    /// Master switch for IP geolocation (V018). Off by default: resolution is
+    /// local, but the data it derives is personal, so an operator opts in.
+    pub geoip_enabled: bool,
+    /// `country` (~4 MB) or `city` (~62 MB). City is the default because the
+    /// admin user list shows both country and city.
+    pub geoip_variant: String,
+    /// Refresh the database monthly without an admin asking.
+    pub geoip_auto_update: bool,
     pub updated_at: OffsetDateTime,
     pub updated_by: Option<Uuid>,
 }
 
 const SELECT_COLS: &str = "open_registration, app_name, app_message, \
-     app_icon_mime, app_icon_updated_at, updated_at, updated_by";
+     app_icon_mime, app_icon_updated_at, geoip_enabled, geoip_variant, \
+     geoip_auto_update, updated_at, updated_by";
 
 fn row_to_settings(row: &tokio_postgres::Row) -> PlatformSettings {
     PlatformSettings {
@@ -32,6 +41,9 @@ fn row_to_settings(row: &tokio_postgres::Row) -> PlatformSettings {
         app_message: row.get("app_message"),
         app_icon_mime: row.get("app_icon_mime"),
         app_icon_updated_at: row.get("app_icon_updated_at"),
+        geoip_enabled: row.get("geoip_enabled"),
+        geoip_variant: row.get("geoip_variant"),
+        geoip_auto_update: row.get("geoip_auto_update"),
         updated_at: row.get("updated_at"),
         updated_by: row.get("updated_by"),
     }
@@ -88,6 +100,33 @@ pub async fn set_branding(
                  WHERE id = 1 RETURNING {SELECT_COLS}"
             ),
             &[&app_name, &app_message, &updated_by],
+        )
+        .await?;
+    Ok(row_to_settings(&row))
+}
+
+/// Update the geolocation configuration. `None` leaves a field unchanged.
+///
+/// Superadmin-only, like every other write here — the gate is the
+/// `SuperadminUser` extractor on `/admin/*`, not a check in this layer.
+pub async fn set_geoip(
+    client: &deadpool_postgres::Client,
+    enabled: Option<bool>,
+    variant: Option<&str>,
+    auto_update: Option<bool>,
+    updated_by: Uuid,
+) -> Result<PlatformSettings, DbError> {
+    let row = client
+        .query_one(
+            &format!(
+                "UPDATE platform_settings \
+                 SET geoip_enabled     = COALESCE($1, geoip_enabled), \
+                     geoip_variant     = COALESCE($2, geoip_variant), \
+                     geoip_auto_update = COALESCE($3, geoip_auto_update), \
+                     updated_at = now(), updated_by = $4 \
+                 WHERE id = 1 RETURNING {SELECT_COLS}"
+            ),
+            &[&enabled, &variant, &auto_update, &updated_by],
         )
         .await?;
     Ok(row_to_settings(&row))

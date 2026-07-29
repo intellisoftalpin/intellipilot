@@ -104,6 +104,25 @@ pub async fn delete_credential(
     Ok(n > 0)
 }
 
+/// Delete every passkey a user has registered. Returns the count.
+///
+/// Part of the admin 2FA reset. `has_active_2fa` counts passkeys as a second
+/// factor, so a user who lost their only passkey is locked out exactly like
+/// one who lost their authenticator app — clearing TOTP alone would not free
+/// them.
+pub async fn delete_all_for_user(
+    client: &deadpool_postgres::Client,
+    user_id: Uuid,
+) -> Result<u64, DbError> {
+    let n = client
+        .execute(
+            "DELETE FROM webauthn_credentials WHERE user_id = $1",
+            &[&user_id],
+        )
+        .await?;
+    Ok(n)
+}
+
 /// Update the stored passkey + signature counter after a successful auth.
 pub async fn update_after_auth(
     client: &deadpool_postgres::Client,

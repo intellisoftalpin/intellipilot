@@ -136,7 +136,7 @@ pub async fn find_active_by_hash(
              FROM personal_app_tokens t \
              JOIN users u ON u.id = t.user_id \
              WHERE t.token_hash = $1 AND t.disabled_at IS NULL \
-               AND u.is_active AND u.deleted_at IS NULL",
+               AND u.is_active AND u.banned_at IS NULL AND u.deleted_at IS NULL",
             &[&token_hash],
         )
         .await?;

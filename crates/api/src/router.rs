@@ -180,6 +180,36 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/admin/users/{id}/reset-password",
                 post(admin::handlers::reset_password),
             )
+            // Account security (V018)
+            .route(
+                "/api/v1/admin/users/{id}/reset-2fa",
+                post(admin::handlers::reset_two_factor),
+            )
+            .route(
+                "/api/v1/admin/users/{id}/ban",
+                post(admin::handlers::ban_user),
+            )
+            .route(
+                "/api/v1/admin/users/{id}/unban",
+                post(admin::handlers::unban_user),
+            )
+            .route(
+                "/api/v1/admin/users/{id}/sessions",
+                get(admin::handlers::list_user_sessions)
+                    .delete(admin::handlers::revoke_user_sessions),
+            )
+            .route(
+                "/api/v1/admin/geoip",
+                get(admin::handlers::get_geoip).patch(admin::handlers::update_geoip),
+            )
+            .route(
+                "/api/v1/admin/geoip/update",
+                post(admin::handlers::update_geoip_database),
+            )
+            .route(
+                "/api/v1/admin/geoip/purge",
+                post(admin::handlers::purge_geoip_data),
+            )
             .route(
                 "/api/v1/admin/invitations",
                 post(admin::handlers::create_invitation),

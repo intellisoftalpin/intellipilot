@@ -354,6 +354,7 @@ pub async fn authenticate_finish(
 
     issue_session(
         auth,
+        &state.geoip,
         &client,
         user_id,
         &headers,

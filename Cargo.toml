@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.14"
+version = "0.6.17"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -124,6 +124,21 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 percent-encoding = "2"
 regex = "1"
+
+# IP geolocation — entirely local mmdb lookups (DB-IP Lite or GeoLite2).
+#
+# Deliberately NOT the `mmap` feature: `Reader::open_mmap` is an `unsafe fn`,
+# and this workspace forbids unsafe code (a `forbid` that no call-site
+# `#[allow]` can lift). We therefore read the database into memory, which costs
+# roughly the file size in RSS while geolocation is switched on — ~4 MB for the
+# country variant, ~62 MB for city. Acceptable because the whole feature is
+# opt-in and off by default.
+#
+# `flate2` (pure-Rust miniz_oxide backend, no zlib C dependency) unpacks the
+# published `.mmdb.gz`. The database file is never bundled in our image —
+# DB-IP Lite is CC BY 4.0 and the operator's own instance fetches it.
+maxminddb = { version = "0.30", default-features = false }
+flate2 = "1"
 
 # Dev / test
 nextest-runner = "0.74"

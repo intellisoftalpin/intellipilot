@@ -331,7 +331,16 @@ pub async fn two_factor_verify(
         return unauthorized(&rid);
     }
 
-    issue_session(auth, &client, user_id, &headers, jar, "login_2fa_success").await
+    issue_session(
+        auth,
+        &state.geoip,
+        &client,
+        user_id,
+        &headers,
+        jar,
+        "login_2fa_success",
+    )
+    .await
 }
 
 async fn verify_totp_factor(

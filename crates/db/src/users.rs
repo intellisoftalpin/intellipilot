@@ -1,7 +1,8 @@
 //! User persistence.
 
 use intellipilot_core::user::{
-    NewUser, NewUserWithFlags, OutToday, ProfileCard, ProfileUpdate, User,
+    AdminUserRow, NewUser, NewUserWithFlags, OutToday, ProfileCard, ProfileUpdate, SessionInfo,
+    TwoFactorStatus, User,
 };
 use time::{Date, OffsetDateTime};
 use tokio_postgres::Row;
@@ -83,6 +84,15 @@ pub fn card_from_row(row: &Row) -> ProfileCard {
         out_today: out_today_from_row(row),
     }
 }
+
+/// What it takes to count as a superadmin who can still reach the admin area:
+/// promoted, enabled, not banned, not deleted.
+///
+/// Single source of truth for the "don't lock everyone out" guard. A banned
+/// superadmin cannot log in, so counting one as a survivor would let the last
+/// *usable* superadmin be demoted, deactivated or deleted.
+const ACTIVE_SUPERADMIN: &str =
+    "is_superadmin AND is_active AND banned_at IS NULL AND deleted_at IS NULL";
 
 /// Outcome of an admin update that may be refused by a domain invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -510,16 +520,27 @@ pub async fn soft_delete(
 // V011: superadmin / admin-driven user management
 // ===========================================================================
 
-/// Count active (non-deleted, active, superadmin) users.
+/// Count superadmins who can still log in (see [`ACTIVE_SUPERADMIN`]).
 pub async fn count_active_superadmins(client: &deadpool_postgres::Client) -> Result<i64, DbError> {
     let row = client
         .query_one(
-            "SELECT COUNT(*)::bigint AS n FROM users \
-             WHERE is_superadmin AND is_active AND deleted_at IS NULL",
+            &format!("SELECT COUNT(*)::bigint AS n FROM users WHERE {ACTIVE_SUPERADMIN}"),
             &[],
         )
         .await?;
     Ok(row.get::<_, i64>("n"))
+}
+
+/// Whether stripping this target's access could remove the last usable
+/// superadmin, meaning the caller must run the last-admin guard first.
+///
+/// A banned superadmin already cannot log in, so they are not a survivor and
+/// demoting/deleting them needs no guard. Expects a row selecting
+/// `is_superadmin`, `is_active` and `banned`.
+fn is_last_admin_risk(target: &Row) -> bool {
+    target.get::<_, bool>("is_superadmin")
+        && target.get::<_, bool>("is_active")
+        && !target.get::<_, bool>("banned")
 }
 
 /// Unconditional promotion. Always safe — adding a superadmin never violates
@@ -549,7 +570,8 @@ pub async fn set_superadmin(
 
     let target = tx
         .query_opt(
-            "SELECT is_superadmin, is_active, deleted_at IS NOT NULL AS deleted \
+            "SELECT is_superadmin, is_active, banned_at IS NOT NULL AS banned, \
+                    deleted_at IS NOT NULL AS deleted \
              FROM users WHERE id = $1 FOR UPDATE",
             &[&id],
         )
@@ -565,11 +587,13 @@ pub async fn set_superadmin(
 
     // Last-admin guard: when demoting an active superadmin, ensure another
     // active superadmin exists.
-    if !value && target.get::<_, bool>("is_superadmin") && target.get::<_, bool>("is_active") {
+    if !value && is_last_admin_risk(&target) {
         let row = tx
             .query_one(
-                "SELECT COUNT(*)::bigint AS n FROM users \
-                 WHERE is_superadmin AND is_active AND deleted_at IS NULL AND id <> $1",
+                &format!(
+                    "SELECT COUNT(*)::bigint AS n FROM users \
+                     WHERE {ACTIVE_SUPERADMIN} AND id <> $1"
+                ),
                 &[&id],
             )
             .await?;
@@ -599,7 +623,8 @@ pub async fn set_active(
 
     let target = tx
         .query_opt(
-            "SELECT is_superadmin, is_active, deleted_at IS NOT NULL AS deleted \
+            "SELECT is_superadmin, is_active, banned_at IS NOT NULL AS banned, \
+                    deleted_at IS NOT NULL AS deleted \
              FROM users WHERE id = $1 FOR UPDATE",
             &[&id],
         )
@@ -613,11 +638,13 @@ pub async fn set_active(
         return Ok(AdminUpdateOutcome::NotFound);
     }
 
-    if !value && target.get::<_, bool>("is_superadmin") && target.get::<_, bool>("is_active") {
+    if !value && is_last_admin_risk(&target) {
         let row = tx
             .query_one(
-                "SELECT COUNT(*)::bigint AS n FROM users \
-                 WHERE is_superadmin AND is_active AND deleted_at IS NULL AND id <> $1",
+                &format!(
+                    "SELECT COUNT(*)::bigint AS n FROM users \
+                     WHERE {ACTIVE_SUPERADMIN} AND id <> $1"
+                ),
                 &[&id],
             )
             .await?;
@@ -634,6 +661,138 @@ pub async fn set_active(
     .await?;
     tx.commit().await?;
     Ok(AdminUpdateOutcome::Updated)
+}
+
+/// Ban or unban an account.
+///
+/// Deliberately independent of `is_active`. Deactivation is housekeeping that
+/// the LDAP login path re-syncs (`find_or_link_ldap_user` sets `is_active =
+/// true` on every directory login); a ban must survive that, so it lives in
+/// columns the sync never touches and only a superadmin can clear.
+///
+/// Banning a superadmin who is still the last usable one is refused, same as
+/// demotion and deletion.
+pub async fn set_banned(
+    client: &mut deadpool_postgres::Client,
+    id: Uuid,
+    banned: bool,
+    by: Uuid,
+    reason: Option<&str>,
+) -> Result<AdminUpdateOutcome, DbError> {
+    let tx = client.transaction().await?;
+
+    let target = tx
+        .query_opt(
+            "SELECT is_superadmin, is_active, banned_at IS NOT NULL AS banned, \
+                    deleted_at IS NOT NULL AS deleted \
+             FROM users WHERE id = $1 FOR UPDATE",
+            &[&id],
+        )
+        .await?;
+    let Some(target) = target else {
+        tx.rollback().await?;
+        return Ok(AdminUpdateOutcome::NotFound);
+    };
+    if target.get::<_, bool>("deleted") {
+        tx.rollback().await?;
+        return Ok(AdminUpdateOutcome::NotFound);
+    }
+
+    if banned && is_last_admin_risk(&target) {
+        let row = tx
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*)::bigint AS n FROM users \
+                     WHERE {ACTIVE_SUPERADMIN} AND id <> $1"
+                ),
+                &[&id],
+            )
+            .await?;
+        if row.get::<_, i64>("n") == 0 {
+            tx.rollback().await?;
+            return Ok(AdminUpdateOutcome::LastSuperadmin);
+        }
+    }
+
+    if banned {
+        tx.execute(
+            "UPDATE users SET banned_at = now(), banned_by = $2, ban_reason = $3 \
+             WHERE id = $1",
+            &[&id, &by, &reason],
+        )
+        .await?;
+    } else {
+        tx.execute(
+            "UPDATE users SET banned_at = NULL, banned_by = NULL, ban_reason = NULL \
+             WHERE id = $1",
+            &[&id],
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(AdminUpdateOutcome::Updated)
+}
+
+/// Whether the account is currently banned. Cheap enough for the login path.
+pub async fn is_banned(client: &deadpool_postgres::Client, id: Uuid) -> Result<bool, DbError> {
+    let row = client
+        .query_opt(
+            "SELECT banned_at IS NOT NULL AS banned FROM users WHERE id = $1",
+            &[&id],
+        )
+        .await?;
+    Ok(row.is_some_and(|r| r.get::<_, bool>("banned")))
+}
+
+/// Whether an account may authenticate right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountStatus {
+    pub is_active: bool,
+    pub is_banned: bool,
+}
+
+impl AccountStatus {
+    /// True when neither the ban nor the deactivation gate is closed.
+    #[must_use]
+    pub const fn may_authenticate(self) -> bool {
+        self.is_active && !self.is_banned
+    }
+}
+
+/// Stamp `last_seen_at` and return the account's authentication status in one
+/// round trip.
+///
+/// Called by the presence tracker at most once per throttle window per user,
+/// not per request — the access-token path is otherwise DB-free and must stay
+/// that way. `None` means no such user (or soft-deleted).
+pub async fn touch_last_seen(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+) -> Result<Option<AccountStatus>, DbError> {
+    let row = client
+        .query_opt(
+            "UPDATE users SET last_seen_at = now() \
+             WHERE id = $1 AND deleted_at IS NULL \
+             RETURNING is_active, banned_at IS NOT NULL AS banned",
+            &[&id],
+        )
+        .await?;
+    Ok(row.map(|r| AccountStatus {
+        is_active: r.get("is_active"),
+        is_banned: r.get("banned"),
+    }))
+}
+
+/// Record a successful login. Also stamps activity so a user who logs in and
+/// goes idle still shows a fresh "last seen".
+pub async fn stamp_login(client: &deadpool_postgres::Client, id: Uuid) -> Result<(), DbError> {
+    client
+        .execute(
+            "UPDATE users SET last_login_at = now(), last_seen_at = now() WHERE id = $1",
+            &[&id],
+        )
+        .await?;
+    Ok(())
 }
 
 /// Set the forced-password-change flag. Cleared by the password-change handler
@@ -663,7 +822,8 @@ pub async fn soft_delete_guarded(
 
     let target = tx
         .query_opt(
-            "SELECT is_superadmin, is_active, deleted_at IS NOT NULL AS deleted \
+            "SELECT is_superadmin, is_active, banned_at IS NOT NULL AS banned, \
+                    deleted_at IS NOT NULL AS deleted \
              FROM users WHERE id = $1 FOR UPDATE",
             &[&id],
         )
@@ -677,11 +837,13 @@ pub async fn soft_delete_guarded(
         return Ok(AdminUpdateOutcome::NotFound);
     }
 
-    if target.get::<_, bool>("is_superadmin") && target.get::<_, bool>("is_active") {
+    if is_last_admin_risk(&target) {
         let row = tx
             .query_one(
-                "SELECT COUNT(*)::bigint AS n FROM users \
-                 WHERE is_superadmin AND is_active AND deleted_at IS NULL AND id <> $1",
+                &format!(
+                    "SELECT COUNT(*)::bigint AS n FROM users \
+                     WHERE {ACTIVE_SUPERADMIN} AND id <> $1"
+                ),
                 &[&id],
             )
             .await?;
@@ -816,53 +978,195 @@ async fn free_username(client: &deadpool_postgres::Client, hint: &str) -> Result
     Ok(base)
 }
 
+/// Status filter for the admin user list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusFilter {
+    #[default]
+    All,
+    Active,
+    Inactive,
+    Banned,
+    /// Accounts with no second factor at all — the population most exposed to
+    /// account takeover, and the one an admin most often wants to chase.
+    NoTwoFactor,
+}
+
+impl StatusFilter {
+    /// Parse the `status` query parameter; anything unrecognised means "all".
+    #[must_use]
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw {
+            Some("active") => Self::Active,
+            Some("inactive") => Self::Inactive,
+            Some("banned") => Self::Banned,
+            Some("no_2fa") => Self::NoTwoFactor,
+            _ => Self::All,
+        }
+    }
+
+    /// The SQL predicate for this filter, applied to the `users` table and the
+    /// `tf` lateral. Returns `None` for [`Self::All`].
+    const fn predicate(self) -> Option<&'static str> {
+        match self {
+            Self::All => None,
+            Self::Active => Some("users.is_active AND users.banned_at IS NULL"),
+            Self::Inactive => Some("NOT users.is_active AND users.banned_at IS NULL"),
+            Self::Banned => Some("users.banned_at IS NOT NULL"),
+            Self::NoTwoFactor => Some(
+                "users.totp_confirmed_at IS NULL AND NOT EXISTS( \
+                   SELECT 1 FROM webauthn_credentials wc WHERE wc.user_id = users.id)",
+            ),
+        }
+    }
+}
+
 /// Filter / pagination params for the admin user list.
 #[derive(Debug, Clone, Default)]
 pub struct ListFilter {
     /// Case-insensitive substring search across email + username + full_name.
     pub q: Option<String>,
+    pub status: StatusFilter,
     pub limit: u32,
     pub offset: u32,
 }
 
-/// Paginated listing for the admin UI. Returns active and inactive users but
-/// excludes soft-deleted ones.
+/// A session is live when its family is not revoked and it still holds a token
+/// that has not expired. Shared by the aggregate below and [`crate::sessions`].
+pub(crate) const ACTIVE_FAMILY: &str = "f.revoked_at IS NULL AND EXISTS( \
+       SELECT 1 FROM refresh_tokens t WHERE t.family_id = f.id AND t.expires_at > now())";
+
+/// Second-factor counts + live-session summary for one user, as lateral joins.
+///
+/// Lateral rather than per-row queries: the admin list renders up to 200 users
+/// and an N+1 here would mean 600 extra round trips per page load.
+fn security_join() -> String {
+    format!(
+        " LEFT JOIN LATERAL ( \
+            SELECT (SELECT count(*)::bigint FROM webauthn_credentials wc \
+                     WHERE wc.user_id = users.id) AS passkeys, \
+                   (SELECT count(*)::bigint FROM recovery_codes rc \
+                     WHERE rc.user_id = users.id AND rc.used_at IS NULL) AS recovery_left \
+          ) tf ON true \
+          LEFT JOIN LATERAL ( \
+            SELECT count(*)::bigint AS n FROM refresh_token_families f \
+            WHERE f.user_id = users.id AND {ACTIVE_FAMILY} \
+          ) sc ON true \
+          LEFT JOIN LATERAL ( \
+            SELECT f.id           AS sess_id, \
+                   f.created_at   AS sess_created, \
+                   f.last_seen_at AS sess_seen, \
+                   f.last_ip      AS sess_ip, \
+                   f.country_code AS sess_country, \
+                   f.city         AS sess_city, \
+                   f.user_agent   AS sess_ua \
+            FROM refresh_token_families f \
+            WHERE f.user_id = users.id AND {ACTIVE_FAMILY} \
+            ORDER BY f.last_seen_at DESC LIMIT 1 \
+          ) ls ON true"
+    )
+}
+
+// Aliased inside the lateral above, not here: `USER_COLS` selects `id`,
+// `created_at` and `last_seen_at` unqualified, so exposing a session's columns
+// under those names would make the whole SELECT ambiguous.
+const SECURITY_COLS: &str = ", users.totp_confirmed_at, users.banned_at, users.ban_reason, \
+       users.banned_by, users.last_seen_at, users.last_login_at, \
+       tf.passkeys, tf.recovery_left, sc.n AS active_sessions, \
+       ls.sess_id, ls.sess_created, ls.sess_seen, ls.sess_ip, ls.sess_country, \
+       ls.sess_city, ls.sess_ua";
+
+fn row_to_admin_row(row: &Row) -> AdminUserRow {
+    let user = row_to_user(row);
+    let totp = row
+        .get::<_, Option<OffsetDateTime>>("totp_confirmed_at")
+        .is_some();
+    let passkeys: i64 = row.get("passkeys");
+    let banned_at: Option<OffsetDateTime> = row.get("banned_at");
+
+    // Precedence: a ban outranks deactivation, because it is the stronger
+    // statement and the only one the user cannot have done to themselves.
+    let status = if banned_at.is_some() {
+        "banned"
+    } else if user.is_active {
+        "active"
+    } else {
+        "inactive"
+    };
+
+    let last_session = row.get::<_, Option<Uuid>>("sess_id").map(|id| SessionInfo {
+        id,
+        created_at: row.get("sess_created"),
+        last_seen_at: row.get("sess_seen"),
+        ip: row
+            .get::<_, Option<std::net::IpAddr>>("sess_ip")
+            .map(|a| a.to_string()),
+        country_code: row.get("sess_country"),
+        city: row.get("sess_city"),
+        user_agent: row.get("sess_ua"),
+    });
+
+    AdminUserRow {
+        status: status.to_owned(),
+        two_factor: TwoFactorStatus {
+            enabled: totp || passkeys > 0,
+            totp,
+            passkeys,
+            recovery_codes_left: row.get("recovery_left"),
+        },
+        active_sessions: row.get("active_sessions"),
+        last_session,
+        last_seen_at: row.get("last_seen_at"),
+        last_login_at: row.get("last_login_at"),
+        banned_at,
+        ban_reason: row.get("ban_reason"),
+        banned_by: row.get("banned_by"),
+        user,
+    }
+}
+
+/// Paginated listing for the admin UI, carrying each account's security
+/// posture. Returns active, inactive and banned users; excludes soft-deleted
+/// ones and the internal `system` account.
 pub async fn list(
     client: &deadpool_postgres::Client,
     filter: &ListFilter,
-) -> Result<(Vec<User>, i64), DbError> {
+) -> Result<(Vec<AdminUserRow>, i64), DbError> {
     let limit = i64::from(filter.limit.clamp(1, 200));
     let offset = i64::from(filter.offset);
     let q_pat = filter.q.as_ref().map(|s| format!("%{}%", s.to_lowercase()));
+    // Static strings chosen by a closed enum — no caller input reaches the SQL.
+    let status_clause = filter
+        .status
+        .predicate()
+        .map_or_else(String::new, |p| format!(" AND ({p})"));
+
+    let base_where = format!(
+        "users.deleted_at IS NULL AND users.auth_source <> 'system' AND ( \
+           $1::text IS NULL OR \
+           lower(users.email)     LIKE $1 OR \
+           lower(users.username)  LIKE $1 OR \
+           lower(users.full_name) LIKE $1 \
+         ){status_clause}"
+    );
 
     let rows = client
         .query(
             &format!(
-                "SELECT {USER_COLS}{OUT_TODAY_COLS} FROM users{join} \
-                 WHERE users.deleted_at IS NULL AND users.auth_source <> 'system' AND ( \
-                   $1::text IS NULL OR \
-                   lower(users.email)     LIKE $1 OR \
-                   lower(users.username)  LIKE $1 OR \
-                   lower(users.full_name) LIKE $1 \
-                 ) \
+                "SELECT {USER_COLS}{OUT_TODAY_COLS}{SECURITY_COLS} FROM users{join}{sec} \
+                 WHERE {base_where} \
                  ORDER BY users.created_at DESC \
                  LIMIT $2 OFFSET $3",
                 join = out_today_join("users"),
+                sec = security_join(),
             ),
             &[&q_pat, &limit, &offset],
         )
         .await?;
-    let users = rows.iter().map(row_to_user).collect();
+    let users = rows.iter().map(row_to_admin_row).collect();
 
     let total = client
         .query_one(
-            "SELECT COUNT(*)::bigint AS n FROM users \
-             WHERE deleted_at IS NULL AND auth_source <> 'system' AND ( \
-               $1::text IS NULL OR \
-               lower(email)     LIKE $1 OR \
-               lower(username)  LIKE $1 OR \
-               lower(full_name) LIKE $1 \
-             )",
+            &format!("SELECT COUNT(*)::bigint AS n FROM users WHERE {base_where}"),
             &[&q_pat],
         )
         .await?;

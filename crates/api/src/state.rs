@@ -116,6 +116,11 @@ pub struct AppState {
     pub auth: Option<AuthContext>,
     /// In-process change-feed bus backing the per-project SSE endpoint.
     pub events: Arc<crate::events::EventBus>,
+    /// Cached account status + last-activity stamping (V018).
+    pub presence: crate::presence::Presence,
+    /// Local IP geolocation. Always present; inert until a superadmin enables
+    /// it and a database is installed.
+    pub geoip: Arc<crate::geoip::GeoIp>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -150,6 +155,7 @@ pub struct AppStateBuilder {
     readiness: Vec<Arc<dyn ReadyCheck>>,
     dev: DevToggles,
     auth: Option<AuthContext>,
+    geoip: Option<Arc<crate::geoip::GeoIp>>,
 }
 
 impl std::fmt::Debug for AppStateBuilder {
@@ -158,7 +164,7 @@ impl std::fmt::Debug for AppStateBuilder {
             .field("readiness_count", &self.readiness.len())
             .field("dev", &self.dev)
             .field("has_auth", &self.auth.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -181,6 +187,14 @@ impl AppStateBuilder {
         self
     }
 
+    /// Override the geolocation subsystem. Tests use this to point at a
+    /// temporary directory; the binary supplies the storage-backed one.
+    #[must_use]
+    pub fn geoip(mut self, geoip: Arc<crate::geoip::GeoIp>) -> Self {
+        self.geoip = Some(geoip);
+        self
+    }
+
     #[must_use]
     pub fn build(self) -> AppState {
         AppState {
@@ -188,6 +202,14 @@ impl AppStateBuilder {
             dev: self.dev,
             auth: self.auth,
             events: Arc::new(crate::events::EventBus::default()),
+            presence: crate::presence::Presence::default(),
+            geoip: self.geoip.unwrap_or_else(|| {
+                // Disabled with no database: harmless, and the binary replaces
+                // it during startup.
+                Arc::new(crate::geoip::GeoIp::new(std::path::PathBuf::from(
+                    "geoip-unconfigured",
+                )))
+            }),
         }
     }
 }

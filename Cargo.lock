@@ -62,9 +62,9 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "ammonia"
-version = "4.1.3"
+version = "4.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68b9d3370580a12f4b7a10fdcc18b28942c083ba570e3d954fe59d10951b85a2"
+checksum = "dc6d763210e2eb7670d1a5183a08bebefa3f97db2a738a684f2ce00bd49f681d"
 dependencies = [
  "cssparser",
  "html5ever",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-api"
-version = "0.6.14"
+version = "0.6.17"
 dependencies = [
  "ammonia",
  "assert-json-diff",
@@ -2064,6 +2064,7 @@ dependencies = [
  "csv",
  "deadpool-postgres",
  "dotenvy",
+ "flate2",
  "futures",
  "garde",
  "hmac 0.12.1",
@@ -2080,6 +2081,8 @@ dependencies = [
  "intellipilot-testkit",
  "ldap3",
  "lettre",
+ "maxminddb",
+ "maxminddb-writer",
  "proptest",
  "rand 0.8.6",
  "reqwest",
@@ -2109,7 +2112,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-auth"
-version = "0.6.14"
+version = "0.6.17"
 dependencies = [
  "argon2",
  "base32",
@@ -2135,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-core"
-version = "0.6.14"
+version = "0.6.17"
 dependencies = [
  "garde",
  "insta",
@@ -2152,7 +2155,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-db"
-version = "0.6.14"
+version = "0.6.17"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
@@ -2172,7 +2175,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-git"
-version = "0.6.14"
+version = "0.6.17"
 dependencies = [
  "base64 0.22.1",
  "git2",
@@ -2183,7 +2186,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-mailer"
-version = "0.6.14"
+version = "0.6.17"
 dependencies = [
  "async-trait",
  "intellipilot-core",
@@ -2197,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-storage"
-version = "0.6.14"
+version = "0.6.17"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2214,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-testkit"
-version = "0.6.14"
+version = "0.6.17"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
@@ -2236,6 +2239,12 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+
+[[package]]
+name = "ipnetwork"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf370abdafd54d13e54a620e8c3e1145f28e46cc9d704bc6d94414559df41763"
 
 [[package]]
 name = "itertools"
@@ -2478,6 +2487,28 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
+name = "maxminddb"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7bd67e2f5d65937ff283e418fcad53c8e2eeda0719e455508b62dad8ffe6180"
+dependencies = [
+ "ipnetwork",
+ "memchr",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "maxminddb-writer"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c310fee474c1e6358b4a6e8c41a63c9fc50a5a3d942863d1d0ac0e7c87e4a100"
+dependencies = [
+ "serde",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "md-5"

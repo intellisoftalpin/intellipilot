@@ -20,7 +20,7 @@ use intellipilot_db::ldap_settings::{self, LdapSettingsUpdate};
 use intellipilot_db::notification_settings::{self, NotificationSettingsUpdate};
 use intellipilot_db::platform_invitations::{self, PlatformInviteRole};
 use intellipilot_db::platform_settings;
-use intellipilot_db::users::{self, AdminUpdateOutcome, ListFilter};
+use intellipilot_db::users::{self, AdminUpdateOutcome, ListFilter, StatusFilter};
 use intellipilot_db::{audit, password_reset};
 use rand::Rng;
 use rand::distributions::Alphanumeric;
@@ -30,11 +30,13 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::admin::dto::{
-    CreateAppTokenRequest, CreateAppTokenResponse, CreateInvitationRequest,
-    CreateInvitationResponse, CreateUserRequest, CreateUserResponse, LdapSettingsResponse,
-    NotificationSettingsResponse, NotificationTestResponse, PasswordResetIssuedResponse,
-    PendingInvitation, PlatformSettingsResponse, TestLdapRequest, TestLdapResponse,
-    TestMailRequest, UpdateAppTokenRequest, UpdateBrandingRequest, UpdateLdapSettingsRequest,
+    BanUserRequest, CreateAppTokenRequest, CreateAppTokenResponse, CreateInvitationRequest,
+    CreateInvitationResponse, CreateUserRequest, CreateUserResponse, GeoipPurgeResponse,
+    GeoipStatusResponse, GeoipUpdateResponse, LdapSettingsResponse, NotificationSettingsResponse,
+    NotificationTestResponse, PasswordResetIssuedResponse, PendingInvitation,
+    PlatformSettingsResponse, SessionListResponse, SessionsRevokedResponse, TestLdapRequest,
+    TestLdapResponse, TestMailRequest, TwoFactorResetResponse, UpdateAppTokenRequest,
+    UpdateBrandingRequest, UpdateGeoipSettingsRequest, UpdateLdapSettingsRequest,
     UpdateNotificationSettingsRequest, UpdateSettingsRequest, UpdateUserRequest, UserListResponse,
 };
 use crate::auth::{SuperadminUser, client_ip, request_id, user_agent};
@@ -169,6 +171,9 @@ fn random_password() -> String {
 pub struct ListUsersQuery {
     #[serde(default)]
     pub q: Option<String>,
+    /// `active` | `inactive` | `banned` | `no_2fa`. Anything else means "all".
+    #[serde(default)]
+    pub status: Option<String>,
     #[serde(default)]
     pub limit: Option<u32>,
     #[serde(default)]
@@ -223,6 +228,7 @@ pub async fn list_activity(
     path = "/api/v1/admin/users",
     params(
         ("q" = Option<String>, Query, description = "case-insensitive substring search over email + username + full_name"),
+        ("status" = Option<String>, Query, description = "active | inactive | banned | no_2fa; omitted means all"),
         ("limit" = Option<u32>, Query, description = "page size, 1..=200, default 50"),
         ("offset" = Option<u32>, Query, description = "skip count, default 0"),
     ),
@@ -241,6 +247,7 @@ pub async fn list_users(
     };
     let filter = ListFilter {
         q: q.q.filter(|s| !s.is_empty()),
+        status: StatusFilter::parse(q.status.as_deref()),
         limit: q.limit.unwrap_or(50),
         offset: q.offset.unwrap_or(0),
     };
@@ -547,6 +554,325 @@ pub async fn reset_password(
         }),
     )
         .into_response()
+}
+
+// ===========================================================================
+// Account security (V018): 2FA recovery, bans, sessions
+// ===========================================================================
+
+/// `POST /api/v1/admin/users/{id}/reset-2fa` — clear every second factor.
+///
+/// The recovery path for a locked-out user. `users::has_active_2fa` treats a
+/// confirmed TOTP secret **and** any passkey as a factor, so clearing only
+/// TOTP would leave a passkey-only user exactly as locked out as before; this
+/// clears TOTP, passkeys and recovery codes together.
+///
+/// Sessions are revoked as well. The account just had its second factor
+/// stripped by someone else, so any session still open on it is more likely to
+/// be the attacker's than the owner's.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/users/{id}/reset-2fa",
+    responses(
+        (status = 200, body = TwoFactorResetResponse),
+        (status = 401),
+        (status = 403),
+        (status = 404),
+    )
+)]
+pub async fn reset_two_factor(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+
+    match users::find_by_id(&client, id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, &rid),
+        Err(_) => return internal(&rid),
+    }
+
+    let totp_cleared = users::get_totp(&client, id)
+        .await
+        .map(|t| t.is_some())
+        .unwrap_or(false);
+    if users::disable_totp(&client, id).await.is_err() {
+        return internal(&rid);
+    }
+    let Ok(passkeys_removed) = intellipilot_db::webauthn::delete_all_for_user(&client, id).await
+    else {
+        return internal(&rid);
+    };
+    let Ok(recovery_codes_removed) =
+        intellipilot_db::recovery::delete_all_for_user(&client, id).await
+    else {
+        return internal(&rid);
+    };
+    let sessions_revoked =
+        intellipilot_db::sessions::revoke_all_for_user_counted(&client, id, "admin_2fa_reset")
+            .await
+            .unwrap_or(0);
+
+    audit::record(
+        &client,
+        Some(admin.user_id),
+        "admin_user_2fa_reset",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({
+            "target_user_id": id,
+            "totp_cleared": totp_cleared,
+            "passkeys_removed": passkeys_removed,
+            "recovery_codes_removed": recovery_codes_removed,
+            "sessions_revoked": sessions_revoked,
+        }),
+    )
+    .await;
+
+    Json(TwoFactorResetResponse {
+        totp_cleared,
+        passkeys_removed,
+        recovery_codes_removed,
+        sessions_revoked,
+    })
+    .into_response()
+}
+
+/// `POST /api/v1/admin/users/{id}/ban` — lock an account out.
+///
+/// Distinct from deactivation on purpose. `find_or_link_ldap_user` re-enables
+/// `is_active` on every directory login, so for an LDAP account deactivation
+/// lasts only until the user next signs in; a ban lives in its own column that
+/// the directory sync never writes.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/users/{id}/ban",
+    request_body = BanUserRequest,
+    responses(
+        (status = 200, body = intellipilot_core::user::User),
+        (status = 400, description = "an admin cannot ban themselves"),
+        (status = 401),
+        (status = 403),
+        (status = 404),
+        (status = 409, description = "would leave the platform without a superadmin"),
+        (status = 422),
+    )
+)]
+pub async fn ban_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    Path(id): Path<Uuid>,
+    body: Result<Json<BanUserRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let req = match parse_json(body, &rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(report) = req.validate() {
+        return validation_problem(&report, &rid);
+    }
+
+    // Locking yourself out is never the intent, and recovering from it needs
+    // another superadmin or database access.
+    if id == admin.user_id {
+        return problem(
+            StatusCode::BAD_REQUEST,
+            "cannot_ban_self",
+            "Bad Request",
+            Some("an administrator cannot ban their own account".to_owned()),
+            &rid,
+        );
+    }
+
+    let Ok(mut client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let reason = req.reason.as_deref().filter(|s| !s.trim().is_empty());
+
+    match users::set_banned(&mut client, id, true, admin.user_id, reason).await {
+        Ok(outcome) => {
+            if let Some(r) = outcome_to_response(&rid, outcome) {
+                return r;
+            }
+        }
+        Err(_) => return internal(&rid),
+    }
+
+    // Close every open session, then drop the cached status so the ban applies
+    // on the very next request rather than after the presence TTL.
+    let sessions_revoked =
+        intellipilot_db::sessions::revoke_all_for_user_counted(&client, id, "account_banned")
+            .await
+            .unwrap_or(0);
+    state.presence.invalidate(id);
+
+    audit::record(
+        &client,
+        Some(admin.user_id),
+        "admin_user_banned",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({
+            "target_user_id": id,
+            "reason": reason,
+            "sessions_revoked": sessions_revoked,
+        }),
+    )
+    .await;
+
+    match users::find_by_id(&client, id).await {
+        Ok(Some(u)) => Json(u).into_response(),
+        Ok(None) => problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, &rid),
+        Err(_) => internal(&rid),
+    }
+}
+
+/// `POST /api/v1/admin/users/{id}/unban` — restore access.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/users/{id}/unban",
+    responses(
+        (status = 200, body = intellipilot_core::user::User),
+        (status = 401),
+        (status = 403),
+        (status = 404),
+    )
+)]
+pub async fn unban_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(mut client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+
+    match users::set_banned(&mut client, id, false, admin.user_id, None).await {
+        Ok(outcome) => {
+            if let Some(r) = outcome_to_response(&rid, outcome) {
+                return r;
+            }
+        }
+        Err(_) => return internal(&rid),
+    }
+    state.presence.invalidate(id);
+
+    audit::record(
+        &client,
+        Some(admin.user_id),
+        "admin_user_unbanned",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({ "target_user_id": id }),
+    )
+    .await;
+
+    match users::find_by_id(&client, id).await {
+        Ok(Some(u)) => Json(u).into_response(),
+        Ok(None) => problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, &rid),
+        Err(_) => internal(&rid),
+    }
+}
+
+/// `GET /api/v1/admin/users/{id}/sessions` — a user's live sessions.
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/users/{id}/sessions",
+    responses(
+        (status = 200, body = SessionListResponse),
+        (status = 401),
+        (status = 403),
+        (status = 404),
+    )
+)]
+pub async fn list_user_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    match users::find_by_id(&client, id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, &rid),
+        Err(_) => return internal(&rid),
+    }
+    intellipilot_db::sessions::list_active_for_user(&client, id)
+        .await
+        .map_or_else(
+            |_| internal(&rid),
+            |items| {
+                let total = i64::try_from(items.len()).unwrap_or(i64::MAX);
+                Json(SessionListResponse { items, total }).into_response()
+            },
+        )
+}
+
+/// `DELETE /api/v1/admin/users/{id}/sessions` — sign a user out everywhere.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/users/{id}/sessions",
+    responses(
+        (status = 200, body = SessionsRevokedResponse),
+        (status = 401),
+        (status = 403),
+        (status = 404),
+    )
+)]
+pub async fn revoke_user_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    match users::find_by_id(&client, id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, &rid),
+        Err(_) => return internal(&rid),
+    }
+
+    let Ok(sessions_revoked) = intellipilot_db::sessions::revoke_all_for_user_counted(
+        &client,
+        id,
+        "admin_revoked_sessions",
+    )
+    .await
+    else {
+        return internal(&rid);
+    };
+
+    audit::record(
+        &client,
+        Some(admin.user_id),
+        "admin_sessions_revoked",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({ "target_user_id": id, "sessions_revoked": sessions_revoked }),
+    )
+    .await;
+
+    Json(SessionsRevokedResponse { sessions_revoked }).into_response()
 }
 
 // ===========================================================================
@@ -999,6 +1325,7 @@ fn settings_response(s: platform_settings::PlatformSettings) -> PlatformSettings
         app_message: s.app_message,
         has_custom_icon: s.app_icon_mime.is_some(),
         app_icon_updated_at: s.app_icon_updated_at,
+        geoip_enabled: s.geoip_enabled,
         updated_at: s.updated_at,
         updated_by: s.updated_by,
     }
@@ -1803,6 +2130,343 @@ pub async fn delete_short_link_history(
         "deleted_boards": deleted_boards,
     }))
     .into_response()
+}
+
+// ===========================================================================
+// Geolocation (V018)
+// ===========================================================================
+
+/// Attribution required by the DB-IP Lite licence (CC BY 4.0). Returned with
+/// the status so the client can display it wherever results are shown — the
+/// licence obliges us, and the client is where the data surfaces.
+const GEOIP_ATTRIBUTION: &str = "IP geolocation by DB-IP (https://db-ip.com), CC BY 4.0";
+
+fn geoip_status(
+    settings: &platform_settings::PlatformSettings,
+    db: intellipilot_db::geoip::GeoipDatabase,
+    loaded: bool,
+) -> GeoipStatusResponse {
+    GeoipStatusResponse {
+        enabled: settings.geoip_enabled,
+        variant: settings.geoip_variant.clone(),
+        auto_update: settings.geoip_auto_update,
+        database_loaded: loaded,
+        installed_variant: db.variant,
+        build_month: db.build_month,
+        file_size: db.file_size,
+        sha256: db.sha256,
+        source: db.source,
+        downloaded_at: db.downloaded_at,
+        checked_at: db.checked_at,
+        last_error: db.last_error,
+        attribution: GEOIP_ATTRIBUTION.to_owned(),
+    }
+}
+
+/// `GET /api/v1/admin/geoip` — configuration + installed-database state.
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/geoip",
+    responses((status = 200, body = GeoipStatusResponse), (status = 401), (status = 403))
+)]
+pub async fn get_geoip(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _admin: SuperadminUser,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let (Ok(settings), Ok(db)) = (
+        platform_settings::get(&client).await,
+        intellipilot_db::geoip::get(&client).await,
+    ) else {
+        return internal(&rid);
+    };
+    Json(geoip_status(&settings, db, state.geoip.has_database())).into_response()
+}
+
+/// `PATCH /api/v1/admin/geoip` — turn geolocation on/off, pick the variant.
+///
+/// Enabling only flips the switch; it does not download anything. The operator
+/// then triggers an update (or waits for the monthly refresh), which keeps a
+/// 62 MB fetch from being a surprise side effect of a toggle.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/admin/geoip",
+    request_body = UpdateGeoipSettingsRequest,
+    responses(
+        (status = 200, body = GeoipStatusResponse),
+        (status = 401),
+        (status = 403),
+        (status = 422),
+    )
+)]
+pub async fn update_geoip(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+    body: Result<Json<UpdateGeoipSettingsRequest>, JsonRejection>,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let req = match parse_json(body, &rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(report) = req.validate() {
+        return validation_problem(&report, &rid);
+    }
+    if let Some(v) = req.variant.as_deref()
+        && !matches!(v, "country" | "city")
+    {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_variant",
+            "Unprocessable Entity",
+            Some("variant must be \"country\" or \"city\"".to_owned()),
+            &rid,
+        );
+    }
+
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let Ok(settings) = platform_settings::set_geoip(
+        &client,
+        req.enabled,
+        req.variant.as_deref(),
+        req.auto_update,
+        admin.user_id,
+    )
+    .await
+    else {
+        return internal(&rid);
+    };
+
+    // Mirror the flag into the resolver so lookups start/stop immediately.
+    state.geoip.set_enabled(settings.geoip_enabled);
+
+    audit::record(
+        &client,
+        Some(admin.user_id),
+        "admin_geoip_settings_updated",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({
+            "enabled": settings.geoip_enabled,
+            "variant": settings.geoip_variant,
+            "auto_update": settings.geoip_auto_update,
+        }),
+    )
+    .await;
+
+    let Ok(db) = intellipilot_db::geoip::get(&client).await else {
+        return internal(&rid);
+    };
+    Json(geoip_status(&settings, db, state.geoip.has_database())).into_response()
+}
+
+/// `POST /api/v1/admin/geoip/update` — fetch the newest published database now.
+///
+/// Same code path as the monthly refresh, forced. Serialised with an advisory
+/// lock so it cannot race the scheduler into downloading the file twice.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/geoip/update",
+    responses(
+        (status = 200, body = GeoipUpdateResponse),
+        (status = 401),
+        (status = 403),
+        (status = 409, description = "an update is already running"),
+        (status = 502, description = "the database could not be fetched"),
+    )
+)]
+pub async fn update_geoip_database(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let (Ok(settings), Ok(db)) = (
+        platform_settings::get(&client).await,
+        intellipilot_db::geoip::get(&client).await,
+    ) else {
+        return internal(&rid);
+    };
+
+    match intellipilot_db::geoip::try_lock_download(&client).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return problem(
+                StatusCode::CONFLICT,
+                "update_in_progress",
+                "Conflict",
+                Some("a database update is already running".to_owned()),
+                &rid,
+            );
+        }
+        Err(_) => return internal(&rid),
+    }
+
+    let variant = crate::geoip::Variant::parse(&settings.geoip_variant);
+    // A variant switch must re-download even though the month matches.
+    let installed_month = (db.variant.as_deref() == Some(variant.as_str()))
+        .then_some(db.build_month.clone())
+        .flatten();
+
+    let updater = crate::geoip::Updater::new(geoip_base_url());
+    let result = updater
+        .update(
+            &state.geoip,
+            variant,
+            installed_month.as_deref(),
+            true,
+            OffsetDateTime::now_utc(),
+        )
+        .await;
+    intellipilot_db::geoip::unlock_download(&client).await;
+
+    match result {
+        Ok(crate::geoip::UpdateOutcome::Installed {
+            variant,
+            build_month,
+            file_size,
+            sha256,
+        }) => record_installed_database(
+            &state,
+            &client,
+            &headers,
+            admin,
+            &settings,
+            variant,
+            &build_month,
+            file_size,
+            &sha256,
+        )
+        .await
+        .unwrap_or_else(|| internal(&rid)),
+        Ok(crate::geoip::UpdateOutcome::AlreadyCurrent) => {
+            drop(intellipilot_db::geoip::mark_checked(&client).await);
+            let Ok(fresh) = intellipilot_db::geoip::get(&client).await else {
+                return internal(&rid);
+            };
+            Json(GeoipUpdateResponse {
+                installed: false,
+                build_month: fresh.build_month.clone(),
+                file_size: fresh.file_size,
+                status: geoip_status(&settings, fresh, state.geoip.has_database()),
+            })
+            .into_response()
+        }
+        Err(e) => {
+            let message = e.to_string();
+            drop(intellipilot_db::geoip::mark_error(&client, &message).await);
+            tracing::warn!(error = %message, "geoip update failed");
+            problem(
+                StatusCode::BAD_GATEWAY,
+                "geoip_update_failed",
+                "Bad Gateway",
+                Some(message),
+                &rid,
+            )
+        }
+    }
+}
+
+/// Persist a freshly installed database and report it. `None` on a storage
+/// failure, which the caller turns into a 500.
+#[allow(clippy::too_many_arguments)]
+async fn record_installed_database(
+    state: &AppState,
+    client: &deadpool_postgres::Client,
+    headers: &HeaderMap,
+    admin: SuperadminUser,
+    settings: &platform_settings::PlatformSettings,
+    variant: crate::geoip::Variant,
+    build_month: &str,
+    file_size: i64,
+    sha256: &str,
+) -> Option<Response> {
+    intellipilot_db::geoip::set_installed(
+        client,
+        variant.as_str(),
+        build_month,
+        &format!("dbip-{}-{build_month}.mmdb", variant.as_str()),
+        file_size,
+        sha256,
+        "download",
+    )
+    .await
+    .ok()?;
+
+    audit::record(
+        client,
+        Some(admin.user_id),
+        "admin_geoip_updated",
+        Some(client_ip(headers)),
+        Some(&user_agent(headers)),
+        &json!({ "variant": variant.as_str(), "build_month": build_month }),
+    )
+    .await;
+
+    let fresh = intellipilot_db::geoip::get(client).await.ok()?;
+    Some(
+        Json(GeoipUpdateResponse {
+            installed: true,
+            build_month: Some(build_month.to_owned()),
+            file_size: Some(file_size),
+            status: geoip_status(settings, fresh, state.geoip.has_database()),
+        })
+        .into_response(),
+    )
+}
+
+/// `POST /api/v1/admin/geoip/purge` — erase collected location data.
+///
+/// IP-derived city is personal data, so switching the feature off must be able
+/// to erase what was already gathered, not merely stop gathering more.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/geoip/purge",
+    responses((status = 200, body = GeoipPurgeResponse), (status = 401), (status = 403))
+)]
+pub async fn purge_geoip_data(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    admin: SuperadminUser,
+) -> Response {
+    let rid = request_id(&headers);
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+    let Ok(sessions_cleared) = intellipilot_db::sessions::purge_locations(&client).await else {
+        return internal(&rid);
+    };
+    audit::record(
+        &client,
+        Some(admin.user_id),
+        "admin_geoip_purged",
+        Some(client_ip(&headers)),
+        Some(&user_agent(&headers)),
+        &json!({ "sessions_cleared": sessions_cleared }),
+    )
+    .await;
+    Json(GeoipPurgeResponse { sessions_cleared }).into_response()
+}
+
+/// Publisher base URL, overridable so tests can serve a fixture locally
+/// instead of reaching the internet.
+fn geoip_base_url() -> String {
+    std::env::var("INTELLIPILOT_GEOIP_BASE_URL")
+        .unwrap_or_else(|_| crate::geoip::DEFAULT_BASE_URL.to_owned())
 }
 
 #[allow(unused_imports)]
