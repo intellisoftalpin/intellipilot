@@ -313,6 +313,9 @@ pub async fn create_epic(
                 &body,
             )
             .await;
+            state
+                .events
+                .publish_epic(crate::events::EpicEventKind::Created, ctx.actor_id, &epic);
             with_etag(StatusCode::CREATED, epic.id, epic.version, &epic)
         }
         Err(_) => internal(&ctx.rid),
@@ -463,6 +466,9 @@ pub async fn update_epic(
                 )
                 .await;
             }
+            state
+                .events
+                .publish_epic(crate::events::EpicEventKind::Updated, ctx.actor_id, &e);
             with_etag(StatusCode::OK, e.id, e.version, &e)
         }
         Ok(UpdateOutcome::NotFound) => not_found(&ctx.rid),
@@ -1666,7 +1672,17 @@ pub async fn create_comment(
     )
     .await
     {
-        Ok(c) => (StatusCode::CREATED, Json(c)).into_response(),
+        Ok(c) => {
+            state.events.publish_comment(
+                crate::events::CommentEventKind::Created,
+                ctx.project.id,
+                ctx.actor_id,
+                kind.as_str(),
+                id,
+                c.id,
+            );
+            (StatusCode::CREATED, Json(c)).into_response()
+        }
         Err(_) => internal(&ctx.rid),
     }
 }
@@ -1700,7 +1716,19 @@ pub async fn update_comment(
     }
     let html = render_markdown(&req.body);
     match cdb::update(&client, comment_id, &req.body, &html).await {
-        Ok(Some(c)) => Json(c).into_response(),
+        Ok(Some(c)) => {
+            if let Some((kind, target_id)) = entity_target(&params) {
+                state.events.publish_comment(
+                    crate::events::CommentEventKind::Updated,
+                    ctx.project.id,
+                    ctx.actor_id,
+                    kind.as_str(),
+                    target_id,
+                    c.id,
+                );
+            }
+            Json(c).into_response()
+        }
         Ok(None) => not_found(&ctx.rid),
         Err(_) => internal(&ctx.rid),
     }
@@ -1736,6 +1764,16 @@ pub async fn delete_comment(
                 .is_err()
             {
                 tracing::warn!(%comment_id, "failed to soft-delete comment attachments");
+            }
+            if let Some((kind, target_id)) = entity_target(&params) {
+                state.events.publish_comment(
+                    crate::events::CommentEventKind::Deleted,
+                    ctx.project.id,
+                    ctx.actor_id,
+                    kind.as_str(),
+                    target_id,
+                    comment_id,
+                );
             }
             StatusCode::NO_CONTENT.into_response()
         }
@@ -1952,6 +1990,10 @@ async fn delete_entity(
                 state
                     .events
                     .publish_issue_deleted(ctx.project.id, ctx.actor_id, id);
+            } else if kind == "epic" {
+                state
+                    .events
+                    .publish_epic_deleted(ctx.project.id, ctx.actor_id, id);
             }
             StatusCode::NO_CONTENT.into_response()
         }

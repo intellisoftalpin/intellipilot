@@ -33,6 +33,9 @@ pub struct TestApp {
     pub db: TestDb,
     /// The same storage instance wired into the router (for GC tests).
     pub storage: Arc<dyn intellipilot_storage::Storage>,
+    /// The same live-event bus the router publishes to, so tests can subscribe
+    /// and assert what a change broadcasts.
+    pub events: Arc<intellipilot_api::events::EventBus>,
 }
 
 impl TestApp {
@@ -71,7 +74,9 @@ impl TestApp {
                 signing_key: Arc::new([7u8; 32]),
             },
         };
-        let router = build_router(AppState::builder().auth_context(auth).build());
+        let state = AppState::builder().auth_context(auth).build();
+        let events = state.events.clone();
+        let router = build_router(state);
         // The suite predates the V011 registration gate, whose migration
         // defaults `open_registration` to false. Open it so the shared
         // register -> login setup works everywhere; the platform-admin tests
@@ -90,6 +95,7 @@ impl TestApp {
             router,
             db,
             storage,
+            events,
         }
     }
 

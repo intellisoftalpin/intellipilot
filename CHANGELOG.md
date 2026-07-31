@@ -4,6 +4,23 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.20] - 2026-07-31
+
+Live change feed extended beyond issues. Frontend companion release is also
+0.6.20. No migration, no schema change.
+
+### Added
+- The project SSE feed now publishes `epic.created` / `epic.updated` /
+  `epic.deleted` (carrying the full entity, like the issue events already did)
+  and `comment.created` / `comment.updated` / `comment.deleted` (carrying the
+  target and comment ids). Previously only issues and boards broadcast, so an
+  open epic — or a comment thread on any entity — could not stay live.
+
+## [0.6.19] - 2026-07-31
+
+Version-only release, kept in lockstep with frontend 0.6.19 (epic / issue
+detail UI rework). No API, schema or behaviour changes — no migration.
+
 ## [0.6.18] - 2026-07-29
 
 Account security: admin-driven 2FA recovery, real bans, session visibility and

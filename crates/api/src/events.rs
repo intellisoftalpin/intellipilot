@@ -17,7 +17,7 @@ use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use intellipilot_auth::ACCESS_TTL_SECS;
-use intellipilot_core::backlog::Issue;
+use intellipilot_core::backlog::{Epic, Issue};
 use intellipilot_core::perms::Permission;
 use serde_json::json;
 use tokio::sync::broadcast;
@@ -36,6 +36,14 @@ const KEEP_ALIVE_SECS: u64 = 25;
 #[derive(Debug, Clone)]
 pub struct ProjectEvent(Arc<String>);
 
+impl ProjectEvent {
+    /// The pre-serialized JSON payload broadcast to subscribers.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// What happened to an issue.
 #[derive(Debug, Clone, Copy)]
 pub enum IssueEventKind {
@@ -48,6 +56,41 @@ impl IssueEventKind {
         match self {
             Self::Created => "issue.created",
             Self::Updated => "issue.updated",
+        }
+    }
+}
+
+/// What happened to an epic. Mirrors [`IssueEventKind`].
+#[derive(Debug, Clone, Copy)]
+pub enum EpicEventKind {
+    Created,
+    Updated,
+}
+
+impl EpicEventKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "epic.created",
+            Self::Updated => "epic.updated",
+        }
+    }
+}
+
+/// What happened to a comment. The payload carries only identifiers — the
+/// comment body may be long and subscribers re-read the thread anyway.
+#[derive(Debug, Clone, Copy)]
+pub enum CommentEventKind {
+    Created,
+    Updated,
+    Deleted,
+}
+
+impl CommentEventKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "comment.created",
+            Self::Updated => "comment.updated",
+            Self::Deleted => "comment.deleted",
         }
     }
 }
@@ -112,6 +155,57 @@ impl EventBus {
                 "project_id": project_id,
                 "actor_id": actor_id,
                 "issue_id": issue_id,
+            }),
+        );
+    }
+
+    /// An epic was created or updated. Carries the full entity so an open
+    /// detail view can apply it without a follow-up fetch, exactly as
+    /// [`Self::publish_issue`] does.
+    pub fn publish_epic(&self, kind: EpicEventKind, actor_id: Uuid, epic: &Epic) {
+        self.publish(
+            epic.project_id,
+            &json!({
+                "event": kind.as_str(),
+                "project_id": epic.project_id,
+                "actor_id": actor_id,
+                "epic": epic,
+            }),
+        );
+    }
+
+    /// An epic was deleted.
+    pub fn publish_epic_deleted(&self, project_id: Uuid, actor_id: Uuid, epic_id: Uuid) {
+        self.publish(
+            project_id,
+            &json!({
+                "event": "epic.deleted",
+                "project_id": project_id,
+                "actor_id": actor_id,
+                "epic_id": epic_id,
+            }),
+        );
+    }
+
+    /// A comment was posted, edited or removed on `target_type`/`target_id`.
+    pub fn publish_comment(
+        &self,
+        kind: CommentEventKind,
+        project_id: Uuid,
+        actor_id: Uuid,
+        target_type: &str,
+        target_id: Uuid,
+        comment_id: Uuid,
+    ) {
+        self.publish(
+            project_id,
+            &json!({
+                "event": kind.as_str(),
+                "project_id": project_id,
+                "actor_id": actor_id,
+                "target_type": target_type,
+                "target_id": target_id,
+                "comment_id": comment_id,
             }),
         );
     }
