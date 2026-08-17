@@ -229,6 +229,14 @@ impl ProjectContext {
         }
     }
 
+    /// Non-failing form of [`Self::require`], for shaping a response rather
+    /// than refusing it — e.g. deciding whether a field is included at all.
+    /// Superadmins hold everything, matching `require`.
+    #[must_use]
+    pub fn has(&self, perm: Permission) -> bool {
+        self.is_superadmin || self.access.as_ref().is_some_and(|a| a.has(perm))
+    }
+
     /// Whether the actor may view the project (superadmin, member with view, or
     /// the project is internal/public).
     #[must_use]

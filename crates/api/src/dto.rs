@@ -646,29 +646,51 @@ pub struct CreateMilestoneRequest {
     #[garde(length(max = 100), pattern(r"^[a-z0-9]+(?:-[a-z0-9]+)*$"))]
     #[serde(default)]
     pub slug: Option<String>,
+    #[garde(length(max = 100_000))]
+    #[serde(default)]
+    pub description: String,
     #[garde(skip)]
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::option")]
     pub start_date: Option<time::Date>,
+    /// Technical release date.
     #[garde(skip)]
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::option")]
     pub end_date: Option<time::Date>,
+    /// Commercial ship date; must be strictly after `end_date`. Setting it
+    /// requires `milestone.business_release.modify`.
+    #[garde(skip)]
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::option")]
+    pub business_release_date: Option<time::Date>,
 }
 
-#[derive(Debug, Deserialize, Validate, ToSchema)]
+/// Partial milestone edit. Every field is absent-means-unchanged; the date
+/// fields additionally accept an explicit `null` to clear them.
+#[derive(Debug, Default, Deserialize, Validate, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateMilestoneRequest {
     #[garde(length(min = 1, max = 200))]
     #[serde(default)]
     pub name: Option<String>,
+    #[garde(length(max = 100_000))]
+    #[serde(default)]
+    pub description: Option<String>,
     #[garde(skip)]
     #[schema(value_type = Option<String>)]
-    #[serde(default, with = "intellipilot_core::serde_date::option")]
-    pub start_date: Option<time::Date>,
+    #[serde(default, with = "intellipilot_core::serde_date::double_option")]
+    pub start_date: Option<Option<time::Date>>,
     #[garde(skip)]
     #[schema(value_type = Option<String>)]
-    #[serde(default, with = "intellipilot_core::serde_date::option")]
-    pub end_date: Option<time::Date>,
+    #[serde(default, with = "intellipilot_core::serde_date::double_option")]
+    pub end_date: Option<Option<time::Date>>,
+    /// Requires `milestone.business_release.modify`. Clearing `end_date`
+    /// clears this too.
+    #[garde(skip)]
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::double_option")]
+    pub business_release_date: Option<Option<time::Date>>,
 }
 
 /// Replace the full set of epics belonging to a milestone.

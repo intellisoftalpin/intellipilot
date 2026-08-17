@@ -444,8 +444,10 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/milestones/{milestone_id}", patch(milestones::update))
             .route("/api/v1/projects/{project_id}/milestones/{milestone_id}", delete(milestones::delete))
             .route("/api/v1/projects/{project_id}/milestones/{milestone_id}/close", post(milestones::close))
+            .route("/api/v1/projects/{project_id}/milestones/{milestone_id}/reopen", post(milestones::reopen))
             .route("/api/v1/projects/{project_id}/milestones/{milestone_id}/board", get(milestones::board))
             .route("/api/v1/projects/{project_id}/milestones/{milestone_id}/stats", get(milestones::stats))
+            .route("/api/v1/projects/{project_id}/milestones/{milestone_id}/epics", get(milestones::epics))
             .route("/api/v1/projects/{project_id}/milestones/{milestone_id}/epics", put(milestones::set_epics))
             // Attachments — the upload method router gets a raised body limit
             // (multipart of up to ~32 MiB; per-file size is enforced in-handler).

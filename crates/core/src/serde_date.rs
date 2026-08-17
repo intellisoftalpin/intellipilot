@@ -29,6 +29,42 @@ pub mod option {
     }
 }
 
+/// `Option<Option<Date>>` for PATCH bodies that must tell "field absent"
+/// (leave alone) from "field present and null" (clear it).
+///
+/// Pair with `#[serde(default)]`: absent → `None`, `null` → `Some(None)`,
+/// `"2026-05-22"` → `Some(Some(date))`. Mirrors `serde_with::rust::
+/// double_option`, which cannot be composed with a custom inner format.
+#[allow(clippy::option_if_let_else)] // the match reads clearer than map_or_else
+pub mod double_option {
+    use serde::{Deserialize, Deserializer, Serializer, de};
+    use time::Date;
+    use time::format_description::FormatItem;
+    use time::macros::format_description;
+
+    const FMT: &[FormatItem<'_>] = format_description!("[year]-[month]-[day]");
+
+    pub fn serialize<S: Serializer>(v: &Option<Option<Date>>, s: S) -> Result<S::Ok, S::Error> {
+        match v.as_ref().and_then(|inner| inner.as_ref()) {
+            Some(d) => {
+                let rendered = d.format(&FMT).map_err(serde::ser::Error::custom)?;
+                s.serialize_some(&rendered)
+            }
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<Date>>, D::Error> {
+        let opt = Option::<String>::deserialize(d)?;
+        match opt {
+            None => Ok(Some(None)),
+            Some(s) => Date::parse(&s, &FMT)
+                .map(|v| Some(Some(v)))
+                .map_err(de::Error::custom),
+        }
+    }
+}
+
 /// Required `Date` ⇄ ISO date string (`YYYY-MM-DD`).
 pub mod required {
     use serde::{Deserialize, Deserializer, Serializer, de};

@@ -70,6 +70,15 @@ pub enum Permission {
     MilestoneModify,
     #[serde(rename = "milestone.delete")]
     MilestoneDelete,
+    /// See a milestone's *business* release date — the commercial ship date
+    /// that trails the technical end date. Deliberately narrower than
+    /// `milestone.view`: the plain end date is public to the project, the
+    /// business date is not.
+    #[serde(rename = "milestone.business_release.view")]
+    MilestoneBusinessReleaseView,
+    /// Set / clear the business release date.
+    #[serde(rename = "milestone.business_release.modify")]
+    MilestoneBusinessReleaseModify,
     // Wiki
     #[serde(rename = "wiki.view")]
     WikiView,
@@ -152,7 +161,7 @@ pub enum Permission {
 
 impl Permission {
     /// Every permission in catalog order.
-    pub const ALL: [Self; 56] = [
+    pub const ALL: [Self; 58] = [
         Self::ProjectView,
         Self::ProjectModify,
         Self::ProjectDelete,
@@ -177,6 +186,8 @@ impl Permission {
         Self::MilestoneCreate,
         Self::MilestoneModify,
         Self::MilestoneDelete,
+        Self::MilestoneBusinessReleaseView,
+        Self::MilestoneBusinessReleaseModify,
         Self::WikiView,
         Self::WikiCreate,
         Self::WikiModify,
@@ -241,6 +252,8 @@ impl Permission {
             Self::MilestoneCreate => "milestone.create",
             Self::MilestoneModify => "milestone.modify",
             Self::MilestoneDelete => "milestone.delete",
+            Self::MilestoneBusinessReleaseView => "milestone.business_release.view",
+            Self::MilestoneBusinessReleaseModify => "milestone.business_release.modify",
             Self::WikiView => "wiki.view",
             Self::WikiCreate => "wiki.create",
             Self::WikiModify => "wiki.modify",
@@ -289,10 +302,15 @@ pub struct DefaultRole {
 }
 
 /// All view permissions (the stakeholder baseline).
+///
+/// `milestone.business_release.view` is deliberately excluded even though it
+/// ends in `.view`: the business release date is commercially sensitive and
+/// belongs to the product owner, not to every stakeholder.
 fn all_view() -> Vec<Permission> {
     Permission::ALL
         .into_iter()
         .filter(|p| p.as_str().rsplit('.').next() == Some("view"))
+        .filter(|p| *p != Permission::MilestoneBusinessReleaseView)
         .collect()
 }
 
@@ -330,10 +348,11 @@ fn product_owner_perms() -> Vec<Permission> {
         BoardSharedCreate, BoardSharedDelete, BoardSharedModify, CommentModerate, ComponentCreate,
         ComponentDelete, ComponentModify, CustomerCreate, CustomerDelete, CustomerModify,
         EpicDelete, IssueDelete, LabelCreate, LabelDelete, LabelModify, MemberAdd,
-        MemberModifyRole, MemberRemove, MemberView, MilestoneDelete, ProjectModify, ReleaseCreate,
-        ReleaseDelete, ReleaseModify, RepositoryCreate, RepositoryDelete, RepositoryModify,
-        RoleCreate, RoleDelete, RoleModify, RoleView, TaxonomyCreate, TaxonomyDelete,
-        TaxonomyModify, TimeViewAll, WikiDelete,
+        MemberModifyRole, MemberRemove, MemberView, MilestoneBusinessReleaseModify,
+        MilestoneBusinessReleaseView, MilestoneDelete, ProjectModify, ReleaseCreate, ReleaseDelete,
+        ReleaseModify, RepositoryCreate, RepositoryDelete, RepositoryModify, RoleCreate,
+        RoleDelete, RoleModify, RoleView, TaxonomyCreate, TaxonomyDelete, TaxonomyModify,
+        TimeViewAll, WikiDelete,
     };
     let mut perms = developer_perms();
     perms.extend([
@@ -352,6 +371,8 @@ fn product_owner_perms() -> Vec<Permission> {
         EpicDelete,
         IssueDelete,
         MilestoneDelete,
+        MilestoneBusinessReleaseView,
+        MilestoneBusinessReleaseModify,
         WikiDelete,
         CommentModerate,
         TimeViewAll,
@@ -431,7 +452,28 @@ mod tests {
                 p.as_str()
             );
         }
-        assert_eq!(Permission::ALL.len(), 56);
+        assert_eq!(Permission::ALL.len(), 58);
+    }
+
+    #[test]
+    fn business_release_is_product_owner_only() {
+        let roles = default_roles();
+        let by_slug = |slug: &str| -> std::collections::HashSet<Permission> {
+            roles
+                .iter()
+                .find(|r| r.slug == slug)
+                .map(|r| r.permissions.iter().copied().collect())
+                .unwrap()
+        };
+        for p in [
+            Permission::MilestoneBusinessReleaseView,
+            Permission::MilestoneBusinessReleaseModify,
+        ] {
+            assert!(by_slug("product_owner").contains(&p));
+            assert!(!by_slug("dev").contains(&p));
+            // The `.view` suffix must NOT sweep it into the stakeholder baseline.
+            assert!(!by_slug("stakeholder").contains(&p));
+        }
     }
 
     #[test]

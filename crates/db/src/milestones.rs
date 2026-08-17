@@ -6,9 +6,10 @@ use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::DbError;
+use crate::backlog::UpdateOutcome;
 
-const COLS: &str = "id, project_id, name, slug, start_date, end_date, closed, closed_at, \
-     \"order\", version, created_at, modified_at";
+const COLS: &str = "id, project_id, name, slug, description, start_date, end_date, \
+     business_release_date, closed, closed_at, \"order\", version, created_at, modified_at";
 
 fn row_to_milestone(r: &Row) -> Milestone {
     Milestone {
@@ -16,8 +17,10 @@ fn row_to_milestone(r: &Row) -> Milestone {
         project_id: r.get("project_id"),
         name: r.get("name"),
         slug: r.get("slug"),
+        description: r.get("description"),
         start_date: r.get("start_date"),
         end_date: r.get("end_date"),
+        business_release_date: r.get("business_release_date"),
         closed: r.get("closed"),
         closed_at: r.get("closed_at"),
         order: r.get("order"),
@@ -27,13 +30,33 @@ fn row_to_milestone(r: &Row) -> Milestone {
     }
 }
 
+/// A partial milestone edit. `None` leaves the field alone; `Some(None)` on a
+/// nullable field clears it. Distinguishing the two is what lets the detail
+/// sidebar clear a date rather than only overwrite it.
+#[derive(Debug, Default, Clone)]
+pub struct MilestonePatch<'a> {
+    pub name: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub start_date: Option<Option<Date>>,
+    pub end_date: Option<Option<Date>>,
+    pub business_release_date: Option<Option<Date>>,
+}
+
+/// The field set for a new milestone.
+#[derive(Debug, Clone)]
+pub struct MilestoneNew<'a> {
+    pub name: &'a str,
+    pub slug: &'a str,
+    pub description: &'a str,
+    pub start_date: Option<Date>,
+    pub end_date: Option<Date>,
+    pub business_release_date: Option<Date>,
+}
+
 pub async fn create(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
-    name: &str,
-    slug: &str,
-    start_date: Option<Date>,
-    end_date: Option<Date>,
+    new: &MilestoneNew<'_>,
 ) -> Result<Milestone, DbError> {
     let order = {
         let row = client
@@ -47,10 +70,21 @@ pub async fn create(
     let row = client
         .query_one(
             &format!(
-                "INSERT INTO milestones (project_id, name, slug, start_date, end_date, \"order\") \
-                 VALUES ($1,$2,$3,$4,$5,$6) RETURNING {COLS}"
+                "INSERT INTO milestones \
+                   (project_id, name, slug, description, start_date, end_date, \
+                    business_release_date, \"order\") \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING {COLS}"
             ),
-            &[&project_id, &name, &slug, &start_date, &end_date, &order],
+            &[
+                &project_id,
+                &new.name,
+                &new.slug,
+                &new.description,
+                &new.start_date,
+                &new.end_date,
+                &new.business_release_date,
+                &order,
+            ],
         )
         .await?;
     Ok(row_to_milestone(&row))
@@ -85,29 +119,71 @@ pub async fn list(
     Ok(rows.iter().map(row_to_milestone).collect())
 }
 
+/// Apply a partial edit under an optimistic-concurrency guard.
+///
+/// Every field is set through a `CASE WHEN <present> THEN <value> ELSE <col>`
+/// pair so "absent" and "explicit null" stay distinguishable in one statement.
+/// Clearing `end_date` also clears `business_release_date`: a business release
+/// with no technical release behind it violates the table CHECK, and silently
+/// dropping it beats failing the user's save.
 pub async fn update(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
     id: Uuid,
-    name: Option<&str>,
-    start_date: Option<Date>,
-    end_date: Option<Date>,
-) -> Result<Option<Milestone>, DbError> {
+    expected_version: i32,
+    patch: &MilestonePatch<'_>,
+) -> Result<UpdateOutcome<Milestone>, DbError> {
+    let (name_set, name) = (patch.name.is_some(), patch.name);
+    let (desc_set, desc) = (patch.description.is_some(), patch.description);
+    let (start_set, start) = (patch.start_date.is_some(), patch.start_date.flatten());
+    let (end_set, end) = (patch.end_date.is_some(), patch.end_date.flatten());
+    let (biz_set, biz) = (
+        patch.business_release_date.is_some(),
+        patch.business_release_date.flatten(),
+    );
     let row = client
         .query_opt(
             &format!(
-                "UPDATE milestones SET name=COALESCE($3,name), \
-                   start_date=COALESCE($4,start_date), end_date=COALESCE($5,end_date), \
-                   version=version+1 \
-                 WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL RETURNING {COLS}"
+                "UPDATE milestones SET \
+                   name = CASE WHEN $4::bool THEN $5::text ELSE name END, \
+                   description = CASE WHEN $6::bool THEN $7::text ELSE description END, \
+                   start_date = CASE WHEN $8::bool THEN $9::date ELSE start_date END, \
+                   end_date = CASE WHEN $10::bool THEN $11::date ELSE end_date END, \
+                   business_release_date = CASE \
+                     WHEN $12::bool THEN $13::date \
+                     WHEN $10::bool AND $11::date IS NULL THEN NULL \
+                     ELSE business_release_date END, \
+                   version = version + 1 \
+                 WHERE id=$1 AND project_id=$2 AND version=$3 AND deleted_at IS NULL \
+                 RETURNING {COLS}"
             ),
-            &[&id, &project_id, &name, &start_date, &end_date],
+            &[
+                &id,
+                &project_id,
+                &expected_version,
+                &name_set,
+                &name,
+                &desc_set,
+                &desc,
+                &start_set,
+                &start,
+                &end_set,
+                &end,
+                &biz_set,
+                &biz,
+            ],
         )
         .await?;
-    Ok(row.as_ref().map(row_to_milestone))
+    match row {
+        Some(r) => Ok(UpdateOutcome::Updated(row_to_milestone(&r))),
+        None => {
+            crate::backlog::classify_miss(client, "milestones", project_id, id, expected_version)
+                .await
+        }
+    }
 }
 
-/// Mark a milestone closed (idempotent). Returns the closed milestone.
+/// Mark a milestone completed (idempotent). Returns the completed milestone.
 pub async fn close(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
@@ -118,6 +194,25 @@ pub async fn close(
             &format!(
                 "UPDATE milestones SET closed=true, \
                    closed_at=COALESCE(closed_at, now()), version=version+1 \
+                 WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL RETURNING {COLS}"
+            ),
+            &[&id, &project_id],
+        )
+        .await?;
+    Ok(row.as_ref().map(row_to_milestone))
+}
+
+/// Reopen a completed milestone (idempotent). Clears `closed_at` so a later
+/// completion timestamps afresh rather than reporting the first one.
+pub async fn reopen(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    id: Uuid,
+) -> Result<Option<Milestone>, DbError> {
+    let row = client
+        .query_opt(
+            &format!(
+                "UPDATE milestones SET closed=false, closed_at=NULL, version=version+1 \
                  WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL RETURNING {COLS}"
             ),
             &[&id, &project_id],
@@ -170,7 +265,30 @@ pub async fn is_closed(
     Ok(row.is_some_and(|r| r.get::<_, bool>("closed")))
 }
 
-/// Sprint stats over the issues assigned to a milestone.
+/// Whether any live epic still belongs to this milestone.
+///
+/// Deleting a milestone that still composes epics is refused: the epics would
+/// silently lose their milestone (FK `ON DELETE SET NULL`) and, through the
+/// V019 cascade, so would every issue under them.
+pub async fn has_epics(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    id: Uuid,
+) -> Result<bool, DbError> {
+    let row = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM epics \
+               WHERE milestone_id=$1 AND project_id=$2 AND deleted_at IS NULL) AS e",
+            &[&id, &project_id],
+        )
+        .await?;
+    Ok(row.get("e"))
+}
+
+/// Sprint stats over the issues in a milestone.
+///
+/// Since V019 `issues.milestone_id` is maintained by trigger from the issue's
+/// epic, so this reads epic-derived membership without joining through epics.
 ///
 /// Size-ordinal totals (via each issue's `size_id` → taxonomy `value`) and
 /// issue counts, with "completed" meaning a closed status. `total_tasks` /

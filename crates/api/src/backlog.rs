@@ -83,7 +83,7 @@ fn internal(rid: &str) -> Response {
 fn not_found(rid: &str) -> Response {
     problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, rid)
 }
-fn unprocessable(rid: &str, code: &'static str, detail: &str) -> Response {
+pub(crate) fn unprocessable(rid: &str, code: &'static str, detail: &str) -> Response {
     problem(
         StatusCode::UNPROCESSABLE_ENTITY,
         code,
@@ -94,7 +94,12 @@ fn unprocessable(rid: &str, code: &'static str, detail: &str) -> Response {
 }
 
 /// Build a JSON response with an ETag header.
-fn with_etag<T: Serialize>(status: StatusCode, id: Uuid, version: i32, body: &T) -> Response {
+pub(crate) fn with_etag<T: Serialize>(
+    status: StatusCode,
+    id: Uuid,
+    version: i32,
+    body: &T,
+) -> Response {
     let mut resp = (status, Json(body)).into_response();
     if let Ok(v) = HeaderValue::from_str(&etag(id, version)) {
         resp.headers_mut().insert(header::ETAG, v);
@@ -112,7 +117,11 @@ fn strip_weak(tag: &str) -> &str {
 
 /// Validate the `If-Match` precondition: 428 if missing, 412 if it doesn't
 /// match the current ETag (weak and strong forms are treated as equal).
-fn check_if_match(headers: &HeaderMap, current: &str, rid: &str) -> Result<(), Response> {
+pub(crate) fn check_if_match(
+    headers: &HeaderMap,
+    current: &str,
+    rid: &str,
+) -> Result<(), Response> {
     match headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok()) {
         None => Err(problem(
             StatusCode::PRECONDITION_REQUIRED,
@@ -274,6 +283,12 @@ pub async fn create_epic(
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
     };
+    if let Err(r) =
+        validate_epic_milestone_assignment(&client, ctx.project.id, req.milestone_id, &ctx.rid)
+            .await
+    {
+        return r;
+    }
     let key = idem_key(&headers);
     let path = format!("/projects/{}/epics", ctx.project.id);
     if let Some(r) = replay(auth, &client, ctx.actor_id, &key, "POST", &path).await {
@@ -397,6 +412,17 @@ pub async fn update_epic(
     let milestone_id = patch.milestone_id.unwrap_or(old.milestone_id);
     let start_date = patch.start_date.or(old.start_date);
     let end_date = patch.end_date.or(old.end_date);
+
+    // Only guard an actual move, so saving an epic that already sits in a
+    // completed milestone keeps working.
+    if milestone_id != old.milestone_id {
+        if let Err(r) =
+            validate_epic_milestone_assignment(&client, ctx.project.id, milestone_id, &ctx.rid)
+                .await
+        {
+            return r;
+        }
+    }
 
     let mut diff = serde_json::Map::new();
     diff_field(&mut diff, "subject", &json!(old.subject), &json!(subject));
@@ -621,8 +647,8 @@ pub async fn purge_epics(
 // ==========================================================================
 
 /// Validate an issue's optional associations: epic and parent must be in the
-/// project (422); the milestone must be in the project (422) and not closed
-/// (409). `None` for any is always allowed.
+/// project (422). `None` for either is always allowed. `milestone_id` is not
+/// an association a client may set — see [`reject_issue_milestone_write`].
 async fn validate_issue_associations(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
@@ -631,6 +657,7 @@ async fn validate_issue_associations(
     milestone_id: Option<Uuid>,
     rid: &str,
 ) -> Result<(), Response> {
+    reject_issue_milestone_write(milestone_id, rid)?;
     if let Some(eid) = epic_id {
         if !bl::epic_in_project(client, project_id, eid)
             .await
@@ -655,7 +682,7 @@ async fn validate_issue_associations(
             ));
         }
     }
-    validate_milestone_assignment(client, project_id, milestone_id, rid).await
+    Ok(())
 }
 
 /// Build the DB write-set from a create request (borrows from `req`).
@@ -669,7 +696,9 @@ fn write_from_create(req: &CreateIssueRequest) -> bl::IssueWrite<'_> {
         size_id: req.size_id,
         epic_id: req.epic_id,
         parent_id: req.parent_id,
-        milestone_id: req.milestone_id,
+        // Never written from the request: the V019 trigger derives it from
+        // the epic. Requests carrying one are rejected before we get here.
+        milestone_id: None,
         assigned_to: req.assigned_to,
         qa_assignee_id: req.qa_assignee_id,
         reviewer_id: req.reviewer_id,
@@ -994,9 +1023,14 @@ pub async fn move_issue(
     resp
 }
 
-/// Validate an issue→milestone assignment: the milestone must be in the
-/// project (422) and not closed (409). A `None` assignment is always allowed.
-async fn validate_milestone_assignment(
+/// Validate an epic→milestone assignment: the milestone must be in the
+/// project (422) and not completed (409). A `None` assignment is always
+/// allowed, so detaching an epic from a completed milestone still works.
+///
+/// This guard lives on the epic, not on the issue: since V019 an issue's
+/// milestone is derived from its epic, so the epic is the only place where
+/// content actually enters a milestone.
+async fn validate_epic_milestone_assignment(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
     milestone_id: Option<Uuid>,
@@ -1022,9 +1056,25 @@ async fn validate_milestone_assignment(
         return Err(problem(
             StatusCode::CONFLICT,
             "milestone_closed",
-            "Milestone closed",
-            Some("cannot assign an issue to a closed milestone".to_owned()),
+            "Milestone completed",
+            Some("cannot add an epic to a completed milestone".to_owned()),
             rid,
+        ));
+    }
+    Ok(())
+}
+
+/// Reject any attempt to write `milestone_id` on an issue.
+///
+/// Milestone membership is structural — issues belong to epics, epics belong
+/// to milestones — and is maintained by database trigger. Accepting the field
+/// and silently ignoring it would be worse than saying so.
+fn reject_issue_milestone_write(milestone_id: Option<Uuid>, rid: &str) -> Result<(), Response> {
+    if milestone_id.is_some() {
+        return Err(unprocessable(
+            rid,
+            "milestone_via_epic_only",
+            "an issue's milestone follows its epic and cannot be set directly",
         ));
     }
     Ok(())
@@ -1346,7 +1396,13 @@ pub async fn update_issue(
     let size_id = patch.size_id.unwrap_or(old.size_id);
     let epic_id = patch.epic_id.unwrap_or(old.epic_id);
     let parent_id = patch.parent_id.unwrap_or(old.parent_id);
-    let milestone_id = patch.milestone_id.unwrap_or(old.milestone_id);
+    // Not patchable: the milestone follows the epic (V019 trigger). We carry
+    // the stored value through the write-set purely so the diff below stays
+    // honest; the trigger recomputes it from `epic_id` either way.
+    if let Err(r) = reject_issue_milestone_write(patch.milestone_id.flatten(), &ctx.rid) {
+        return r;
+    }
+    let milestone_id = old.milestone_id;
     let assigned_to = patch.assigned_to.unwrap_or(old.assigned_to);
     let qa_assignee_id = patch.qa_assignee_id.unwrap_or(old.qa_assignee_id);
     let reviewer_id = patch.reviewer_id.unwrap_or(old.reviewer_id);
@@ -1365,18 +1421,13 @@ pub async fn update_issue(
     // Validate only associations that actually changed.
     let epic_changed = epic_id != old.epic_id;
     let parent_changed = parent_id != old.parent_id;
-    let milestone_changed = milestone_id != old.milestone_id;
-    if epic_changed || parent_changed || milestone_changed {
+    if epic_changed || parent_changed {
         if let Err(r) = validate_issue_associations(
             &client,
             ctx.project.id,
             if epic_changed { epic_id } else { None },
             if parent_changed { parent_id } else { None },
-            if milestone_changed {
-                milestone_id
-            } else {
-                None
-            },
+            None,
             &ctx.rid,
         )
         .await

@@ -235,6 +235,39 @@ pub async fn list_epics(
         .collect())
 }
 
+/// The epics composing a milestone, ordered, with task counts hydrated.
+///
+/// Counts follow the same definition as [`list_epics`], so an epic's readiness
+/// ring in the milestone sidebar can never disagree with the epics board.
+pub async fn epics_in_milestone(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    milestone_id: Uuid,
+) -> Result<Vec<Epic>, DbError> {
+    let rows = client
+        .query(
+            &format!(
+                "SELECT {EPIC_COLS} FROM epics \
+                 WHERE project_id=$1 AND milestone_id=$2 AND deleted_at IS NULL \
+                 ORDER BY \"order\""
+            ),
+            &[&project_id, &milestone_id],
+        )
+        .await?;
+    let counts = epic_task_counts(client, project_id).await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let mut epic = row_to_epic(r);
+            if let Some(&(total, closed)) = counts.get(&epic.id) {
+                epic.task_total = total;
+                epic.task_closed = closed;
+            }
+            epic
+        })
+        .collect())
+}
+
 pub async fn update_epic(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
@@ -1305,7 +1338,7 @@ pub async fn children_for_parent(
 
 /// After a guarded UPDATE affected no rows, decide whether it was a missing
 /// entity (404) or a version conflict (412).
-async fn classify_miss<T>(
+pub(crate) async fn classify_miss<T>(
     client: &deadpool_postgres::Client,
     table: &str,
     project_id: Uuid,
