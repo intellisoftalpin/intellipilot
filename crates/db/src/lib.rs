@@ -14,6 +14,8 @@ pub mod component_repositories;
 pub mod components;
 pub mod customers;
 pub mod dashboard;
+pub mod doc_sources;
+pub mod doc_user_keys;
 pub mod geoip;
 pub mod history;
 pub mod idempotency;

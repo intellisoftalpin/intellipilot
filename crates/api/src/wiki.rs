@@ -47,6 +47,19 @@ fn not_found(rid: &str) -> Response {
     problem(StatusCode::NOT_FOUND, "not_found", "Not Found", None, rid)
 }
 
+/// Gate on the project's internal-wiki toggle, then on the permission.
+///
+/// A disabled wiki reads as **absent**, not as forbidden: 404 rather than 403
+/// so a bookmarked page cannot confirm that content still exists behind the
+/// toggle. Nothing is deleted — flipping the switch back restores every page
+/// and revision untouched.
+fn require_wiki(ctx: &ProjectContext, perm: Permission) -> Result<(), Response> {
+    if !ctx.project.wiki_enabled {
+        return Err(not_found(&ctx.rid));
+    }
+    ctx.require(perm)
+}
+
 fn parse_body<T: serde::de::DeserializeOwned + Validate<Context = ()>>(
     body: Result<Json<T>, JsonRejection>,
     rid: &str,
@@ -86,7 +99,7 @@ pub async fn create(
     ctx: ProjectContext,
     body: Result<Json<CreateWikiPageRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::WikiCreate) {
+    if let Err(r) = require_wiki(&ctx, Permission::WikiCreate) {
         return r;
     }
     let req = match parse_body(body, &ctx.rid) {
@@ -125,7 +138,7 @@ pub async fn create(
 
 /// `GET /api/v1/projects/{project_id}/wiki`
 pub async fn list(State(state): State<AppState>, ctx: ProjectContext) -> Response {
-    if let Err(r) = ctx.require(Permission::WikiView) {
+    if let Err(r) = require_wiki(&ctx, Permission::WikiView) {
         return r;
     }
     let auth = state.auth();
@@ -144,7 +157,7 @@ pub async fn get(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::WikiView) {
+    if let Err(r) = require_wiki(&ctx, Permission::WikiView) {
         return r;
     }
     let Some(id) = page_id(&params) else {
@@ -168,7 +181,7 @@ pub async fn update(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<UpdateWikiPageRequest>, JsonRejection>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::WikiModify) {
+    if let Err(r) = require_wiki(&ctx, Permission::WikiModify) {
         return r;
     }
     let Some(id) = page_id(&params) else {
@@ -212,7 +225,7 @@ pub async fn delete(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::WikiDelete) {
+    if let Err(r) = require_wiki(&ctx, Permission::WikiDelete) {
         return r;
     }
     let Some(id) = page_id(&params) else {
@@ -235,7 +248,7 @@ pub async fn list_revisions(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::WikiView) {
+    if let Err(r) = require_wiki(&ctx, Permission::WikiView) {
         return r;
     }
     let Some(id) = page_id(&params) else {
@@ -266,7 +279,7 @@ pub async fn get_revision(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::WikiView) {
+    if let Err(r) = require_wiki(&ctx, Permission::WikiView) {
         return r;
     }
     let (Some(id), Some(rev)) = (page_id(&params), rev_num(&params)) else {
@@ -306,7 +319,7 @@ pub async fn diff(
     Path(params): Path<HashMap<String, String>>,
     Query(q): Query<DiffQuery>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::WikiView) {
+    if let Err(r) = require_wiki(&ctx, Permission::WikiView) {
         return r;
     }
     let (Some(id), Some(rev)) = (page_id(&params), rev_num(&params)) else {
@@ -351,7 +364,7 @@ pub async fn restore(
     ctx: ProjectContext,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = ctx.require(Permission::WikiModify) {
+    if let Err(r) = require_wiki(&ctx, Permission::WikiModify) {
         return r;
     }
     let (Some(id), Some(rev)) = (page_id(&params), rev_num(&params)) else {

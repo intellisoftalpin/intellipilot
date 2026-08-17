@@ -17,6 +17,7 @@ pub mod branding;
 pub mod catalog;
 pub mod customers;
 pub mod dashboard;
+pub mod docs;
 pub mod dto;
 pub mod epic_cover;
 pub mod events;

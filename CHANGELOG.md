@@ -4,6 +4,74 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.22] - 2026-08-17
+
+External documentation sources: git repositories surfaced under a project's
+Wiki section, browsable and editable in place (migration V020). Frontend
+companion release is also 0.6.22.
+
+### Added
+- `doc_sources`: up to 10 per project, in two kinds.
+  - **git** — a repository exposing one subtree (`doc_path`) read from a
+    cached bare clone. Registration verifies the remote is reachable and the
+    branch exists before storing anything; the clone runs in the background.
+  - **web** — a plain URL the client embeds in a sandboxed frame. Nothing is
+    fetched, cloned or stored server-side, and it is read-only by
+    construction: a CHECK constraint makes `read_only` unclearable for one,
+    so there is no state in which it could be edited.
+  Every source carries a user-set title (`name`) shown in the sidebar, the
+  overview tile, the breadcrumb and above an embedded page.
+- `doc_sources.hidden`: withdraw a source from navigation without discarding
+  its configuration. Hidden sources are listed only to callers holding
+  `doc_source.modify` and read as 404 to everyone else; clearing the flag
+  restores them untouched.
+- `doc_user_keys`: one writable SSH key per user per project. Edits are
+  committed and pushed as that user, so git history attributes a change to the
+  person who made it. Keys are generated server-side or imported;
+  passphrase-protected keys are refused.
+- Endpoints under `/projects/{id}/doc-sources`: CRUD, `POST .../sync`,
+  `GET .../tree`, `GET|PUT .../doc?path=`, `GET .../blob?path=`, plus
+  `/projects/{id}/doc-keys/me`.
+- Four permissions — `doc_source.view` / `.create` / `.modify` / `.delete` —
+  backfilled onto the roles holding the equivalent `wiki.*` permission.
+- A background refresher re-fetches every source on a configurable interval
+  (`INTELLIPILOT_DOCS_SYNC_INTERVAL_SECS`, default 900s). Size caps are
+  `INTELLIPILOT_DOCS_MAX_SOURCE_BYTES` (500 MiB) and
+  `INTELLIPILOT_DOCS_MAX_FILE_BYTES` (10 MiB).
+
+### Changed
+- `projects.wiki_enabled` is now **enforced**. The column has existed since
+  V001 but no endpoint consulted it; the internal wiki now answers 404 while it
+  is off. Nothing is deleted — pages and revisions return untouched when it is
+  switched back on. Defaults to true, so existing installs are unaffected.
+
+### Security
+- Documentation content is read from git tree and blob objects rather than
+  from a checked-out working directory, so no request path exists to walk out
+  of. Client-supplied paths are resolved lexically and **refused** — never
+  clamped — when they land above the configured subtree. Symlink and submodule
+  entries are skipped rather than followed. SVG blobs are sanitized before
+  being served.
+
+## [0.6.21] - 2026-08-17
+
+Milestone rework: epic-only membership, business release dates, and a detail
+sidebar (migration V019). Frontend companion release is also 0.6.21.
+
+### Added
+- Milestones gain a description and a *business* release date — the commercial
+  ship date trailing the technical end date — gated behind the new
+  `milestone.business_release.view` / `.modify` permissions.
+- `POST /milestones/{id}/reopen` and `GET /milestones/{id}/epics`.
+
+### Changed
+- Milestone membership is structural: issues reach a milestone **only** through
+  their epic. `issues.milestone_id` is retained and still read by every board
+  filter, group-by and export, but it is now written exclusively by two
+  triggers. Setting it directly returns 422 `milestone_via_epic_only`.
+- Deleting a milestone that still holds epics returns 409
+  `milestone_has_epics`.
+
 ## [0.6.20] - 2026-07-31
 
 Live change feed extended beyond issues. Frontend companion release is also

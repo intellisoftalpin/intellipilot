@@ -1,17 +1,23 @@
-//! Minimal git remote integration over SSH, backed by libgit2 (`git2`).
+//! Git integration over SSH, backed by libgit2 (`git2`).
 //!
-//! The only operation needed today is listing a remote's branches (the basis
-//! for the branch picker and for the on-add reachability check). The decrypted
-//! private key is supplied **in-memory** (`Cred::ssh_key_from_memory`) so it
-//! never touches disk.
+//! Two surfaces live here:
+//!
+//! * this module — listing a remote's branches, the basis for the branch
+//!   picker and for the on-add reachability check;
+//! * [`docs`] — the cached bare clones behind external documentation sources,
+//!   including reading trees and blobs and pushing an edit.
+//!
+//! The decrypted private key is supplied **in-memory**
+//! (`Cred::ssh_key_from_memory`) so it never touches disk.
 //!
 //! libgit2 calls are blocking, so the public API wraps them in
 //! [`tokio::task::spawn_blocking`], bounds concurrency with a process-wide
 //! semaphore, and enforces a hard timeout. This crate is intentionally the
-//! single home for git/network concerns, ready to grow a `clone`/`analyze`
-//! surface later.
+//! single home for git/network concerns.
 
 #![allow(clippy::result_large_err)]
+
+pub mod docs;
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -28,9 +34,43 @@ const MAX_CONCURRENT_GIT_OPS: usize = 4;
 /// Hard timeout for a single remote operation.
 const GIT_OP_TIMEOUT: Duration = Duration::from_secs(15);
 
-fn semaphore() -> &'static Semaphore {
+pub(crate) fn semaphore() -> &'static Semaphore {
     static SEM: OnceLock<Semaphore> = OnceLock::new();
     SEM.get_or_init(|| Semaphore::new(MAX_CONCURRENT_GIT_OPS))
+}
+
+/// Remote callbacks wired for SSH key auth, capturing the host fingerprint on
+/// connect. Shared by every network operation in this crate so authentication
+/// and host handling behave identically everywhere.
+///
+/// Host keys are accepted on first use (TOFU); the captured fingerprint is
+/// stored per source so a later change is at least visible.
+pub(crate) fn auth_callbacks<'a>(
+    private_key_pem: &'a str,
+    host_fp: &'a RefCell<Option<String>>,
+) -> RemoteCallbacks<'a> {
+    let mut cb = RemoteCallbacks::new();
+    cb.credentials(move |_url, username_from_url, allowed| {
+        let user = username_from_url.unwrap_or("git");
+        if allowed.contains(CredentialType::SSH_KEY) {
+            Cred::ssh_key_from_memory(user, None, private_key_pem, None)
+        } else if allowed.contains(CredentialType::USERNAME) {
+            Cred::username(user)
+        } else {
+            Err(git2::Error::from_str("no supported authentication method"))
+        }
+    });
+    cb.certificate_check(move |cert, _host| {
+        if let Some(hash) = cert
+            .as_hostkey()
+            .and_then(git2::cert::CertHostkey::hash_sha256)
+        {
+            let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(hash);
+            *host_fp.borrow_mut() = Some(format!("SHA256:{b64}"));
+        }
+        Ok(CertificateCheckStatus::CertificateOk)
+    });
+    cb
 }
 
 /// A classified git failure. The API layer maps these onto problem+json.
@@ -44,6 +84,14 @@ pub enum GitError {
     Unreachable,
     #[error("operation timed out")]
     Timeout,
+    /// The transfer exceeded the operator's per-source size cap and was
+    /// aborted mid-stream.
+    #[error("repository exceeds the configured size limit")]
+    TooLarge,
+    /// A ref name failed validation. Refs are interpolated into refspecs, so
+    /// anything unusual is refused rather than escaped.
+    #[error("invalid branch name")]
+    InvalidBranch,
     #[error("internal git error")]
     Internal,
 }
@@ -57,6 +105,8 @@ impl GitError {
             Self::NotFound => "git_not_found",
             Self::Unreachable => "git_unreachable",
             Self::Timeout => "git_timeout",
+            Self::TooLarge => "git_too_large",
+            Self::InvalidBranch => "git_invalid_branch",
             Self::Internal => "git_internal",
         }
     }
@@ -74,7 +124,7 @@ pub struct RemoteInfo {
     pub host_fingerprint: Option<String>,
 }
 
-fn map_git_err(e: &git2::Error) -> GitError {
+pub(crate) fn map_git_err(e: &git2::Error) -> GitError {
     use git2::ErrorClass as Class;
     use git2::ErrorCode as Code;
 
@@ -115,30 +165,7 @@ fn strip_head_ref(name: &str) -> String {
 
 fn list_blocking(ssh_url: &str, private_key_pem: &str) -> Result<RemoteInfo, GitError> {
     let host_fp: RefCell<Option<String>> = RefCell::new(None);
-
-    let mut cb = RemoteCallbacks::new();
-    cb.credentials(move |_url, username_from_url, allowed| {
-        let user = username_from_url.unwrap_or("git");
-        if allowed.contains(CredentialType::SSH_KEY) {
-            Cred::ssh_key_from_memory(user, None, private_key_pem, None)
-        } else if allowed.contains(CredentialType::USERNAME) {
-            Cred::username(user)
-        } else {
-            Err(git2::Error::from_str("no supported authentication method"))
-        }
-    });
-    cb.certificate_check(|cert, _host| {
-        // TOFU: capture the host fingerprint for display; accept the host so a
-        // first connection succeeds. Pinning can build on the captured value.
-        if let Some(hash) = cert
-            .as_hostkey()
-            .and_then(git2::cert::CertHostkey::hash_sha256)
-        {
-            let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(hash);
-            *host_fp.borrow_mut() = Some(format!("SHA256:{b64}"));
-        }
-        Ok(CertificateCheckStatus::CertificateOk)
-    });
+    let cb = auth_callbacks(private_key_pem, &host_fp);
 
     let mut remote = git2::Remote::create_detached(ssh_url).map_err(|e| map_git_err(&e))?;
     // `connect_auth` returns a connection guard that disconnects on drop.

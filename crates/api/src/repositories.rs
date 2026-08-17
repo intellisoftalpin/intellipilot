@@ -214,6 +214,8 @@ fn git_problem(err: GitError, rid: &str) -> Response {
             "Git authentication failed",
         ),
         GitError::NotFound => (StatusCode::UNPROCESSABLE_ENTITY, "Repository not found"),
+        GitError::InvalidBranch => (StatusCode::UNPROCESSABLE_ENTITY, "Invalid branch name"),
+        GitError::TooLarge => (StatusCode::UNPROCESSABLE_ENTITY, "Repository too large"),
         GitError::Unreachable => (StatusCode::BAD_GATEWAY, "Git host unreachable"),
         GitError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "Git operation timed out"),
         GitError::Internal => (StatusCode::BAD_GATEWAY, "Git error"),

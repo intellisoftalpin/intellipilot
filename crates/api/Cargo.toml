@@ -76,6 +76,9 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 intellipilot-testkit = { path = "../testkit" }
+# Seeds bare repositories for the documentation-source tests. Already in the
+# tree via intellipilot-git, so this adds no new dependency.
+git2 = { workspace = true }
 tower = { workspace = true }
 http-body-util = "0.1"
 serde_json = { workspace = true }

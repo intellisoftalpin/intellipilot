@@ -1,12 +1,16 @@
 //! Shared application state.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use intellipilot_auth::AccessKey;
 use intellipilot_db::Db;
 use intellipilot_mailer::Mailer;
 use intellipilot_storage::Storage;
+use uuid::Uuid;
 use webauthn_rs::Webauthn;
 
 /// Attachment subsystem configuration.
@@ -24,6 +28,86 @@ impl std::fmt::Debug for AttachmentConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AttachmentConfig")
             .field("max_bytes", &self.max_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
+/// External documentation subsystem configuration.
+///
+/// Also owns the per-source lock registry: a clone/fetch and an edit on the
+/// same cached repository must never run concurrently, or one would commit on
+/// top of a ref the other is rewriting.
+#[derive(Clone)]
+pub struct DocsConfig {
+    /// Root under which each source gets its own bare repository.
+    pub cache_dir: Arc<PathBuf>,
+    /// Cap on bytes transferred for one source's clone or fetch.
+    pub max_source_bytes: u64,
+    /// Cap on the size of a single file served or saved.
+    pub max_file_bytes: u64,
+    /// How often the background refresher revisits every source.
+    pub sync_interval: Duration,
+    /// Smallest gap between two sync attempts on one source. Rate-limits the
+    /// manual refresh button and keeps two workers off the same repository.
+    pub min_sync_gap: Duration,
+    locks: Arc<Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+impl DocsConfig {
+    /// Build a configuration rooted at `cache_dir`, with the documented
+    /// defaults for every limit.
+    #[must_use]
+    pub fn new(cache_dir: PathBuf) -> Self {
+        Self {
+            cache_dir: Arc::new(cache_dir),
+            max_source_bytes: 500 * 1024 * 1024,
+            max_file_bytes: 10 * 1024 * 1024,
+            sync_interval: Duration::from_secs(900),
+            min_sync_gap: Duration::from_secs(60),
+            locks: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Cache directory of one source. Namespaced by project so a support
+    /// engineer can find everything belonging to one project at a glance.
+    #[must_use]
+    pub fn dir_for(&self, project_id: Uuid, source_id: Uuid) -> PathBuf {
+        self.cache_dir
+            .join(project_id.to_string())
+            .join(format!("{source_id}.git"))
+    }
+
+    /// The mutex guarding one source's cache. Entries are created on demand
+    /// and kept for the process lifetime — one small allocation per source
+    /// ever touched, which is bounded by 10 per project.
+    #[must_use]
+    #[allow(clippy::expect_used)]
+    pub fn lock_for(&self, source_id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guard = self
+            .locks
+            .lock()
+            .expect("docs lock registry poisoned: a holder panicked");
+        Arc::clone(guard.entry(source_id).or_default())
+    }
+
+    /// Forget a deleted source's lock so the registry does not grow without
+    /// bound in a long-lived process.
+    #[allow(clippy::expect_used)]
+    pub fn forget_lock(&self, source_id: Uuid) {
+        self.locks
+            .lock()
+            .expect("docs lock registry poisoned: a holder panicked")
+            .remove(&source_id);
+    }
+}
+
+impl std::fmt::Debug for DocsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DocsConfig")
+            .field("cache_dir", &self.cache_dir)
+            .field("max_source_bytes", &self.max_source_bytes)
+            .field("max_file_bytes", &self.max_file_bytes)
+            .field("sync_interval", &self.sync_interval)
             .finish_non_exhaustive()
     }
 }
@@ -121,6 +205,8 @@ pub struct AppState {
     /// Local IP geolocation. Always present; inert until a superadmin enables
     /// it and a database is installed.
     pub geoip: Arc<crate::geoip::GeoIp>,
+    /// External documentation caches, limits and per-source locks.
+    pub docs: DocsConfig,
 }
 
 impl std::fmt::Debug for AppState {
@@ -156,6 +242,7 @@ pub struct AppStateBuilder {
     dev: DevToggles,
     auth: Option<AuthContext>,
     geoip: Option<Arc<crate::geoip::GeoIp>>,
+    docs: Option<DocsConfig>,
 }
 
 impl std::fmt::Debug for AppStateBuilder {
@@ -195,6 +282,14 @@ impl AppStateBuilder {
         self
     }
 
+    /// Override the documentation-cache configuration. Tests point this at a
+    /// temporary directory; the binary derives it from the storage root.
+    #[must_use]
+    pub fn docs(mut self, docs: DocsConfig) -> Self {
+        self.docs = Some(docs);
+        self
+    }
+
     #[must_use]
     pub fn build(self) -> AppState {
         AppState {
@@ -210,6 +305,9 @@ impl AppStateBuilder {
                     "geoip-unconfigured",
                 )))
             }),
+            docs: self
+                .docs
+                .unwrap_or_else(|| DocsConfig::new(PathBuf::from("doc-cache-unconfigured"))),
         }
     }
 }

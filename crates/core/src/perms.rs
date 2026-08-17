@@ -88,6 +88,18 @@ pub enum Permission {
     WikiModify,
     #[serde(rename = "wiki.delete")]
     WikiDelete,
+    // External documentation sources (git repositories surfaced under Wiki)
+    #[serde(rename = "doc_source.view")]
+    DocSourceView,
+    #[serde(rename = "doc_source.create")]
+    DocSourceCreate,
+    /// Edit a document and push the change. Necessary but not sufficient: the
+    /// actor also needs a personal write key, and the source must not be
+    /// flagged read-only.
+    #[serde(rename = "doc_source.modify")]
+    DocSourceModify,
+    #[serde(rename = "doc_source.delete")]
+    DocSourceDelete,
     // Comments & attachments (cross-entity)
     #[serde(rename = "comment.create")]
     CommentCreate,
@@ -161,7 +173,7 @@ pub enum Permission {
 
 impl Permission {
     /// Every permission in catalog order.
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 62] = [
         Self::ProjectView,
         Self::ProjectModify,
         Self::ProjectDelete,
@@ -192,6 +204,10 @@ impl Permission {
         Self::WikiCreate,
         Self::WikiModify,
         Self::WikiDelete,
+        Self::DocSourceView,
+        Self::DocSourceCreate,
+        Self::DocSourceModify,
+        Self::DocSourceDelete,
         Self::CommentCreate,
         Self::CommentModerate,
         Self::AttachmentCreate,
@@ -258,6 +274,10 @@ impl Permission {
             Self::WikiCreate => "wiki.create",
             Self::WikiModify => "wiki.modify",
             Self::WikiDelete => "wiki.delete",
+            Self::DocSourceView => "doc_source.view",
+            Self::DocSourceCreate => "doc_source.create",
+            Self::DocSourceModify => "doc_source.modify",
+            Self::DocSourceDelete => "doc_source.delete",
             Self::CommentCreate => "comment.create",
             Self::CommentModerate => "comment.moderate",
             Self::AttachmentCreate => "attachment.create",
@@ -318,8 +338,9 @@ fn all_view() -> Vec<Permission> {
 /// without delete or any project/member/role administration.
 fn developer_perms() -> Vec<Permission> {
     use Permission::{
-        AttachmentCreate, AttachmentDelete, CommentCreate, EpicCreate, EpicModify, IssueCreate,
-        IssueModify, MilestoneCreate, MilestoneModify, TimeLog, WikiCreate, WikiModify,
+        AttachmentCreate, AttachmentDelete, CommentCreate, DocSourceModify, EpicCreate, EpicModify,
+        IssueCreate, IssueModify, MilestoneCreate, MilestoneModify, TimeLog, WikiCreate,
+        WikiModify,
     };
     let mut perms = all_view();
     perms.extend([
@@ -331,6 +352,9 @@ fn developer_perms() -> Vec<Permission> {
         MilestoneModify,
         WikiCreate,
         WikiModify,
+        // Editing an external document is the same level of trust as editing
+        // a wiki page. It still needs a personal write key at runtime.
+        DocSourceModify,
         CommentCreate,
         AttachmentCreate,
         AttachmentDelete,
@@ -347,12 +371,12 @@ fn product_owner_perms() -> Vec<Permission> {
     use Permission::{
         BoardSharedCreate, BoardSharedDelete, BoardSharedModify, CommentModerate, ComponentCreate,
         ComponentDelete, ComponentModify, CustomerCreate, CustomerDelete, CustomerModify,
-        EpicDelete, IssueDelete, LabelCreate, LabelDelete, LabelModify, MemberAdd,
-        MemberModifyRole, MemberRemove, MemberView, MilestoneBusinessReleaseModify,
-        MilestoneBusinessReleaseView, MilestoneDelete, ProjectModify, ReleaseCreate, ReleaseDelete,
-        ReleaseModify, RepositoryCreate, RepositoryDelete, RepositoryModify, RoleCreate,
-        RoleDelete, RoleModify, RoleView, TaxonomyCreate, TaxonomyDelete, TaxonomyModify,
-        TimeViewAll, WikiDelete,
+        DocSourceCreate, DocSourceDelete, EpicDelete, IssueDelete, LabelCreate, LabelDelete,
+        LabelModify, MemberAdd, MemberModifyRole, MemberRemove, MemberView,
+        MilestoneBusinessReleaseModify, MilestoneBusinessReleaseView, MilestoneDelete,
+        ProjectModify, ReleaseCreate, ReleaseDelete, ReleaseModify, RepositoryCreate,
+        RepositoryDelete, RepositoryModify, RoleCreate, RoleDelete, RoleModify, RoleView,
+        TaxonomyCreate, TaxonomyDelete, TaxonomyModify, TimeViewAll, WikiDelete,
     };
     let mut perms = developer_perms();
     perms.extend([
@@ -374,6 +398,10 @@ fn product_owner_perms() -> Vec<Permission> {
         MilestoneBusinessReleaseView,
         MilestoneBusinessReleaseModify,
         WikiDelete,
+        // Registering or removing a whole documentation source is
+        // admin-level, alongside wiki.delete.
+        DocSourceCreate,
+        DocSourceDelete,
         CommentModerate,
         TimeViewAll,
         // Project-configuration entities (previously bundled under
@@ -452,7 +480,38 @@ mod tests {
                 p.as_str()
             );
         }
-        assert_eq!(Permission::ALL.len(), 58);
+        assert_eq!(Permission::ALL.len(), 62);
+    }
+
+    /// The doc_source set must mirror the trust levels of the wiki set: a
+    /// stakeholder reads, a developer edits, only a product owner registers
+    /// or removes a source.
+    #[test]
+    fn doc_source_permissions_mirror_wiki_levels() {
+        let roles = default_roles();
+        let by_slug = |slug: &str| -> std::collections::HashSet<Permission> {
+            roles
+                .iter()
+                .find(|r| r.slug == slug)
+                .map(|r| r.permissions.iter().copied().collect())
+                .unwrap()
+        };
+        let (po, dev, stake) = (
+            by_slug("product_owner"),
+            by_slug("dev"),
+            by_slug("stakeholder"),
+        );
+
+        assert!(stake.contains(&Permission::DocSourceView));
+        assert!(dev.contains(&Permission::DocSourceView));
+
+        assert!(dev.contains(&Permission::DocSourceModify));
+        assert!(!stake.contains(&Permission::DocSourceModify));
+
+        for p in [Permission::DocSourceCreate, Permission::DocSourceDelete] {
+            assert!(po.contains(&p), "product_owner should hold {}", p.as_str());
+            assert!(!dev.contains(&p), "dev should NOT hold {}", p.as_str());
+        }
     }
 
     #[test]

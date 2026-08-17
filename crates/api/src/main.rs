@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use intellipilot_api::state::{AttachmentConfig, DevToggles};
+use intellipilot_api::state::{AttachmentConfig, DevToggles, DocsConfig};
 use intellipilot_api::{AppState, AuthConfig, AuthContext, Env, ReadyCheck, build_router};
 use intellipilot_auth::AccessKey;
 use intellipilot_auth::password::hash_password;
@@ -115,7 +115,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             builder = builder
                 .readiness_checks(vec![Arc::new(DbReadyCheck { db })])
                 .auth_context(auth)
-                .geoip(geoip);
+                .geoip(geoip)
+                .docs(build_docs());
             tracing::info!("identity/session endpoints enabled");
         }
         Err(_) => {
@@ -125,7 +126,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let app = build_router(builder.build());
+    let state = builder.build();
+    spawn_docs_refresher(state.clone());
+    let app = build_router(state);
 
     let bind = std::env::var("INTELLIPILOT_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_owned());
     let addr: SocketAddr = bind.parse()?;
@@ -274,6 +277,57 @@ fn build_access_key(env: Env) -> Result<AccessKey, Box<dyn std::error::Error + S
 /// The data is published monthly, so this only needs to be often enough to
 /// notice a new build within a day and to recover from a failed attempt.
 const GEOIP_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// External documentation caches: a `doc-cache` subdirectory of the storage
+/// root, plus the operator-tunable limits.
+///
+/// | variable | default | meaning |
+/// |---|---|---|
+/// | `INTELLIPILOT_DOCS_MAX_SOURCE_BYTES` | 500 MiB | aborts a clone/fetch past this |
+/// | `INTELLIPILOT_DOCS_MAX_FILE_BYTES` | 10 MiB | largest file served or saved |
+/// | `INTELLIPILOT_DOCS_SYNC_INTERVAL_SECS` | 900 | background refresh period |
+fn build_docs() -> DocsConfig {
+    fn env_u64(key: &str) -> Option<u64> {
+        std::env::var(key).ok()?.parse().ok()
+    }
+    let root = std::env::var("INTELLIPILOT_STORAGE_DIR")
+        .unwrap_or_else(|_| "./data/attachments".to_owned());
+    let mut cfg = DocsConfig::new(std::path::PathBuf::from(root).join("doc-cache"));
+    if let Some(v) = env_u64("INTELLIPILOT_DOCS_MAX_SOURCE_BYTES") {
+        cfg.max_source_bytes = v;
+    }
+    if let Some(v) = env_u64("INTELLIPILOT_DOCS_MAX_FILE_BYTES") {
+        cfg.max_file_bytes = v;
+    }
+    if let Some(v) = env_u64("INTELLIPILOT_DOCS_SYNC_INTERVAL_SECS") {
+        // Floored so a typo cannot turn the refresher into a hot loop against
+        // every configured git host.
+        cfg.sync_interval = std::time::Duration::from_secs(v.max(60));
+    }
+    cfg
+}
+
+/// Keep every documentation cache reasonably fresh.
+///
+/// Sources whose last attempt is older than the configured interval are
+/// re-fetched, oldest first. Also clears `syncing` rows left behind by a
+/// process that died mid-fetch, which would otherwise never be retried.
+fn spawn_docs_refresher(state: AppState) {
+    if state.auth.is_none() {
+        return;
+    }
+    tokio::spawn(async move {
+        intellipilot_api::docs::release_stale_claims(&state).await;
+        let mut ticker = tokio::time::interval(state.docs.sync_interval);
+        // The first tick is immediate; skip it so a restart does not fan out
+        // to every git host at once.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            intellipilot_api::docs::refresh_due(&state).await;
+        }
+    });
+}
 
 /// Where the `.mmdb` lives: a `geoip` subdirectory of the storage root.
 fn build_geoip() -> intellipilot_api::geoip::GeoIp {

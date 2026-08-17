@@ -16,10 +16,48 @@ use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
     admin, attachments, auth, avatar, backlog, boards, branding, catalog, customers, dashboard,
-    epic_cover, events, health, issue_relations, issues_io, me, me_token, mfa, milestones, my_work,
-    openapi, passkeys, project_icon, projects, releases, repositories, search, taxonomy,
+    docs, epic_cover, events, health, issue_relations, issues_io, me, me_token, mfa, milestones,
+    my_work, openapi, passkeys, project_icon, projects, releases, repositories, search, taxonomy,
     time_tracking, wiki,
 };
+
+/// Knowledge-base routes: the internal wiki and external documentation
+/// sources.
+///
+/// Split out of [`build_router`] deliberately. Each `.route()` widens the
+/// router's type, and in a debug build the resulting stack frame is enormous —
+/// a single flat chain covering every endpoint overflows the 2 MiB thread
+/// stack a test runner gives it. Merging a separately-built sub-router keeps
+/// each frame bounded. Add new endpoint groups the same way.
+#[rustfmt::skip]
+fn knowledge_routes() -> Router<AppState> {
+    Router::new()
+        // Internal wiki
+        .route("/api/v1/projects/{project_id}/wiki", get(wiki::list))
+        .route("/api/v1/projects/{project_id}/wiki", post(wiki::create))
+        .route("/api/v1/projects/{project_id}/wiki/{wiki_id}", get(wiki::get))
+        .route("/api/v1/projects/{project_id}/wiki/{wiki_id}", patch(wiki::update))
+        .route("/api/v1/projects/{project_id}/wiki/{wiki_id}", delete(wiki::delete))
+        .route("/api/v1/projects/{project_id}/wiki/{wiki_id}/revisions", get(wiki::list_revisions))
+        .route("/api/v1/projects/{project_id}/wiki/{wiki_id}/revisions/{rev}", get(wiki::get_revision))
+        .route("/api/v1/projects/{project_id}/wiki/{wiki_id}/revisions/{rev}/diff", get(wiki::diff))
+        .route("/api/v1/projects/{project_id}/wiki/{wiki_id}/revisions/{rev}/restore", post(wiki::restore))
+        // External documentation sources
+        .route("/api/v1/projects/{project_id}/doc-sources", get(docs::list_sources))
+        .route("/api/v1/projects/{project_id}/doc-sources", post(docs::create_source))
+        .route("/api/v1/projects/{project_id}/doc-sources/{source_id}", get(docs::get_source))
+        .route("/api/v1/projects/{project_id}/doc-sources/{source_id}", patch(docs::update_source))
+        .route("/api/v1/projects/{project_id}/doc-sources/{source_id}", delete(docs::delete_source))
+        .route("/api/v1/projects/{project_id}/doc-sources/{source_id}/sync", post(docs::sync_now))
+        .route("/api/v1/projects/{project_id}/doc-sources/{source_id}/tree", get(docs::tree))
+        .route("/api/v1/projects/{project_id}/doc-sources/{source_id}/doc", get(docs::get_doc))
+        .route("/api/v1/projects/{project_id}/doc-sources/{source_id}/doc", put(docs::save_doc))
+        .route("/api/v1/projects/{project_id}/doc-sources/{source_id}/blob", get(docs::get_blob))
+        // Personal write key, one per user per project
+        .route("/api/v1/projects/{project_id}/doc-keys/me", get(docs::get_my_key))
+        .route("/api/v1/projects/{project_id}/doc-keys/me", put(docs::put_my_key))
+        .route("/api/v1/projects/{project_id}/doc-keys/me", delete(docs::delete_my_key))
+}
 
 #[allow(clippy::too_many_lines)] // a flat, readable route table
 pub fn build_router(state: AppState) -> Router {
@@ -461,16 +499,8 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/attachments/{attachment_id}", get(attachments::sign_url))
             .route("/api/v1/projects/{project_id}/attachments/{attachment_id}", delete(attachments::delete))
             .route("/api/v1/projects/{project_id}/attachments/{attachment_id}/download", get(attachments::download))
-            // Wiki
-            .route("/api/v1/projects/{project_id}/wiki", get(wiki::list))
-            .route("/api/v1/projects/{project_id}/wiki", post(wiki::create))
-            .route("/api/v1/projects/{project_id}/wiki/{wiki_id}", get(wiki::get))
-            .route("/api/v1/projects/{project_id}/wiki/{wiki_id}", patch(wiki::update))
-            .route("/api/v1/projects/{project_id}/wiki/{wiki_id}", delete(wiki::delete))
-            .route("/api/v1/projects/{project_id}/wiki/{wiki_id}/revisions", get(wiki::list_revisions))
-            .route("/api/v1/projects/{project_id}/wiki/{wiki_id}/revisions/{rev}", get(wiki::get_revision))
-            .route("/api/v1/projects/{project_id}/wiki/{wiki_id}/revisions/{rev}/diff", get(wiki::diff))
-            .route("/api/v1/projects/{project_id}/wiki/{wiki_id}/revisions/{rev}/restore", post(wiki::restore))
+            // Wiki + external documentation sources (see `knowledge_routes`)
+            .merge(knowledge_routes())
             // Unified search
             .route("/api/v1/search", get(search::search))
             // Time tracking — personal (own timesheet, absences, export)

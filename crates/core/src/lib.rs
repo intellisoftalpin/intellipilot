@@ -13,6 +13,7 @@ pub mod board;
 pub mod catalog;
 pub mod customer;
 pub mod dashboard;
+pub mod docs;
 pub mod error;
 pub mod ids;
 pub mod milestone;

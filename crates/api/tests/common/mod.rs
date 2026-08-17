@@ -17,7 +17,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, Response};
 use http_body_util::BodyExt;
-use intellipilot_api::state::AttachmentConfig;
+use intellipilot_api::state::{AttachmentConfig, DocsConfig};
 use intellipilot_api::{AppState, AuthConfig, AuthContext, Env, build_router};
 use intellipilot_auth::AccessKey;
 use intellipilot_db::Db;
@@ -36,6 +36,9 @@ pub struct TestApp {
     /// The same live-event bus the router publishes to, so tests can subscribe
     /// and assert what a change broadcasts.
     pub events: Arc<intellipilot_api::events::EventBus>,
+    /// The same documentation-cache configuration the router uses, so tests
+    /// can seed a bare repository where a handler will look for it.
+    pub docs: DocsConfig,
 }
 
 impl TestApp {
@@ -74,7 +77,13 @@ impl TestApp {
                 signing_key: Arc::new([7u8; 32]),
             },
         };
-        let state = AppState::builder().auth_context(auth).build();
+        let docs = DocsConfig::new(
+            std::env::temp_dir().join(format!("ip-test-docs-{}", uuid::Uuid::now_v7())),
+        );
+        let state = AppState::builder()
+            .auth_context(auth)
+            .docs(docs.clone())
+            .build();
         let events = state.events.clone();
         let router = build_router(state);
         // The suite predates the V011 registration gate, whose migration
@@ -96,6 +105,7 @@ impl TestApp {
             db,
             storage,
             events,
+            docs,
         }
     }
 

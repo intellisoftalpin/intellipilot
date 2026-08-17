@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-api"
-version = "0.6.21"
+version = "0.6.22"
 dependencies = [
  "ammonia",
  "assert-json-diff",
@@ -2067,6 +2067,7 @@ dependencies = [
  "flate2",
  "futures",
  "garde",
+ "git2",
  "hmac 0.12.1",
  "http-body-util",
  "hyper",
@@ -2112,7 +2113,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-auth"
-version = "0.6.21"
+version = "0.6.22"
 dependencies = [
  "argon2",
  "base32",
@@ -2138,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-core"
-version = "0.6.21"
+version = "0.6.22"
 dependencies = [
  "garde",
  "insta",
@@ -2155,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-db"
-version = "0.6.21"
+version = "0.6.22"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
@@ -2175,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-git"
-version = "0.6.21"
+version = "0.6.22"
 dependencies = [
  "base64 0.22.1",
  "git2",
@@ -2186,7 +2187,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-mailer"
-version = "0.6.21"
+version = "0.6.22"
 dependencies = [
  "async-trait",
  "intellipilot-core",
@@ -2200,7 +2201,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-storage"
-version = "0.6.21"
+version = "0.6.22"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2217,7 +2218,7 @@ dependencies = [
 
 [[package]]
 name = "intellipilot-testkit"
-version = "0.6.21"
+version = "0.6.22"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
