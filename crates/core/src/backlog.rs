@@ -5,7 +5,7 @@
 //! is a per-project `issue_type` taxonomy item, with sub-tasks expressed via
 //! `parent_id` and optional grouping under an epic via `epic_id`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use time::{Date, OffsetDateTime};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -77,6 +77,13 @@ pub struct Epic {
     pub modified_at: OffsetDateTime,
 }
 
+/// One component's fix version on an issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ComponentVersion {
+    pub component_id: Uuid,
+    pub release_version_id: Uuid,
+}
+
 /// Unified work item (Story / Task / Bug / sub-task).
 ///
 /// `type_id` (an `issue_type` taxonomy item) tells Story from Task from Bug;
@@ -120,7 +127,12 @@ pub struct Issue {
     /// When the issue entered a closed status; system-managed.
     #[serde(with = "time::serde::rfc3339::option")]
     pub resolved_at: Option<OffsetDateTime>,
-    /// Fix version (a specific `release_versions` row) when chosen structurally.
+    /// Fix version (a specific `release_versions` row) when chosen
+    /// structurally.
+    ///
+    /// A **mirror** of the lowest-ordered entry in [`Self::component_versions`],
+    /// maintained by trigger since V022. Every list filter, export and board
+    /// group-by reads it; treat it as derived and set versions per component.
     pub release_version_id: Option<Uuid>,
     /// Free-text fix version when no structured release applies.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -129,6 +141,10 @@ pub struct Issue {
     pub labels: Vec<Uuid>,
     /// Component ids attached to this issue.
     pub components: Vec<Uuid>,
+    /// The version each affected component ships the fix in. A component may
+    /// appear at most once, and only components in [`Self::components`] are
+    /// ever present.
+    pub component_versions: Vec<ComponentVersion>,
     /// User ids watching this issue.
     pub watchers: Vec<Uuid>,
     pub order: f64,

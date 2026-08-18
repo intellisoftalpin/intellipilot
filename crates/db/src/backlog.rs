@@ -9,7 +9,9 @@
 //! concurrency via a `version` column, soft-delete, and fractional ordering.
 #![allow(clippy::too_many_arguments)]
 
-use intellipilot_core::backlog::{Epic, Issue, IssueCategory, IssueTombstone, Resolution};
+use intellipilot_core::backlog::{
+    ComponentVersion, Epic, Issue, IssueCategory, IssueTombstone, Resolution,
+};
 use intellipilot_core::board::{BoardColumn, BoardLane};
 use intellipilot_core::ordering::{normalized_ranks, rank_between};
 use time::{Date, OffsetDateTime};
@@ -469,6 +471,7 @@ fn row_to_issue(r: &Row) -> Issue {
         // Filled by the caller from the junction tables.
         labels: Vec::new(),
         components: Vec::new(),
+        component_versions: Vec::new(),
         watchers: Vec::new(),
         order: r.get("order"),
         version: r.get("version"),
@@ -604,6 +607,11 @@ pub async fn set_issue_customers(
 }
 
 /// Replace the full set of components on an issue.
+///
+/// Removes only the components that are actually going away, rather than
+/// clearing the lot and re-inserting. Since V022 a delete here prunes that
+/// component's fix version by trigger, so the wholesale clear would have
+/// destroyed every version on any edit that merely touched the component list.
 pub async fn set_issue_components(
     client: &mut deadpool_postgres::Client,
     issue_id: Uuid,
@@ -611,8 +619,9 @@ pub async fn set_issue_components(
 ) -> Result<(), DbError> {
     let tx = client.transaction().await?;
     tx.execute(
-        "DELETE FROM issue_components WHERE issue_id = $1",
-        &[&issue_id],
+        "DELETE FROM issue_components \
+         WHERE issue_id = $1 AND component_id <> ALL($2)",
+        &[&issue_id, &component_ids],
     )
     .await?;
     for cid in component_ids {
@@ -624,6 +633,61 @@ pub async fn set_issue_components(
     }
     tx.commit().await?;
     Ok(())
+}
+
+/// Replace the full set of per-component fix versions on an issue.
+///
+/// Only components the issue actually has are written: a version for a
+/// component that was just unassigned would be pruned by trigger anyway, and
+/// silently dropping it here keeps the two writes order-independent.
+pub async fn set_issue_component_versions(
+    client: &mut deadpool_postgres::Client,
+    issue_id: Uuid,
+    pairs: &[ComponentVersion],
+) -> Result<(), DbError> {
+    let tx = client.transaction().await?;
+    tx.execute(
+        "DELETE FROM issue_component_versions WHERE issue_id = $1",
+        &[&issue_id],
+    )
+    .await?;
+    for pair in pairs {
+        tx.execute(
+            "INSERT INTO issue_component_versions \
+               (issue_id, component_id, release_version_id) \
+             SELECT $1, $2, $3 \
+             WHERE EXISTS ( \
+               SELECT 1 FROM issue_components ic \
+               WHERE ic.issue_id = $1 AND ic.component_id = $2) \
+             ON CONFLICT (issue_id, component_id) DO UPDATE \
+               SET release_version_id = EXCLUDED.release_version_id",
+            &[&issue_id, &pair.component_id, &pair.release_version_id],
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The per-component versions of one issue.
+pub async fn issue_component_versions(
+    client: &deadpool_postgres::Client,
+    issue_id: Uuid,
+) -> Result<Vec<ComponentVersion>, DbError> {
+    let rows = client
+        .query(
+            "SELECT component_id, release_version_id FROM issue_component_versions \
+             WHERE issue_id = $1 ORDER BY component_id",
+            &[&issue_id],
+        )
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| ComponentVersion {
+            component_id: r.get("component_id"),
+            release_version_id: r.get("release_version_id"),
+        })
+        .collect())
 }
 
 /// Group an `(issue_id, value)` junction query into `issue_id -> [value]`.
@@ -684,9 +748,32 @@ pub async fn hydrate_issue_relations(
         "user_id",
     )
     .await?;
+    // Pairs rather than single ids, so this one cannot use `group_ids`.
+    let component_versions = {
+        let rows = client
+            .query(
+                "SELECT issue_id, component_id, release_version_id \
+                 FROM issue_component_versions WHERE issue_id = ANY($1) \
+                 ORDER BY component_id",
+                &[&ids],
+            )
+            .await?;
+        let mut map: std::collections::HashMap<Uuid, Vec<ComponentVersion>> =
+            std::collections::HashMap::new();
+        for r in &rows {
+            map.entry(r.get::<_, Uuid>("issue_id"))
+                .or_default()
+                .push(ComponentVersion {
+                    component_id: r.get("component_id"),
+                    release_version_id: r.get("release_version_id"),
+                });
+        }
+        map
+    };
     for iss in issues.iter_mut() {
         iss.labels = labels.get(&iss.id).cloned().unwrap_or_default();
         iss.components = components.get(&iss.id).cloned().unwrap_or_default();
+        iss.component_versions = component_versions.get(&iss.id).cloned().unwrap_or_default();
         iss.customer_ids = customers.get(&iss.id).cloned().unwrap_or_default();
         iss.watchers = watchers.get(&iss.id).cloned().unwrap_or_default();
     }
@@ -767,6 +854,7 @@ pub async fn get_issue(
             let mut issue = row_to_issue(&r);
             issue.labels = issue_label_ids(client, issue.id).await?;
             issue.components = issue_component_ids(client, issue.id).await?;
+            issue.component_versions = issue_component_versions(client, issue.id).await?;
             issue.customer_ids = issue_customer_ids(client, issue.id).await?;
             issue.watchers = issue_watcher_ids(client, issue.id).await?;
             Ok(Some(issue))

@@ -24,7 +24,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use garde::Validate;
-use intellipilot_core::backlog::{EntityKind, etag};
+use intellipilot_core::backlog::{ComponentVersion, EntityKind, etag};
 use intellipilot_core::perms::Permission;
 use intellipilot_db::backlog::UpdateOutcome;
 use intellipilot_db::{
@@ -829,10 +829,20 @@ pub async fn create_issue(
         Ok(i) => i,
         Err(_) => return internal(&ctx.rid),
     };
+    if let Err(r) =
+        validate_component_versions(&client, &req.component_versions, &req.components, &ctx.rid)
+            .await
+    {
+        return r;
+    }
     if bl::set_issue_labels(&mut client, i.id, &req.labels)
         .await
         .is_err()
         || bl::set_issue_components(&mut client, i.id, &req.components)
+            .await
+            .is_err()
+        // After the components, which the version rows are checked against.
+        || bl::set_issue_component_versions(&mut client, i.id, &req.component_versions)
             .await
             .is_err()
         || bl::set_issue_customers(&mut client, i.id, &req.customer_ids)
@@ -947,6 +957,15 @@ pub async fn bulk_create_issues(
             || bl::set_issue_components(&mut client, i.id, &item.components)
                 .await
                 .is_err()
+            // Must follow the components: a version row is only written for a
+            // component the issue already has.
+            || bl::set_issue_component_versions(
+                &mut client,
+                i.id,
+                &item.component_versions,
+            )
+            .await
+            .is_err()
             || bl::set_issue_customers(&mut client, i.id, &item.customer_ids)
                 .await
                 .is_err()
@@ -1069,6 +1088,75 @@ async fn validate_epic_milestone_assignment(
 /// Milestone membership is structural — issues belong to epics, epics belong
 /// to milestones — and is maintained by database trigger. Accepting the field
 /// and silently ignoring it would be worse than saying so.
+/// Check the per-component versions an issue is being given.
+///
+/// Two rules, both of which the UI already respects but which a direct API
+/// caller could break:
+///
+/// * the component must be one the issue actually affects — otherwise the row
+///   would be pruned by trigger the moment anything touched it;
+/// * the version must belong to a release that component ships in, which is
+///   what makes "the version of *this* component" meaningful at all.
+async fn validate_component_versions(
+    client: &deadpool_postgres::Client,
+    pairs: &[ComponentVersion],
+    components: &[Uuid],
+    rid: &str,
+) -> Result<(), Response> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for pair in pairs {
+        if !seen.insert(pair.component_id) {
+            return Err(unprocessable(
+                rid,
+                "component_version_duplicate",
+                "a component can have only one fix version",
+            ));
+        }
+        if !components.contains(&pair.component_id) {
+            return Err(unprocessable(
+                rid,
+                "component_version_unassigned",
+                "a fix version was given for a component the issue does not affect",
+            ));
+        }
+    }
+    let component_ids: Vec<Uuid> = pairs.iter().map(|p| p.component_id).collect();
+    let version_ids: Vec<Uuid> = pairs.iter().map(|p| p.release_version_id).collect();
+    // One round-trip: every (component, version) pair that IS legitimate.
+    let rows = client
+        .query(
+            "SELECT cr.component_id, rv.id AS release_version_id \
+             FROM component_releases cr \
+             JOIN release_versions rv ON rv.release_id = cr.release_id \
+             WHERE cr.component_id = ANY($1) AND rv.id = ANY($2)",
+            &[&component_ids, &version_ids],
+        )
+        .await
+        .map_err(|_| internal(rid))?;
+    let allowed: std::collections::HashSet<(Uuid, Uuid)> = rows
+        .iter()
+        .map(|r| {
+            (
+                r.get::<_, Uuid>("component_id"),
+                r.get::<_, Uuid>("release_version_id"),
+            )
+        })
+        .collect();
+    for pair in pairs {
+        if !allowed.contains(&(pair.component_id, pair.release_version_id)) {
+            return Err(unprocessable(
+                rid,
+                "component_version_unrelated",
+                "that version does not belong to a release this component ships in",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn reject_issue_milestone_write(milestone_id: Option<Uuid>, rid: &str) -> Result<(), Response> {
     if milestone_id.is_some() {
         return Err(unprocessable(
@@ -1376,6 +1464,7 @@ pub async fn update_issue(
     let new_labels = patch.labels.clone();
     let new_components = patch.components.clone();
     let new_customers = patch.customer_ids.clone();
+    let new_component_versions = patch.component_versions.clone();
     if let Err(r) = validate_label_component_ids(
         &client,
         ctx.project.id,
@@ -1386,6 +1475,17 @@ pub async fn update_issue(
     .await
     {
         return r;
+    }
+    // Versions are checked against the component set the issue will END UP
+    // with, which is the patch's when it replaces them and the stored one
+    // otherwise.
+    if let Some(pairs) = &new_component_versions {
+        let effective = new_components
+            .clone()
+            .unwrap_or_else(|| old.components.clone());
+        if let Err(r) = validate_component_versions(&client, pairs, &effective, &ctx.rid).await {
+            return r;
+        }
     }
 
     let subject = patch.subject.unwrap_or(old.subject.clone());
@@ -1600,6 +1700,16 @@ pub async fn update_issue(
             }
             if let Some(components) = &new_components {
                 if bl::set_issue_components(&mut client, e.id, components)
+                    .await
+                    .is_err()
+                {
+                    return internal(&ctx.rid);
+                }
+            }
+            // After the components, so the rows are checked against the new
+            // set rather than the one being replaced.
+            if let Some(pairs) = &new_component_versions {
+                if bl::set_issue_component_versions(&mut client, e.id, pairs)
                     .await
                     .is_err()
                 {

@@ -17,11 +17,19 @@ pub struct Milestone {
     #[schema(value_type = Option<String>)]
     #[serde(with = "crate::serde_date::option")]
     pub start_date: Option<Date>,
-    /// Technical release date. ISO `YYYY-MM-DD`.
+    /// The *planned* technical release date. ISO `YYYY-MM-DD`.
     #[schema(value_type = Option<String>)]
     #[serde(with = "crate::serde_date::option")]
     pub end_date: Option<Date>,
-    /// Commercial ship date, always strictly after [`Self::end_date`].
+    /// When the milestone actually finished. `None` while it is still open or
+    /// was never recorded. The gap against [`Self::end_date`] is the slip —
+    /// or, when earlier, the time saved. ISO `YYYY-MM-DD`.
+    #[schema(value_type = Option<String>)]
+    #[serde(with = "crate::serde_date::option")]
+    pub actual_end_date: Option<Date>,
+    /// Commercial ship date, always strictly after whichever technical end
+    /// really happened — [`Self::actual_end_date`] when set, otherwise
+    /// [`Self::end_date`].
     ///
     /// Visible only to holders of `milestone.business_release.view`; the API
     /// strips the field entirely for everyone else, so an absent key means

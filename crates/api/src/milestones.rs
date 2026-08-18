@@ -127,6 +127,24 @@ fn dates_ok(start: Option<time::Date>, end: Option<time::Date>) -> bool {
     }
 }
 
+/// Explanation returned when the business release does not trail a technical
+/// one. Shared so create and update cannot drift apart.
+const BUSINESS_RELEASE_RULE: &str = "business_release_date must be after the technical end date \
+     (actual_end_date when set, otherwise end_date)";
+
+/// The technical end that really happened: the actual date when recorded,
+/// otherwise the plan. Everything downstream — the business-release rule,
+/// ordering, the gantt — keys off this rather than off `end_date` alone.
+const fn effective_end(
+    planned: Option<time::Date>,
+    actual: Option<time::Date>,
+) -> Option<time::Date> {
+    match actual {
+        Some(a) => Some(a),
+        None => planned,
+    }
+}
+
 /// A business release only exists relative to a technical one: it needs an end
 /// date and must land strictly after it. Mirrors the table CHECK, so the user
 /// gets a 422 rather than a 500 from the constraint.
@@ -155,11 +173,11 @@ pub async fn create(
     if !dates_ok(req.start_date, req.end_date) {
         return invalid_dates(&ctx.rid, "end_date must be on or after start_date");
     }
-    if !business_release_ok(req.end_date, req.business_release_date) {
-        return invalid_dates(
-            &ctx.rid,
-            "business_release_date requires an end_date and must be after it",
-        );
+    if !business_release_ok(
+        effective_end(req.end_date, req.actual_end_date),
+        req.business_release_date,
+    ) {
+        return invalid_dates(&ctx.rid, BUSINESS_RELEASE_RULE);
     }
     let slug = req.slug.clone().unwrap_or_else(|| slugify(&req.name));
     let auth = state.auth();
@@ -172,6 +190,7 @@ pub async fn create(
         description: &req.description,
         start_date: req.start_date,
         end_date: req.end_date,
+        actual_end_date: req.actual_end_date,
         business_release_date: req.business_release_date,
     };
     match msdb::create(&client, ctx.project.id, &new).await {
@@ -276,9 +295,11 @@ pub async fn update(
     // whole — a rule that spans fields cannot be checked field by field.
     let start = req.start_date.unwrap_or(existing.start_date);
     let end = req.end_date.unwrap_or(existing.end_date);
-    // Clearing the technical end date clears the business release with it
+    let actual = req.actual_end_date.unwrap_or(existing.actual_end_date);
+    let effective = effective_end(end, actual);
+    // Losing every technical end date clears the business release with it
     // (mirrored in the UPDATE statement), so validate against that outcome.
-    let business = if end.is_none() {
+    let business = if effective.is_none() {
         None
     } else {
         req.business_release_date
@@ -287,11 +308,12 @@ pub async fn update(
     if !dates_ok(start, end) {
         return invalid_dates(&ctx.rid, "end_date must be on or after start_date");
     }
-    if !business_release_ok(end, business) {
-        return invalid_dates(
-            &ctx.rid,
-            "business_release_date requires an end_date and must be after it",
-        );
+    // An actual end before the start would draw a bar running backwards.
+    if !dates_ok(start, actual) {
+        return invalid_dates(&ctx.rid, "actual_end_date must be on or after start_date");
+    }
+    if !business_release_ok(effective, business) {
+        return invalid_dates(&ctx.rid, BUSINESS_RELEASE_RULE);
     }
 
     let patch = MilestonePatch {
@@ -299,6 +321,7 @@ pub async fn update(
         description: req.description.as_deref(),
         start_date: req.start_date,
         end_date: req.end_date,
+        actual_end_date: req.actual_end_date,
         business_release_date: req.business_release_date,
     };
     match msdb::update(&client, ctx.project.id, id, existing.version, &patch).await {

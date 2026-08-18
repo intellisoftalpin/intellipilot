@@ -321,6 +321,7 @@ mod tests {
             release_text: None,
             labels: Vec::new(),
             components: Vec::new(),
+            component_versions: Vec::new(),
             watchers: Vec::new(),
             order: 1.0,
             version: 1,

@@ -6,6 +6,7 @@
 #![allow(unexpected_cfgs)]
 
 use garde::Validate;
+use intellipilot_core::backlog::ComponentVersion;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -495,6 +496,12 @@ pub struct CreateIssueRequest {
     #[garde(length(max = 50))]
     #[serde(default)]
     pub components: Vec<Uuid>,
+    /// Fix version per affected component. Components not in `components`,
+    /// and versions not belonging to a release that component ships in, are
+    /// rejected.
+    #[garde(length(max = 50))]
+    #[serde(default)]
+    pub component_versions: Vec<ComponentVersion>,
 }
 
 #[derive(Debug, Default, Deserialize, ToSchema)]
@@ -549,6 +556,9 @@ pub struct UpdateIssueRequest {
     /// Full replacement of the issue's components when present.
     #[serde(default)]
     pub components: Option<Vec<Uuid>>,
+    /// Full replacement of the per-component fix versions when present.
+    #[serde(default)]
+    pub component_versions: Option<Vec<ComponentVersion>>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -653,13 +663,19 @@ pub struct CreateMilestoneRequest {
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::option")]
     pub start_date: Option<time::Date>,
-    /// Technical release date.
+    /// Planned technical release date.
     #[garde(skip)]
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::option")]
     pub end_date: Option<time::Date>,
-    /// Commercial ship date; must be strictly after `end_date`. Setting it
-    /// requires `milestone.business_release.modify`.
+    /// When the milestone actually finished. Usually left unset at creation.
+    #[garde(skip)]
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::option")]
+    pub actual_end_date: Option<time::Date>,
+    /// Commercial ship date; must be strictly after the technical end that
+    /// really happened — `actual_end_date` when set, else `end_date`. Setting
+    /// it requires `milestone.business_release.modify`.
     #[garde(skip)]
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::option")]
@@ -685,8 +701,13 @@ pub struct UpdateMilestoneRequest {
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::double_option")]
     pub end_date: Option<Option<time::Date>>,
-    /// Requires `milestone.business_release.modify`. Clearing `end_date`
-    /// clears this too.
+    /// When the milestone actually finished; `null` clears it.
+    #[garde(skip)]
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::double_option")]
+    pub actual_end_date: Option<Option<time::Date>>,
+    /// Requires `milestone.business_release.modify`. Clearing both end dates
+    /// clears this too, since it would then trail nothing.
     #[garde(skip)]
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::double_option")]

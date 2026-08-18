@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::{TestApp, delete_bearer, get_with_bearer, patch_json_bearer, post_json_bearer};
+use common::{TestApp, delete_bearer, get_with_bearer, patch_json_bearer, post_json_bearer, req};
 use serde_json::json;
 
 const STRONG_PW: &str = "7xK!pq2$mz9Wbe#aQ";
@@ -247,4 +247,191 @@ async fn component_release_link_drives_fix_version() {
         ))
         .await;
     assert_eq!(unlink.status, 204);
+}
+
+/// Issues use optimistic concurrency, so every PATCH needs the current ETag;
+/// fetch it rather than tracking the version by hand.
+async fn issue_etag(app: &TestApp, url: &str, token: &str) -> String {
+    app.send(get_with_bearer(url, token))
+        .await
+        .header("etag")
+        .expect("issue etag")
+        .to_owned()
+}
+
+/// A change can ship in a different version of each component it touches, so
+/// the fix version belongs to the (issue, component) pair rather than to the
+/// issue alone.
+#[tokio::test]
+async fn each_component_carries_its_own_fix_version() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_with_project(&app, "compver").await;
+
+    // Two components, each shipping in its own release.
+    let mut components = Vec::new();
+    let mut versions = Vec::new();
+    for (name, release, version) in [("backend", "Server", "2.1"), ("frontend", "Web", "5.0")] {
+        let comp = app
+            .send(post_json_bearer(
+                &format!("/api/v1/projects/{pid}/components"),
+                &token,
+                &json!({ "name": name }),
+            ))
+            .await;
+        let cid = comp.json["id"].as_str().unwrap().to_owned();
+        let rel = app
+            .send(post_json_bearer(
+                &format!("/api/v1/projects/{pid}/releases"),
+                &token,
+                &json!({ "name": release }),
+            ))
+            .await;
+        let rid = rel.json["id"].as_str().unwrap().to_owned();
+        let ver = app
+            .send(post_json_bearer(
+                &format!("/api/v1/projects/{pid}/releases/{rid}/versions"),
+                &token,
+                &json!({ "version": version }),
+            ))
+            .await;
+        let _ = app
+            .send(post_json_bearer(
+                &format!("/api/v1/projects/{pid}/components/{cid}/releases"),
+                &token,
+                &json!({ "release_id": rid }),
+            ))
+            .await;
+        components.push(cid);
+        versions.push(ver.json["id"].as_str().unwrap().to_owned());
+    }
+
+    let statuses = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_status"),
+            &token,
+        ))
+        .await;
+    let status_id = statuses.json["items"][0]["id"].as_str().unwrap().to_owned();
+
+    let created = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/issues"),
+            &token,
+            &json!({
+                "subject": "Ships in two places",
+                "status_id": status_id,
+                "components": [components[0], components[1]],
+                "component_versions": [
+                    { "component_id": components[0], "release_version_id": versions[0] },
+                    { "component_id": components[1], "release_version_id": versions[1] },
+                ],
+            }),
+        ))
+        .await;
+    assert_eq!(created.status, 201, "{:?}", created.json);
+    let pairs = created.json["component_versions"].as_array().unwrap();
+    assert_eq!(pairs.len(), 2);
+    // The legacy single field mirrors one of them, so the list `?version=`
+    // filter, the exports and the board keep working untouched.
+    assert!(created.json["release_version_id"].is_string());
+
+    let id = created.json["id"].as_str().unwrap().to_owned();
+    let url = format!("/api/v1/projects/{pid}/issues/{id}");
+
+    // A version for a component the issue does not affect is refused: the
+    // row would only be pruned again by trigger.
+    let tag = issue_etag(&app, &url, &token).await;
+    let stray = app
+        .send(req(
+            "PATCH",
+            &url,
+            Some(&token),
+            &[("if-match", &tag)],
+            Some(&json!({
+                "components": [components[0]],
+                "component_versions": [
+                    { "component_id": components[1], "release_version_id": versions[1] },
+                ],
+            })),
+        ))
+        .await;
+    assert_eq!(stray.status, 422, "{:?}", stray.json);
+    assert_eq!(stray.json["code"], "component_version_unassigned");
+
+    // Nor is a version from a release that component does not ship in.
+    let tag = issue_etag(&app, &url, &token).await;
+    let unrelated = app
+        .send(req(
+            "PATCH",
+            &url,
+            Some(&token),
+            &[("if-match", &tag)],
+            Some(&json!({
+                "component_versions": [
+                    { "component_id": components[0], "release_version_id": versions[1] },
+                ],
+            })),
+        ))
+        .await;
+    assert_eq!(unrelated.status, 422, "{:?}", unrelated.json);
+    assert_eq!(unrelated.json["code"], "component_version_unrelated");
+
+    // Two versions for one component contradict "one version per component".
+    let tag = issue_etag(&app, &url, &token).await;
+    let duplicated = app
+        .send(req(
+            "PATCH",
+            &url,
+            Some(&token),
+            &[("if-match", &tag)],
+            Some(&json!({
+                "component_versions": [
+                    { "component_id": components[0], "release_version_id": versions[0] },
+                    { "component_id": components[0], "release_version_id": versions[0] },
+                ],
+            })),
+        ))
+        .await;
+    assert_eq!(duplicated.status, 422, "{:?}", duplicated.json);
+    assert_eq!(duplicated.json["code"], "component_version_duplicate");
+
+    // Dropping a component takes its version with it.
+    let tag = issue_etag(&app, &url, &token).await;
+    let narrowed = app
+        .send(req(
+            "PATCH",
+            &url,
+            Some(&token),
+            &[("if-match", &tag)],
+            Some(&json!({ "components": [components[0]] })),
+        ))
+        .await;
+    assert_eq!(narrowed.status, 200, "{:?}", narrowed.json);
+    let after = app.send(get_with_bearer(&url, &token)).await;
+    let remaining = after.json["component_versions"].as_array().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0]["component_id"], components[0]);
+
+    // Clearing them all clears the mirror too, so the filter cannot keep
+    // matching on a version the issue no longer claims.
+    let tag = issue_etag(&app, &url, &token).await;
+    let cleared = app
+        .send(req(
+            "PATCH",
+            &url,
+            Some(&token),
+            &[("if-match", &tag)],
+            Some(&json!({ "component_versions": [] })),
+        ))
+        .await;
+    assert_eq!(cleared.status, 200, "{:?}", cleared.json);
+    let empty = app.send(get_with_bearer(&url, &token)).await;
+    assert!(
+        empty.json["component_versions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(empty.json["release_version_id"].is_null());
 }

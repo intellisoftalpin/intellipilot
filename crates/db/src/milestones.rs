@@ -9,6 +9,7 @@ use crate::DbError;
 use crate::backlog::UpdateOutcome;
 
 const COLS: &str = "id, project_id, name, slug, description, start_date, end_date, \
+     actual_end_date, \
      business_release_date, closed, closed_at, \"order\", version, created_at, modified_at";
 
 fn row_to_milestone(r: &Row) -> Milestone {
@@ -20,6 +21,7 @@ fn row_to_milestone(r: &Row) -> Milestone {
         description: r.get("description"),
         start_date: r.get("start_date"),
         end_date: r.get("end_date"),
+        actual_end_date: r.get("actual_end_date"),
         business_release_date: r.get("business_release_date"),
         closed: r.get("closed"),
         closed_at: r.get("closed_at"),
@@ -39,6 +41,7 @@ pub struct MilestonePatch<'a> {
     pub description: Option<&'a str>,
     pub start_date: Option<Option<Date>>,
     pub end_date: Option<Option<Date>>,
+    pub actual_end_date: Option<Option<Date>>,
     pub business_release_date: Option<Option<Date>>,
 }
 
@@ -50,6 +53,7 @@ pub struct MilestoneNew<'a> {
     pub description: &'a str,
     pub start_date: Option<Date>,
     pub end_date: Option<Date>,
+    pub actual_end_date: Option<Date>,
     pub business_release_date: Option<Date>,
 }
 
@@ -72,8 +76,8 @@ pub async fn create(
             &format!(
                 "INSERT INTO milestones \
                    (project_id, name, slug, description, start_date, end_date, \
-                    business_release_date, \"order\") \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING {COLS}"
+                    actual_end_date, business_release_date, \"order\") \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING {COLS}"
             ),
             &[
                 &project_id,
@@ -82,6 +86,7 @@ pub async fn create(
                 &new.description,
                 &new.start_date,
                 &new.end_date,
+                &new.actual_end_date,
                 &new.business_release_date,
                 &order,
             ],
@@ -137,6 +142,10 @@ pub async fn update(
     let (desc_set, desc) = (patch.description.is_some(), patch.description);
     let (start_set, start) = (patch.start_date.is_some(), patch.start_date.flatten());
     let (end_set, end) = (patch.end_date.is_some(), patch.end_date.flatten());
+    let (actual_set, actual) = (
+        patch.actual_end_date.is_some(),
+        patch.actual_end_date.flatten(),
+    );
     let (biz_set, biz) = (
         patch.business_release_date.is_some(),
         patch.business_release_date.flatten(),
@@ -149,9 +158,16 @@ pub async fn update(
                    description = CASE WHEN $6::bool THEN $7::text ELSE description END, \
                    start_date = CASE WHEN $8::bool THEN $9::date ELSE start_date END, \
                    end_date = CASE WHEN $10::bool THEN $11::date ELSE end_date END, \
+                   actual_end_date = CASE \
+                     WHEN $12::bool THEN $13::date ELSE actual_end_date END, \
                    business_release_date = CASE \
-                     WHEN $12::bool THEN $13::date \
-                     WHEN $10::bool AND $11::date IS NULL THEN NULL \
+                     WHEN $14::bool THEN $15::date \
+                     WHEN COALESCE( \
+                            CASE WHEN $12::bool THEN $13::date \
+                                 ELSE actual_end_date END, \
+                            CASE WHEN $10::bool THEN $11::date \
+                                 ELSE end_date END \
+                          ) IS NULL THEN NULL \
                      ELSE business_release_date END, \
                    version = version + 1 \
                  WHERE id=$1 AND project_id=$2 AND version=$3 AND deleted_at IS NULL \
@@ -169,6 +185,8 @@ pub async fn update(
                 &start,
                 &end_set,
                 &end,
+                &actual_set,
+                &actual,
                 &biz_set,
                 &biz,
             ],
@@ -193,7 +211,9 @@ pub async fn close(
         .query_opt(
             &format!(
                 "UPDATE milestones SET closed=true, \
-                   closed_at=COALESCE(closed_at, now()), version=version+1 \
+                   closed_at=COALESCE(closed_at, now()), \
+                   actual_end_date=COALESCE(actual_end_date, end_date), \
+                   version=version+1 \
                  WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL RETURNING {COLS}"
             ),
             &[&id, &project_id],

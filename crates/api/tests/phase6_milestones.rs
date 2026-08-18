@@ -17,7 +17,7 @@
 
 mod common;
 
-use common::{TestApp, get_with_bearer, post_json_bearer, req};
+use common::{TestApp, get_with_bearer, post_bearer, post_json_bearer, req};
 use serde_json::{Value, json};
 
 const STRONG_PW: &str = "7xK!pq2$mz9Wbe#aQ";
@@ -862,4 +862,184 @@ async fn milestone_board_shape() {
         })
         .collect();
     insta::assert_json_snapshot!(shape);
+}
+
+/// The planned end date is the commitment; the actual end date is what
+/// happened. The gap between them is the slip the gantt draws.
+#[tokio::test]
+async fn actual_end_date_is_separate_from_the_planned_one() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+
+    let created = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/milestones"),
+            &token,
+            &json!({
+                "name": "Ship",
+                "start_date": "2026-05-01",
+                "end_date": "2026-05-20"
+            }),
+        ))
+        .await;
+    assert_eq!(created.status, 201, "{:?}", created.json);
+    // Absent until recorded, so "not known" and "on time" stay distinct.
+    assert!(created.json["actual_end_date"].is_null());
+    let id = created.json["id"].as_str().unwrap().to_owned();
+    let url = format!("/api/v1/projects/{pid}/milestones/{id}");
+
+    let slipped = app
+        .send(req(
+            "PATCH",
+            &url,
+            Some(&token),
+            &[("if-match", &format!("\"{id}:1\""))],
+            Some(&json!({ "actual_end_date": "2026-05-27" })),
+        ))
+        .await;
+    assert_eq!(slipped.status, 200, "{:?}", slipped.json);
+    assert_eq!(slipped.json["end_date"], "2026-05-20");
+    assert_eq!(slipped.json["actual_end_date"], "2026-05-27");
+
+    // Finishing early is just as recordable as finishing late.
+    let early = app
+        .send(req(
+            "PATCH",
+            &url,
+            Some(&token),
+            &[("if-match", &format!("\"{id}:2\""))],
+            Some(&json!({ "actual_end_date": "2026-05-15" })),
+        ))
+        .await;
+    assert_eq!(early.status, 200, "{:?}", early.json);
+    assert_eq!(early.json["actual_end_date"], "2026-05-15");
+
+    // And it can be cleared again.
+    let cleared = app
+        .send(req(
+            "PATCH",
+            &url,
+            Some(&token),
+            &[("if-match", &format!("\"{id}:3\""))],
+            Some(&json!({ "actual_end_date": null })),
+        ))
+        .await;
+    assert_eq!(cleared.status, 200, "{:?}", cleared.json);
+    assert!(cleared.json["actual_end_date"].is_null());
+}
+
+/// The commercial date trails whichever technical release really happened, so
+/// a slipped milestone cannot announce a business release before it finished.
+#[tokio::test]
+async fn business_release_follows_the_actual_end_when_there_is_one() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+
+    let created = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/milestones"),
+            &token,
+            &json!({
+                "name": "Ship",
+                "start_date": "2026-05-01",
+                "end_date": "2026-05-20",
+                "business_release_date": "2026-05-25"
+            }),
+        ))
+        .await;
+    assert_eq!(created.status, 201, "{:?}", created.json);
+    let id = created.json["id"].as_str().unwrap().to_owned();
+    let url = format!("/api/v1/projects/{pid}/milestones/{id}");
+
+    // Slipping past the business release would make it announce a release
+    // that had not happened yet.
+    let contradictory = app
+        .send(req(
+            "PATCH",
+            &url,
+            Some(&token),
+            &[("if-match", &format!("\"{id}:1\""))],
+            Some(&json!({ "actual_end_date": "2026-05-28" })),
+        ))
+        .await;
+    assert_eq!(contradictory.status, 422, "{:?}", contradictory.json);
+
+    // A slip that still lands before it is fine.
+    let ok = app
+        .send(req(
+            "PATCH",
+            &url,
+            Some(&token),
+            &[("if-match", &format!("\"{id}:1\""))],
+            Some(&json!({ "actual_end_date": "2026-05-22" })),
+        ))
+        .await;
+    assert_eq!(ok.status, 200, "{:?}", ok.json);
+    assert_eq!(ok.json["business_release_date"], "2026-05-25");
+}
+
+/// Completing records what actually happened without asking, using the plan as
+/// the best available answer. An already-recorded date is never overwritten.
+#[tokio::test]
+async fn completing_records_the_actual_end_from_the_plan() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+
+    let planned = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/milestones"),
+            &token,
+            &json!({ "name": "A", "end_date": "2026-06-30" }),
+        ))
+        .await;
+    let a = planned.json["id"].as_str().unwrap().to_owned();
+    let closed = app
+        .send(post_bearer(
+            &format!("/api/v1/projects/{pid}/milestones/{a}/close"),
+            &token,
+        ))
+        .await;
+    assert_eq!(closed.status, 200, "{:?}", closed.json);
+    assert_eq!(closed.json["actual_end_date"], "2026-06-30");
+
+    // Already recorded → left exactly as it is.
+    let recorded = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/milestones"),
+            &token,
+            &json!({
+                "name": "B",
+                "end_date": "2026-06-30",
+                "actual_end_date": "2026-07-04"
+            }),
+        ))
+        .await;
+    let b = recorded.json["id"].as_str().unwrap().to_owned();
+    let closed_b = app
+        .send(post_bearer(
+            &format!("/api/v1/projects/{pid}/milestones/{b}/close"),
+            &token,
+        ))
+        .await;
+    assert_eq!(closed_b.json["actual_end_date"], "2026-07-04");
+
+    // No plan to copy from → nothing invented.
+    let undated = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/milestones"),
+            &token,
+            &json!({ "name": "C" }),
+        ))
+        .await;
+    let c = undated.json["id"].as_str().unwrap().to_owned();
+    let closed_c = app
+        .send(post_bearer(
+            &format!("/api/v1/projects/{pid}/milestones/{c}/close"),
+            &token,
+        ))
+        .await;
+    assert!(closed_c.json["actual_end_date"].is_null());
 }

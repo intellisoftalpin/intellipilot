@@ -4,6 +4,68 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.24] - 2026-08-17
+
+Per-component fix versions and an issue actions menu (migration V022).
+Frontend companion release is also 0.6.24.
+
+### Added
+- `issue_component_versions`: the version each affected component ships the
+  fix in. A change that lands in different versions of different components
+  can finally say so. The version must belong to a release that component is
+  linked to, which is what makes the choice meaningful.
+
+### Changed
+- `issues.release_version_id` is now a **mirror** of the lowest-ordered
+  per-component version, maintained by trigger. Every `?version=` filter,
+  export and board group-by keeps reading it unchanged; set versions per
+  component instead of writing it directly.
+- `set_issue_components` now deletes only the components actually being
+  removed rather than clearing and re-inserting the lot. The wholesale clear
+  would have pruned every per-component version on any edit that merely
+  touched the component list.
+
+### Fixed
+- Issues could not be deleted from their detail page — only epics had the
+  action. Both now sit in a single actions menu next to the status pill,
+  alongside clone, move-to-epic, copy link, and jumps to the time log,
+  attachments and links.
+
+## [0.6.23] - 2026-08-17
+
+Milestone dates split into planned and actual, plus fixes to the documentation
+setup flow (migration V021). Frontend companion release is also 0.6.23.
+
+### Added
+- `milestones.actual_end_date`: when a milestone really finished, alongside the
+  planned `end_date` it has always had. The gap between the two is the slip,
+  which the timeline draws in its own colour — overrun one way, time saved the
+  other. Completing a milestone records the actual end from the plan when it
+  is still empty, and never overwrites one already there.
+
+### Changed
+- The business release date must now trail whichever technical end really
+  happened — `actual_end_date` when set, otherwise `end_date`. Previously the
+  rule only ever looked at the plan, so a slipped milestone could announce a
+  business release *before* the release it announces. Recording an actual end
+  that would break this is refused with a 422 rather than a constraint error.
+- Ordering keys off the same effective end date, so a slipped milestone moves
+  to where its bar actually sits.
+
+### Fixed
+- **The internal wiki editor was unusable.** Both of its text fields built a
+  new `TextEditingController` inside `build`, so every keystroke emitted new
+  state, rebuilt the widget and reset the caret to the start of the field. The
+  editor now owns its controllers and reuses the shared markdown editor, which
+  brings a formatting toolbar (bold, headings, lists, links, quotes, code) and
+  a live preview beside the source, scrolled in step with it.
+- **Registering a git documentation source with a generated key could never
+  succeed.** Creation generated the deploy key and probed the remote in the
+  same request, so it authenticated with a key that had not been added to the
+  git host yet and always failed. The key is now created up front through the
+  existing SSH-key endpoint, its public half is shown for copying, and the
+  connection is verified separately before the source is registered.
+
 ## [0.6.22] - 2026-08-17
 
 External documentation sources: git repositories surfaced under a project's
