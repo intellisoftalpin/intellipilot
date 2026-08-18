@@ -50,6 +50,16 @@ impl TaxonomyKind {
         matches!(self, Self::IssueStatus)
     }
 
+    /// Whether this kind carries a `counts_as_done` flag (the status kind).
+    ///
+    /// Independent of [`Self::has_closed`]: that one answers "is the issue
+    /// closed", this one answers "is there work left", and a project may
+    /// answer them differently.
+    #[must_use]
+    pub const fn has_counts_as_done(self) -> bool {
+        matches!(self, Self::IssueStatus)
+    }
+
     /// Whether this kind carries an `is_new` flag (the status kind). The "new"
     /// status is the default column a freshly created issue lands in; at most
     /// one status per project may carry it.
@@ -79,6 +89,10 @@ pub struct TaxonomyItem {
     pub order: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_closed: Option<bool>,
+    /// Whether epic and milestone progress count this status as finished work
+    /// (status kind only). Independent of `is_closed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counts_as_done: Option<bool>,
     /// The "new" status flag (status kind only): the default column a new issue
     /// lands in. At most one status per project carries it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,6 +111,7 @@ pub struct DefaultTaxonomyItem {
     pub slug: &'static str,
     pub color: &'static str,
     pub is_closed: Option<bool>,
+    pub counts_as_done: Option<bool>,
     pub is_new: Option<bool>,
     pub value: Option<f64>,
 }
@@ -106,11 +121,14 @@ pub struct DefaultTaxonomyItem {
 pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
     use TaxonomyKind::{IssueStatus, IssueType, Priority, Size};
 
+    // `closed` and `done` are separate arguments on purpose: the seeded
+    // statuses happen to agree, but nothing requires them to.
     let status = |kind: TaxonomyKind,
                   name: &'static str,
                   slug: &'static str,
                   color: &'static str,
                   closed: bool,
+                  done: bool,
                   is_new: bool| {
         DefaultTaxonomyItem {
             kind,
@@ -118,6 +136,7 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
             slug,
             color,
             is_closed: Some(closed),
+            counts_as_done: Some(done),
             is_new: Some(is_new),
             value: None,
         }
@@ -130,6 +149,7 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
                 slug,
                 color,
                 is_closed: None,
+                counts_as_done: None,
                 is_new: None,
                 value: None,
             }
@@ -141,6 +161,7 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
             slug,
             color,
             is_closed: None,
+            counts_as_done: None,
             is_new: None,
             value: Some(ordinal),
         }
@@ -149,13 +170,22 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
     vec![
         // Unified issue statuses (shared by every issue type). "New" is the
         // default landing column for freshly created issues.
-        status(IssueStatus, "New", "new", "#999999", false, true),
-        status(IssueStatus, "Ready", "ready", "#ff8a84", false, false),
+        status(IssueStatus, "New", "new", "#999999", false, false, true),
+        status(
+            IssueStatus,
+            "Ready",
+            "ready",
+            "#ff8a84",
+            false,
+            false,
+            false,
+        ),
         status(
             IssueStatus,
             "In progress",
             "in-progress",
             "#ffcc00",
+            false,
             false,
             false,
         ),
@@ -166,9 +196,18 @@ pub fn default_taxonomies() -> Vec<DefaultTaxonomyItem> {
             "#9dce0a",
             false,
             false,
+            false,
         ),
-        status(IssueStatus, "Done", "done", "#669900", true, false),
-        status(IssueStatus, "Archived", "archived", "#5c3566", true, false),
+        status(IssueStatus, "Done", "done", "#669900", true, true, false),
+        status(
+            IssueStatus,
+            "Archived",
+            "archived",
+            "#5c3566",
+            true,
+            true,
+            false,
+        ),
         // Issue types (the work-item discriminator: Story / Task / Bug / …)
         plain(IssueType, "Story", "story", "#3b7dd8"),
         plain(IssueType, "Task", "task", "#669900"),
@@ -209,7 +248,14 @@ mod tests {
 
     #[test]
     fn defaults_snapshot() {
-        let rows: Vec<(String, String, String, Option<bool>, Option<f64>)> = default_taxonomies()
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            Option<bool>,
+            Option<bool>,
+            Option<f64>,
+        )> = default_taxonomies()
             .into_iter()
             .map(|d| {
                 (
@@ -217,6 +263,7 @@ mod tests {
                     d.slug.to_owned(),
                     d.color.to_owned(),
                     d.is_closed,
+                    d.counts_as_done,
                     d.value,
                 )
             })
@@ -229,6 +276,19 @@ mod tests {
         for d in default_taxonomies() {
             if d.kind.has_closed() {
                 assert!(d.is_closed.is_some(), "{} must set is_closed", d.slug);
+            }
+            if d.kind.has_counts_as_done() {
+                assert!(
+                    d.counts_as_done.is_some(),
+                    "{} must set counts_as_done",
+                    d.slug
+                );
+            } else {
+                assert!(
+                    d.counts_as_done.is_none(),
+                    "{} must not set counts_as_done",
+                    d.slug
+                );
             }
             if d.kind.has_value() {
                 // every size carries its ordinal value

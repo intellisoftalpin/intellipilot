@@ -129,6 +129,13 @@ pub async fn create(
     } else {
         None
     };
+    // Not derived from is_closed: the two flags are independent by design, so
+    // a new status starts out not counting toward progress unless asked.
+    let counts_as_done = if kind.has_counts_as_done() {
+        Some(req.counts_as_done.unwrap_or(false))
+    } else {
+        None
+    };
     let is_new = if kind.has_new() {
         Some(req.is_new.unwrap_or(false))
     } else {
@@ -153,6 +160,7 @@ pub async fn create(
         &req.color,
         &req.emoji,
         is_closed,
+        counts_as_done,
         is_new,
         value,
     )
@@ -193,6 +201,11 @@ pub async fn update(
     };
     // Only the status kind carries an is_new flag.
     let is_new = if kind.has_new() { req.is_new } else { None };
+    let counts_as_done = if kind.has_counts_as_done() {
+        req.counts_as_done
+    } else {
+        None
+    };
     let auth = state.auth();
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
@@ -210,6 +223,7 @@ pub async fn update(
         req.color.as_deref(),
         req.emoji.as_deref(),
         req.is_closed,
+        counts_as_done,
         is_new,
         req.value,
     )

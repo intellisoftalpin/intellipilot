@@ -229,3 +229,110 @@ async fn taxonomy_requires_modify_permission() {
         .await;
     assert_eq!(create.status, 403);
 }
+
+/// The seeded statuses start with `counts_as_done` mirroring `is_closed`, so a
+/// project upgraded into V023 reports exactly the progress it did before.
+#[tokio::test]
+async fn seeded_statuses_count_the_closed_ones_as_done() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_with_project(&app).await;
+
+    let us = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_status"),
+            &token,
+        ))
+        .await;
+    assert_eq!(us.status, 200);
+    for item in us.json["items"].as_array().unwrap() {
+        let closed = item["is_closed"].as_bool().unwrap();
+        let done = item["counts_as_done"].as_bool().unwrap();
+        assert_eq!(
+            closed, done,
+            "seeded status {} should start with the flags agreeing",
+            item["slug"]
+        );
+    }
+
+    // Kinds that carry no status flags carry no done flag either.
+    let types = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_type"),
+            &token,
+        ))
+        .await;
+    for item in types.json["items"].as_array().unwrap() {
+        assert!(item.get("counts_as_done").is_none(), "{item:?}");
+    }
+}
+
+/// The flags move independently in both directions.
+#[tokio::test]
+async fn counts_as_done_is_independent_of_is_closed() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_with_project(&app).await;
+
+    let created = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_status"),
+            &token,
+            &json!({ "name": "In staging", "slug": "in-staging" }),
+        ))
+        .await;
+    assert_eq!(created.status, 201, "{:?}", created.json);
+    // A new status counts as neither, rather than inheriting anything.
+    assert_eq!(created.json["is_closed"], false);
+    assert_eq!(created.json["counts_as_done"], false);
+    let sid = created.json["id"].as_str().unwrap().to_owned();
+
+    // Counted, still open — the case the flag exists for.
+    let patched = app
+        .send(patch_json_bearer(
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_status/{sid}"),
+            &token,
+            &json!({ "counts_as_done": true }),
+        ))
+        .await;
+    assert_eq!(patched.status, 200, "{:?}", patched.json);
+    assert_eq!(patched.json["counts_as_done"], true);
+    assert_eq!(
+        patched.json["is_closed"], false,
+        "is_closed must not follow"
+    );
+
+    // And closing it later must not disturb the done flag.
+    let closed = app
+        .send(patch_json_bearer(
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_status/{sid}"),
+            &token,
+            &json!({ "is_closed": true }),
+        ))
+        .await;
+    assert_eq!(closed.json["is_closed"], true);
+    assert_eq!(closed.json["counts_as_done"], true);
+}
+
+/// Non-status kinds have no such flag, and asking for one is ignored rather
+/// than silently stored — a priority can never affect a progress bar.
+#[tokio::test]
+async fn counts_as_done_is_ignored_on_other_kinds() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_with_project(&app).await;
+
+    let created = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/taxonomy/priority"),
+            &token,
+            &json!({ "name": "Trivial", "slug": "trivial", "counts_as_done": true }),
+        ))
+        .await;
+    assert_eq!(created.status, 201, "{:?}", created.json);
+    assert!(
+        created.json.get("counts_as_done").is_none(),
+        "{:?}",
+        created.json
+    );
+}

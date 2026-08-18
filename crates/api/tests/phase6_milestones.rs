@@ -17,7 +17,7 @@
 
 mod common;
 
-use common::{TestApp, get_with_bearer, post_bearer, post_json_bearer, req};
+use common::{TestApp, get_with_bearer, patch_json_bearer, post_bearer, post_json_bearer, req};
 use serde_json::{Value, json};
 
 const STRONG_PW: &str = "7xK!pq2$mz9Wbe#aQ";
@@ -808,6 +808,136 @@ async fn milestone_stats_from_fixture() {
     assert_eq!(stats.json["completed_points"], 5.0);
     assert_eq!(stats.json["total_tasks"], 2);
     assert_eq!(stats.json["completed_tasks"], 1);
+}
+
+/// Flip a status's `counts_as_done` flag, leaving `is_closed` alone.
+async fn set_counts_as_done(app: &TestApp, token: &str, pid: &str, sid: &str, done: bool) {
+    let r = app
+        .send(patch_json_bearer(
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_status/{sid}"),
+            token,
+            &json!({ "counts_as_done": done }),
+        ))
+        .await;
+    assert_eq!(r.status, 200, "{:?}", r.json);
+    assert_eq!(r.json["counts_as_done"], done);
+}
+
+/// Progress is driven by `counts_as_done`, never by `is_closed`.
+///
+/// The two are pushed into direct conflict: an OPEN status is marked as
+/// counting, and the CLOSED status is marked as not counting. If progress
+/// still keyed off `is_closed` the numbers would come back exactly inverted,
+/// so this fails loudly rather than coincidentally passing.
+#[tokio::test]
+async fn progress_follows_counts_as_done_not_is_closed() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+    let m = milestone(&app, &token, &pid, &json!({ "name": "Sprint" })).await;
+    let mid = m["id"].as_str().unwrap().to_owned();
+    let eid = epic(&app, &token, &pid, "Scope", Some(&mid)).await;
+
+    let p5 = tax_id(&app, &token, &pid, "size", "XL").await;
+    let p3 = tax_id(&app, &token, &pid, "size", "M").await;
+    let st_done = tax_id(&app, &token, &pid, "issue_status", "Done").await;
+    let st_staging = tax_id(&app, &token, &pid, "issue_status", "Ready for test").await;
+
+    // "Ready for test" is not closed but needs no more work; "Done" is closed
+    // but the project has chosen not to count it.
+    set_counts_as_done(&app, &token, &pid, &st_staging, true).await;
+    set_counts_as_done(&app, &token, &pid, &st_done, false).await;
+
+    let _ = issue(
+        &app,
+        &token,
+        &pid,
+        &json!({ "subject": "staged", "epic_id": eid, "size_id": p5, "status_id": st_staging }),
+    )
+    .await;
+    let _ = issue(
+        &app,
+        &token,
+        &pid,
+        &json!({ "subject": "closed", "epic_id": eid, "size_id": p3, "status_id": st_done }),
+    )
+    .await;
+
+    let stats = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/milestones/{mid}/stats"),
+            &token,
+        ))
+        .await;
+    assert_eq!(stats.status, 200, "{:?}", stats.json);
+    assert_eq!(stats.json["total_points"], 8.0);
+    // 5 = the staged issue only. Keying off is_closed would give 3.
+    assert_eq!(stats.json["completed_points"], 5.0);
+    assert_eq!(stats.json["total_tasks"], 2);
+    assert_eq!(stats.json["completed_tasks"], 1);
+
+    // The epic readiness ring in the milestone sidebar reads the same flag, so
+    // the two can never disagree.
+    let epics = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/milestones/{mid}/epics"),
+            &token,
+        ))
+        .await;
+    assert_eq!(epics.status, 200, "{:?}", epics.json);
+    let items = epics.json["epics"].as_array().unwrap();
+    assert_eq!(items[0]["task_total"], 2);
+    assert_eq!(items[0]["task_closed"], 1);
+
+    // The closed status is still closed — only progress accounting moved.
+    let statuses = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/taxonomy/issue_status"),
+            &token,
+        ))
+        .await;
+    let done = statuses.json["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == st_done.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(done["is_closed"], true);
+    assert_eq!(done["counts_as_done"], false);
+}
+
+/// Marking nothing as done is allowed — the flags are independent — and it
+/// simply leaves progress at zero rather than falling back to `is_closed`.
+#[tokio::test]
+async fn no_status_counted_leaves_progress_at_zero() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+    let m = milestone(&app, &token, &pid, &json!({ "name": "Sprint" })).await;
+    let mid = m["id"].as_str().unwrap().to_owned();
+    let eid = epic(&app, &token, &pid, "Scope", Some(&mid)).await;
+    let st_done = tax_id(&app, &token, &pid, "issue_status", "Done").await;
+    let st_archived = tax_id(&app, &token, &pid, "issue_status", "Archived").await;
+    set_counts_as_done(&app, &token, &pid, &st_done, false).await;
+    set_counts_as_done(&app, &token, &pid, &st_archived, false).await;
+
+    let _ = issue(
+        &app,
+        &token,
+        &pid,
+        &json!({ "subject": "closed", "epic_id": eid, "status_id": st_done }),
+    )
+    .await;
+
+    let stats = app
+        .send(get_with_bearer(
+            &format!("/api/v1/projects/{pid}/milestones/{mid}/stats"),
+            &token,
+        ))
+        .await;
+    assert_eq!(stats.json["total_tasks"], 1);
+    assert_eq!(stats.json["completed_tasks"], 0);
 }
 
 #[tokio::test]

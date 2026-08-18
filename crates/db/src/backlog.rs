@@ -109,9 +109,12 @@ fn row_to_epic(r: &Row) -> Epic {
     }
 }
 
-/// Per-epic task counts for a project: epic_id → (total, closed). Counts only
-/// non-deleted issues directly grouped under an epic; "closed" follows the
-/// issue's status `is_closed` flag.
+/// Per-epic task counts for a project: epic_id → (total, done).
+///
+/// Counts only non-deleted issues directly grouped under an epic. "Done"
+/// follows the status's `counts_as_done` flag, NOT `is_closed`: a project can
+/// treat a status as finished work (In Staging, say) without closing the
+/// issue, and the progress ring is what that flag exists to drive.
 pub async fn epic_task_counts(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
@@ -119,7 +122,7 @@ pub async fn epic_task_counts(
     let rows = client
         .query(
             "SELECT i.epic_id, count(*) AS total, \
-               count(*) FILTER (WHERE COALESCE(t.is_closed, false)) AS closed \
+               count(*) FILTER (WHERE COALESCE(t.counts_as_done, false)) AS closed \
              FROM issues i LEFT JOIN taxonomy_items t ON t.id = i.status_id \
              WHERE i.project_id = $1 AND i.deleted_at IS NULL AND i.epic_id IS NOT NULL \
              GROUP BY i.epic_id",
@@ -146,7 +149,7 @@ pub async fn epic_task_count_one(
     let row = client
         .query_one(
             "SELECT count(*) AS total, \
-               count(*) FILTER (WHERE COALESCE(t.is_closed, false)) AS closed \
+               count(*) FILTER (WHERE COALESCE(t.counts_as_done, false)) AS closed \
              FROM issues i LEFT JOIN taxonomy_items t ON t.id = i.status_id \
              WHERE i.project_id = $1 AND i.epic_id = $2 AND i.deleted_at IS NULL",
             &[&project_id, &epic_id],

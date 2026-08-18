@@ -332,6 +332,11 @@ pub struct CreateTaxonomyItemRequest {
     #[garde(skip)]
     #[serde(default)]
     pub is_closed: Option<bool>,
+    /// Count this status as finished work in epic and milestone progress
+    /// (status kind only). Independent of `is_closed`.
+    #[garde(skip)]
+    #[serde(default)]
+    pub counts_as_done: Option<bool>,
     /// Mark this status as the "new" (default) column (status kind only).
     #[garde(skip)]
     #[serde(default)]
@@ -355,6 +360,11 @@ pub struct UpdateTaxonomyItemRequest {
     #[garde(skip)]
     #[serde(default)]
     pub is_closed: Option<bool>,
+    /// Count this status as finished work in epic and milestone progress
+    /// (status kind only). Independent of `is_closed`.
+    #[garde(skip)]
+    #[serde(default)]
+    pub counts_as_done: Option<bool>,
     /// Mark this status as the "new" (default) column (status kind only).
     #[garde(skip)]
     #[serde(default)]

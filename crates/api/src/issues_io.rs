@@ -766,6 +766,9 @@ pub async fn import_commit(
                     &slugify(&c.value),
                     "#9e9e9e",
                     "",
+                    // is_closed / counts_as_done / is_new / value: an imported
+                    // value carries no flags, so it lands as a plain item.
+                    None,
                     None,
                     None,
                     None,

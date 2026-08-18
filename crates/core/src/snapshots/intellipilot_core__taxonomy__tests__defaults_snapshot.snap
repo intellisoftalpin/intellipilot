@@ -8,12 +8,14 @@ expression: rows
     "new",
     "#999999",
     false,
+    false,
     null
   ],
   [
     "issue_status",
     "ready",
     "#ff8a84",
+    false,
     false,
     null
   ],
@@ -22,12 +24,14 @@ expression: rows
     "in-progress",
     "#ffcc00",
     false,
+    false,
     null
   ],
   [
     "issue_status",
     "ready-for-test",
     "#9dce0a",
+    false,
     false,
     null
   ],
@@ -36,12 +40,14 @@ expression: rows
     "done",
     "#669900",
     true,
+    true,
     null
   ],
   [
     "issue_status",
     "archived",
     "#5c3566",
+    true,
     true,
     null
   ],
@@ -50,12 +56,14 @@ expression: rows
     "story",
     "#3b7dd8",
     null,
+    null,
     null
   ],
   [
     "issue_type",
     "task",
     "#669900",
+    null,
     null,
     null
   ],
@@ -64,12 +72,14 @@ expression: rows
     "bug",
     "#cc0000",
     null,
+    null,
     null
   ],
   [
     "issue_type",
     "enhancement",
     "#9dce0a",
+    null,
     null,
     null
   ],
@@ -78,12 +88,14 @@ expression: rows
     "question",
     "#0079bc",
     null,
+    null,
     null
   ],
   [
     "priority",
     "low",
     "#999999",
+    null,
     null,
     null
   ],
@@ -92,12 +104,14 @@ expression: rows
     "medium",
     "#ffcc00",
     null,
+    null,
     null
   ],
   [
     "priority",
     "high",
     "#ff7518",
+    null,
     null,
     null
   ],
@@ -106,12 +120,14 @@ expression: rows
     "critical",
     "#cc0000",
     null,
+    null,
     null
   ],
   [
     "priority",
     "blocker",
     "#5c3566",
+    null,
     null,
     null
   ],
@@ -120,12 +136,14 @@ expression: rows
     "xs",
     "#9dce0a",
     null,
+    null,
     1.0
   ],
   [
     "size",
     "s",
     "#669900",
+    null,
     null,
     2.0
   ],
@@ -134,12 +152,14 @@ expression: rows
     "m",
     "#ffcc00",
     null,
+    null,
     3.0
   ],
   [
     "size",
     "l",
     "#ff7518",
+    null,
     null,
     4.0
   ],
@@ -148,12 +168,14 @@ expression: rows
     "xl",
     "#cc0000",
     null,
+    null,
     5.0
   ],
   [
     "size",
     "xxl",
     "#990000",
+    null,
     null,
     6.0
   ]

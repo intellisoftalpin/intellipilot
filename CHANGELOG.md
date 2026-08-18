@@ -4,6 +4,36 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.25] - 2026-08-18
+
+Statuses that count as completed, stacked detail sidebars, and multi-version
+kanban badges (migration V023). Frontend companion release is also 0.6.25.
+
+### Added
+- `taxonomy_items.counts_as_done`: which statuses epic and milestone progress
+  treat as finished work. A task in *In Staging* needs no more work and can
+  now fill the progress ring without being closed. Backfilled from
+  `is_closed`, so every existing install reports the numbers it did before.
+- Detail sidebars stack: milestone → epic → task, each layered over the last,
+  each close returning to the one beneath. An entity already open cannot be
+  pushed again, which is what stops an epic and its task from re-opening each
+  other indefinitely.
+- Kanban cards show every fix version an issue ships in, capped at three with
+  a `+N` pill; hovering it reveals the full component-to-version table, and
+  clicking pins that popup open.
+- The milestone's Manage epics dialog is searchable by epic subject and key.
+
+### Changed
+- Progress bars are the **only** thing that moved to `counts_as_done`.
+  `is_closed` still governs the resolution-required rule, the open-issue
+  filters, the dashboard and the board's column logic — the two flags answer
+  different questions and are independent, so a project may set them apart.
+- The board's release filter now matches **any** of an issue's per-component
+  versions rather than the `release_version_id` mirror, which had begun to
+  hide issues whose card visibly showed a matching version.
+- Tapping an issue inside an epic (or a subtask inside a task) opens it as a
+  panel over the current one instead of navigating away to its full page.
+
 ## [0.6.24] - 2026-08-17
 
 Per-component fix versions and an issue actions menu (migration V022).

@@ -311,8 +311,10 @@ pub async fn has_epics(
 /// epic, so this reads epic-derived membership without joining through epics.
 ///
 /// Size-ordinal totals (via each issue's `size_id` → taxonomy `value`) and
-/// issue counts, with "completed" meaning a closed status. `total_tasks` /
-/// `completed_tasks` count issues in the sprint (the unified work item).
+/// issue counts. "Completed" means a status flagged `counts_as_done` — which
+/// is deliberately not the same question as `is_closed`; see V023.
+/// `total_tasks` / `completed_tasks` count issues in the sprint (the unified
+/// work item).
 pub async fn stats(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
@@ -322,10 +324,10 @@ pub async fn stats(
         .query_one(
             "SELECT \
                COALESCE(sum(pt.value), 0)::float8 AS total_points, \
-               COALESCE(sum(CASE WHEN st.is_closed THEN pt.value ELSE 0 END), 0)::float8 \
+               COALESCE(sum(CASE WHEN st.counts_as_done THEN pt.value ELSE 0 END), 0)::float8 \
                  AS done_points, \
                count(*)::int8 AS total_tasks, \
-               count(*) FILTER (WHERE st.is_closed)::int8 AS done_tasks \
+               count(*) FILTER (WHERE st.counts_as_done)::int8 AS done_tasks \
              FROM issues i \
              LEFT JOIN taxonomy_items pt ON pt.id = i.size_id \
              LEFT JOIN taxonomy_items st ON st.id = i.status_id \
