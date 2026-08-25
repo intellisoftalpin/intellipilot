@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.6.25",
+        version = "0.6.26",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -53,6 +53,7 @@ use crate::problem::{FieldErrorView, Problem};
         crate::me_token::enable_token,
         crate::me_token::delete_token,
         crate::my_work::list_my_issues,
+        crate::counts::get_counts,
         crate::mfa::two_factor_verify,
         crate::mfa::totp_start,
         crate::mfa::totp_confirm,
@@ -289,6 +290,7 @@ use crate::problem::{FieldErrorView, Problem};
         intellipilot_core::my_work::MyIssue,
         intellipilot_core::my_work::MyIssueRole,
         crate::my_work::MyIssuesResponse,
+        intellipilot_core::counts::ProjectCounts,
         crate::admin::dto::PlatformSettingsResponse,
         crate::admin::dto::UpdateSettingsRequest,
         crate::admin::dto::UpdateBrandingRequest,

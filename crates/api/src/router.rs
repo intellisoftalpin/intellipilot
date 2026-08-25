@@ -15,10 +15,10 @@ use crate::middleware::{rate_limit, request_id, security_headers};
 use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
-    admin, attachments, auth, avatar, backlog, boards, branding, catalog, customers, dashboard,
-    docs, epic_cover, events, health, issue_relations, issues_io, me, me_token, mfa, milestones,
-    my_work, openapi, passkeys, project_icon, projects, releases, repositories, search, taxonomy,
-    time_tracking, wiki,
+    admin, attachments, auth, avatar, backlog, boards, branding, catalog, counts, customers,
+    dashboard, docs, epic_cover, events, health, issue_relations, issues_io, me, me_token, mfa,
+    milestones, my_work, openapi, passkeys, project_icon, projects, releases, repositories, search,
+    taxonomy, time_tracking, wiki,
 };
 
 /// Knowledge-base routes: the internal wiki and external documentation
@@ -423,6 +423,11 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/customers", post(customers::create))
             .route("/api/v1/projects/{project_id}/customers/{customer_id}", patch(customers::update))
             .route("/api/v1/projects/{project_id}/customers/{customer_id}", delete(customers::delete))
+            // Active-object counts for the project navigation rail badges.
+            .route(
+                "/api/v1/projects/{project_id}/counts",
+                get(counts::get_counts),
+            )
             // Kanban boards — first-class personal/shared boards + the
             // performant per-column board-data endpoint.
             .route(

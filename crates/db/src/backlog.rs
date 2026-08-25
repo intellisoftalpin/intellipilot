@@ -910,9 +910,88 @@ pub struct IssueQuery {
     pub involved_id: Option<Uuid>,
     pub release_mode: Option<String>,
     pub release_id: Option<Uuid>,
+    /// "My role" filter: one of the [`MY_ROLE_PREDICATES`] keys, or `"any"`
+    /// for "I hold at least one role". Needs `actor_id` (and, for
+    /// `mentioned`/`any`, `mention_like`) to resolve to anything.
+    pub my_role: Option<String>,
+    /// The caller, for the role predicates. `None` makes every role false.
+    pub actor_id: Option<Uuid>,
+    /// LIKE pattern for the caller's `@handle`, e.g. `%@ada%`, already
+    /// metacharacter-escaped. `None` makes the `mentioned` role false.
+    pub mention_like: Option<String>,
 }
 
-const ISSUE_FILTER_WHERE: &str = "issues.project_id = $1 AND issues.deleted_at IS NULL \
+/// SQL predicates for "the caller holds this role on `issues`", in the order
+/// the My Issues board renders its swimlanes.
+///
+/// `$A` stands in for the actor-id parameter and `$M` for the `%@handle%`
+/// mention pattern; [`my_role_sql`] substitutes the real placeholder numbers,
+/// so the same predicates serve queries with different parameter numbering.
+/// Every consumer (the `my_role` filter, the `my_role` swimlane grouping and
+/// the rail's My Issues count) goes through here, so they cannot disagree.
+pub const MY_ROLE_PREDICATES: [(&str, &str); 6] = [
+    (
+        "watching",
+        "EXISTS (SELECT 1 FROM issue_watchers w \
+                  WHERE w.issue_id = issues.id AND w.user_id = $A)",
+    ),
+    ("assignee", "issues.assigned_to = $A"),
+    ("qa", "issues.qa_assignee_id = $A"),
+    ("reviewer", "issues.reviewer_id = $A"),
+    ("reporter", "issues.owner_id = $A"),
+    // Mentions are text-derived. `search_index` already mirrors issue
+    // subject+description and comment bodies per project behind a trigram GIN
+    // index on (title || ' ' || body), so this rides that index instead of
+    // ILIKE-scanning issues.description and comments.body directly.
+    (
+        "mentioned",
+        "($M IS NOT NULL AND ( \
+            EXISTS (SELECT 1 FROM search_index si \
+                     WHERE si.project_id = issues.project_id \
+                       AND si.entity_type = 'issue' AND si.entity_id = issues.id \
+                       AND (si.title || ' ' || si.body) ILIKE $M ESCAPE '\\') \
+            OR EXISTS (SELECT 1 FROM comments c \
+                        JOIN search_index si2 ON si2.entity_type = 'comment' \
+                                             AND si2.entity_id = c.id \
+                        WHERE c.target_type = 'issue' AND c.target_id = issues.id \
+                          AND c.deleted_at IS NULL \
+                          AND (si2.title || ' ' || si2.body) ILIKE $M ESCAPE '\\')))",
+    ),
+];
+
+/// Substitute the actor / mention placeholders into a [`MY_ROLE_PREDICATES`]
+/// predicate. `actor` and `mention` are SQL parameter references (`"$24"`).
+pub fn my_role_sql(pred: &str, actor: &str, mention: &str) -> String {
+    pred.replace("$A", actor).replace("$M", mention)
+}
+
+/// `OR`-joined disjunction of every role predicate — "I hold at least one
+/// role on this issue".
+pub fn my_role_any_sql(actor: &str, mention: &str) -> String {
+    let parts: Vec<String> = MY_ROLE_PREDICATES
+        .iter()
+        .map(|(_, pred)| format!("({})", my_role_sql(pred, actor, mention)))
+        .collect();
+    parts.join(" OR ")
+}
+
+/// The `my_role` filter clause: NULL role → no filter, `"any"` → the
+/// disjunction, otherwise the one named role.
+fn my_role_filter_sql(role: &str, actor: &str, mention: &str) -> String {
+    let mut arms = vec![format!(
+        "({role} = 'any' AND ({}))",
+        my_role_any_sql(actor, mention)
+    )];
+    for (name, pred) in MY_ROLE_PREDICATES {
+        arms.push(format!(
+            "({role} = '{name}' AND ({}))",
+            my_role_sql(pred, actor, mention)
+        ));
+    }
+    format!("({role}::text IS NULL OR {})", arms.join(" OR "))
+}
+
+const ISSUE_FILTER_BASE: &str = "issues.project_id = $1 AND issues.deleted_at IS NULL \
      AND ($2::uuid IS NULL OR issues.status_id = $2) \
      AND ($3::uuid IS NULL OR issues.type_id = $3) \
      AND ($4::uuid IS NULL OR issues.priority_id = $4) \
@@ -942,6 +1021,20 @@ const ISSUE_FILTER_WHERE: &str = "issues.project_id = $1 AND issues.deleted_at I
                            OR ($21 = 'is' AND EXISTS \
                                  (SELECT 1 FROM release_versions rv \
                                   WHERE rv.id = issues.release_version_id AND rv.release_id = $22::uuid)))";
+
+/// The full issue-filter WHERE clause: the static dimensions ($1..$22) plus
+/// the `my_role` clause ($23 role, $24 actor, $25 mention pattern). Built once
+/// because the role predicates are composed at runtime from
+/// [`MY_ROLE_PREDICATES`].
+fn issue_filter_where() -> &'static str {
+    static W: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!(
+            "{ISSUE_FILTER_BASE} AND {}",
+            my_role_filter_sql("$23", "$24::uuid", "$25::text")
+        )
+    });
+    &W
+}
 
 pub async fn list_issues_paged(
     client: &deadpool_postgres::Client,
@@ -976,11 +1069,15 @@ pub async fn list_issues_paged(
         &q.involved_id,      // $20
         &q.release_mode,     // $21
         &q.release_id,       // $22
+        &q.my_role,          // $23
+        &q.actor_id,         // $24
+        &q.mention_like,     // $25
     ];
+    let w = issue_filter_where();
 
     let total: i64 = client
         .query_one(
-            &format!("SELECT count(*) AS n FROM issues WHERE {ISSUE_FILTER_WHERE}"),
+            &format!("SELECT count(*) AS n FROM issues WHERE {w}"),
             &base_params,
         )
         .await?
@@ -991,14 +1088,14 @@ pub async fn list_issues_paged(
         page_params.push(&lim);
         page_params.push(&off);
         format!(
-            "SELECT {ISSUE_COLS} FROM issues WHERE {ISSUE_FILTER_WHERE} \
-             ORDER BY issues.\"order\", issues.id LIMIT $23 OFFSET $24"
+            "SELECT {ISSUE_COLS} FROM issues WHERE {w} \
+             ORDER BY issues.\"order\", issues.id LIMIT $26 OFFSET $27"
         )
     } else {
         page_params.push(&off);
         format!(
-            "SELECT {ISSUE_COLS} FROM issues WHERE {ISSUE_FILTER_WHERE} \
-             ORDER BY issues.\"order\", issues.id OFFSET $23"
+            "SELECT {ISSUE_COLS} FROM issues WHERE {w} \
+             ORDER BY issues.\"order\", issues.id OFFSET $26"
         )
     };
     let rows = client.query(&page_sql, &page_params).await?;
@@ -1112,6 +1209,9 @@ fn board_base_params<'a>(
         &q.involved_id,      // $20
         &q.release_mode,     // $21
         &q.release_id,       // $22
+        &q.my_role,          // $23
+        &q.actor_id,         // $24
+        &q.mention_like,     // $25
     ]
 }
 
@@ -1130,18 +1230,19 @@ pub async fn board_columns(
     let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
     let cols: Option<Vec<Uuid>> = columns.map(<[Uuid]>::to_vec);
     let mut params = board_base_params(&project_id, q, &search_like);
-    params.push(&column_limit); // $23
-    params.push(&cols); // $24
+    params.push(&column_limit); // $26
+    params.push(&cols); // $27
+    let w = issue_filter_where();
     let sql = format!(
         "WITH ranked AS ( \
            SELECT {ISSUE_COLS}, \
              row_number() OVER (PARTITION BY status_id ORDER BY \"order\", id) AS rn, \
              count(*)     OVER (PARTITION BY status_id)                        AS col_total \
            FROM issues \
-           WHERE {ISSUE_FILTER_WHERE} AND parent_id IS NULL \
-             AND ($24::uuid[] IS NULL OR status_id = ANY($24)) \
+           WHERE {w} AND parent_id IS NULL \
+             AND ($27::uuid[] IS NULL OR status_id = ANY($27)) \
          ) \
-         SELECT * FROM ranked WHERE rn <= $23 ORDER BY status_id, \"order\", id"
+         SELECT * FROM ranked WHERE rn <= $26 ORDER BY status_id, \"order\", id"
     );
     let rows = client.query(&sql, &params).await?;
 
@@ -1172,6 +1273,30 @@ pub async fn board_columns(
         .collect())
 }
 
+/// FROM clause that explodes each issue into one row per role the caller holds
+/// on it — the `my_role` swimlane grouping.
+///
+/// `CROSS JOIN LATERAL` over a subquery yielding no rows drops the issue
+/// entirely, so issues the caller holds no role on fall out with no extra
+/// WHERE. One row per role puts a card in every lane it qualifies for, and the
+/// costly mention predicate is evaluated once per issue rather than per lane.
+fn my_role_lateral(actor: &str, mention: &str) -> String {
+    let arms: Vec<String> = MY_ROLE_PREDICATES
+        .iter()
+        .map(|(name, pred)| {
+            format!(
+                "CASE WHEN {} THEN '{name}' END",
+                my_role_sql(pred, actor, mention)
+            )
+        })
+        .collect();
+    format!(
+        "issues CROSS JOIN LATERAL (SELECT r FROM unnest(ARRAY[{}]::text[]) AS r \
+         WHERE r IS NOT NULL) mr",
+        arms.join(", ")
+    )
+}
+
 /// Per-(lane, column) metadata carried alongside each hydrated card row.
 struct LaneMeta {
     grp: String,
@@ -1194,21 +1319,32 @@ pub async fn board_lanes(
     columns: Option<&[Uuid]>,
     column_limit: i64,
 ) -> Result<Vec<BoardLane>, DbError> {
-    let (from, grp): (&str, &str) = match group {
-        "assignee" => ("issues", "COALESCE(issues.assigned_to::text, 'none')"),
-        "epic" => ("issues", "COALESCE(issues.epic_id::text, 'none')"),
-        "priority" => ("issues", "COALESCE(issues.priority_id::text, 'none')"),
+    let (from, grp): (String, &str) = match group {
+        "assignee" => (
+            "issues".to_owned(),
+            "COALESCE(issues.assigned_to::text, 'none')",
+        ),
+        "epic" => (
+            "issues".to_owned(),
+            "COALESCE(issues.epic_id::text, 'none')",
+        ),
+        "priority" => (
+            "issues".to_owned(),
+            "COALESCE(issues.priority_id::text, 'none')",
+        ),
         "component" => (
-            "issues LEFT JOIN issue_components ic ON ic.issue_id = issues.id",
+            "issues LEFT JOIN issue_components ic ON ic.issue_id = issues.id".to_owned(),
             "COALESCE(ic.component_id::text, 'none')",
         ),
+        "my_role" => (my_role_lateral("$24::uuid", "$25::text"), "mr.r"),
         _ => return Ok(Vec::new()),
     };
     let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
     let cols: Option<Vec<Uuid>> = columns.map(<[Uuid]>::to_vec);
     let mut params = board_base_params(&project_id, q, &search_like);
-    params.push(&column_limit); // $23
-    params.push(&cols); // $24
+    params.push(&column_limit); // $26
+    params.push(&cols); // $27
+    let w = issue_filter_where();
     let sql = format!(
         "WITH ranked AS ( \
            SELECT {ISSUE_COLS}, {grp} AS grp, \
@@ -1217,10 +1353,10 @@ pub async fn board_lanes(
              count(*) OVER (PARTITION BY {grp}, issues.status_id) AS cell_total, \
              count(*) OVER (PARTITION BY {grp})                   AS lane_total \
            FROM {from} \
-           WHERE {ISSUE_FILTER_WHERE} AND issues.parent_id IS NULL \
-             AND ($24::uuid[] IS NULL OR issues.status_id = ANY($24)) \
+           WHERE {w} AND issues.parent_id IS NULL \
+             AND ($27::uuid[] IS NULL OR issues.status_id = ANY($27)) \
          ) \
-         SELECT * FROM ranked WHERE rn <= $23 ORDER BY grp, status_id, \"order\", id"
+         SELECT * FROM ranked WHERE rn <= $26 ORDER BY grp, status_id, \"order\", id"
     );
     let rows = client.query(&sql, &params).await?;
 
@@ -1649,4 +1785,61 @@ pub async fn purge_project_epics(
     let orphans = orphan_storage_keys(&tx, &removed).await?;
     tx.commit().await?;
     Ok((n, orphans))
+}
+
+#[cfg(test)]
+mod my_role_tests {
+    use super::*;
+
+    /// The composed filter must dispatch on every role key plus `any`, and
+    /// must reference the actor and mention placeholders it promises.
+    #[test]
+    fn filter_where_covers_every_role() {
+        let w = issue_filter_where();
+        for (name, _) in MY_ROLE_PREDICATES {
+            assert!(
+                w.contains(&format!("$23 = '{name}'")),
+                "missing role {name}"
+            );
+        }
+        assert!(w.contains("$23 = 'any'"));
+        assert!(w.contains("$24::uuid"));
+        assert!(w.contains("$25::text"));
+        // Balanced parentheses — a stray one would only surface as a runtime
+        // syntax error against a live database.
+        let depth = w.chars().fold(0_i32, |d, c| match c {
+            '(' => d + 1,
+            ')' => d - 1,
+            _ => d,
+        });
+        assert_eq!(depth, 0, "unbalanced parentheses in issue filter");
+    }
+
+    /// The lane order the My Issues board renders is fixed by this table.
+    #[test]
+    fn role_order_is_the_lane_order() {
+        let names: Vec<&str> = MY_ROLE_PREDICATES.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names,
+            vec![
+                "watching",
+                "assignee",
+                "qa",
+                "reviewer",
+                "reporter",
+                "mentioned"
+            ]
+        );
+    }
+
+    #[test]
+    fn placeholders_are_substituted() {
+        let sql = my_role_any_sql("$7::uuid", "$8::text");
+        assert!(!sql.contains("$A"), "actor placeholder left unsubstituted");
+        assert!(
+            !sql.contains("$M"),
+            "mention placeholder left unsubstituted"
+        );
+        assert!(sql.contains("$7::uuid") && sql.contains("$8::text"));
+    }
 }

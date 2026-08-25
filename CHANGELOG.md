@@ -4,6 +4,41 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.26] - 2026-08-25
+
+The My Issues board and project rail count badges. No migration. Frontend
+companion release is also 0.6.26.
+
+### Added
+- **My Issues board** — a per-project kanban of the caller's own work, laned by
+  the relation they have to each issue: watching, assignee, QA, reviewer,
+  requestor, mentioned. It is a new `group=my_role` value on the existing
+  board-data endpoint, so it reuses the whole board pipeline (per-column counts,
+  capped cards, delta sync, live events, drag-to-change-status).
+  - An issue appears in **every** lane it qualifies for, the way a
+    component-grouped board already duplicates a card across its components. So
+    lane totals deliberately do not partition the card set.
+  - The `mentioned` lane resolves `@handle` in issue descriptions *and* comment
+    bodies through the existing `search_index` trigram index, rather than
+    ILIKE-scanning `issues.description` and `comments.body` per row.
+- `my_role=<role|any>` filter on `GET /projects/{id}/issues` and the board-data
+  endpoint. An unrecognised value is a 422 rather than a silently dropped
+  filter, which would widen the response to the whole project.
+- `GET /projects/{id}/counts` — active-object totals for the navigation rail
+  badges (`my_issues`, `issues`, `epics`, `milestones`). "Active" means not
+  closed and not deleted. Each count is gated by its own view permission
+  (`issue.view` / `epic.view` / `milestone.view`) and comes back `null`, not
+  `0`, when the caller may not see that section.
+  - `my_issues` counts **distinct** issues, top-level only, matching what the
+    My Issues board actually renders — not the sum of its lane totals.
+  - `issues` counts sub-tasks too, matching the issues list, which does not
+    filter on `parent_id`.
+
+### Changed
+- Project rail order is now Overview → My Issues → Boards → Issues → Epics →
+  Milestones → Time tracking → Wiki → Settings, with a count badge on the four
+  entity sections.
+
 ## [0.6.25] - 2026-08-18
 
 Statuses that count as completed, stacked detail sidebars, and multi-version

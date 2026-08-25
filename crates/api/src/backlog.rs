@@ -1243,6 +1243,11 @@ pub struct IssueListQuery {
     pub category: Option<String>,
     #[serde(default)]
     pub overdue: Option<bool>,
+    /// Restrict to issues the caller holds one role on — `watching`,
+    /// `assignee`, `qa`, `reviewer`, `reporter`, `mentioned` — or `any` for
+    /// "at least one". This is what the My Issues board pages a lane with.
+    #[serde(default)]
+    pub my_role: Option<String>,
 }
 
 /// Resolve a `none`/uuid reference filter into a (mode, id) pair.
@@ -1282,6 +1287,17 @@ pub async fn list_issues(
     let (release_mode, release_id) = ref_filter(&q.release);
     let (epic_mode, epic_id) = ref_filter(&q.epic);
     let (milestone_mode, milestone_id) = ref_filter(&q.milestone);
+    let Ok((my_role, actor)) =
+        crate::my_role::resolve(&client, ctx.actor_id, q.my_role.as_deref(), false).await
+    else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_my_role",
+            "Unknown my_role value",
+            None,
+            &ctx.rid,
+        );
+    };
     let query = bl::IssueQuery {
         search: opt_nonempty(&q.search),
         status_id: opt_uuid(&q.status_id),
@@ -1304,6 +1320,9 @@ pub async fn list_issues(
         involved_id,
         release_mode,
         release_id,
+        my_role,
+        actor_id: actor.id,
+        mention_like: actor.mention_like,
     };
     let limit = q.limit.map(|l| i64::from(l.clamp(1, 200)));
     let offset = i64::from(q.offset.unwrap_or(0));

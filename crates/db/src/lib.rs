@@ -12,6 +12,7 @@ pub mod comments;
 pub mod component_releases;
 pub mod component_repositories;
 pub mod components;
+pub mod counts;
 pub mod customers;
 pub mod dashboard;
 pub mod doc_sources;
@@ -130,4 +131,21 @@ impl Db {
         client.simple_query("SELECT 1").await?;
         Ok(())
     }
+}
+
+/// Escape `LIKE`/`ILIKE` metacharacters so `s` is matched literally.
+///
+/// Callers must pair this with `ESCAPE '\'` in the SQL. Used for handle
+/// mention patterns and user-supplied substring searches.
+#[must_use]
+pub fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// The `%@handle%` pattern that the `mentioned` role matches against.
+#[must_use]
+pub fn mention_pattern(username: &str) -> String {
+    format!("%@{}%", like_escape(username))
 }

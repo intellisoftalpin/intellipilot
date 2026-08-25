@@ -472,6 +472,11 @@ pub struct BoardDataQuery {
     pub category: Option<String>,
     #[serde(default)]
     pub overdue: Option<bool>,
+    /// Restrict to issues the caller holds one role on. Redundant when
+    /// `group=my_role` (each lane IS a role) but accepted for symmetry with
+    /// the issues list.
+    #[serde(default)]
+    pub my_role: Option<String>,
 }
 
 fn ref_filter(s: &Option<String>) -> (Option<String>, Option<Uuid>) {
@@ -509,6 +514,24 @@ pub async fn board_data(
     let (release_mode, release_id) = ref_filter(&q.release);
     let (epic_mode, epic_id) = ref_filter(&q.epic);
     let (milestone_mode, milestone_id) = ref_filter(&q.milestone);
+    // `group=my_role` lanes BY role, so the actor context must be loaded even
+    // when no `my_role` filter was passed.
+    let group_raw = q.group.as_deref().unwrap_or_default();
+    let Ok((my_role, actor)) = crate::my_role::resolve(
+        &client,
+        ctx.actor_id,
+        q.my_role.as_deref(),
+        group_raw == "my_role",
+    )
+    .await
+    else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_my_role",
+            "Unknown my_role value",
+            &ctx.rid,
+        );
+    };
     let query = bl::IssueQuery {
         search: opt_nonempty(&q.search),
         status_id: opt_uuid(&q.status_id),
@@ -531,6 +554,9 @@ pub async fn board_data(
         involved_id,
         release_mode,
         release_id,
+        my_role,
+        actor_id: actor.id,
+        mention_like: actor.mention_like,
     };
     let column_limit = i64::from(q.column_limit.unwrap_or(50).clamp(1, 200));
     let columns: Option<Vec<Uuid>> = q.columns.as_deref().map(|s| {

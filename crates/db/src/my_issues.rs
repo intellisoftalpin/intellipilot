@@ -15,7 +15,7 @@ use tokio_postgres::Row;
 use tokio_postgres::types::ToSql;
 use uuid::Uuid;
 
-use crate::DbError;
+use crate::{DbError, like_escape, mention_pattern};
 
 const ISO: &[time::format_description::FormatItem<'_>] =
     time::macros::format_description!("[year]-[month]-[day]");
@@ -44,13 +44,6 @@ fn row_to_issue(row: &Row) -> MyIssue {
         created_at: row.get("created_at"),
         modified_at: row.get("modified_at"),
     }
-}
-
-/// Escape LIKE metacharacters so the username is matched literally.
-fn like_escape(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
 }
 
 const FROM: &str = "FROM issues i \
@@ -102,7 +95,7 @@ pub async fn list(
     let mut cond = role_condition(role).to_owned();
 
     if role == MyIssueRole::Mentioned {
-        params.push(Box::new(format!("%@{}%", like_escape(username))));
+        params.push(Box::new(mention_pattern(username)));
         cond = cond.replace("$MENTION", &format!("${}", params.len()));
     }
 

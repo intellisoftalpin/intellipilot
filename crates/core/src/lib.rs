@@ -11,6 +11,7 @@ pub mod attachment;
 pub mod backlog;
 pub mod board;
 pub mod catalog;
+pub mod counts;
 pub mod customer;
 pub mod dashboard;
 pub mod docs;
