@@ -51,6 +51,10 @@ pub struct UserBrief {
 }
 
 /// A user as exposed in API responses. Never contains the password hash.
+// The flags are independent account facts, not a state machine: grouping them
+// into a sub-struct to satisfy the lint would change the wire shape every
+// client already consumes.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct User {
     pub id: Uuid,
@@ -71,6 +75,11 @@ pub struct User {
     /// `"ldap"` (directory). LDAP accounts cannot change/reset a local
     /// password — it is managed in the directory.
     pub auth_source: String,
+    /// Hide this user from timesheet reports (V024): the team grids, the
+    /// project time-entry list and its export, and their unfilled-days
+    /// warning. A reporting exclusion only — the user can still track time,
+    /// and their hours stay in per-issue logs and the admin entry list.
+    pub exclude_from_time_reports: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(flatten)]

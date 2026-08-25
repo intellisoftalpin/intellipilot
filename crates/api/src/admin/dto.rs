@@ -174,6 +174,11 @@ pub struct UpdateUserRequest {
     #[serde(default)]
     #[garde(length(max = 256))]
     pub full_name: Option<String>,
+    /// Hide the user from timesheet reports (V024). A reporting exclusion
+    /// only — it does not restrict their own time tracking.
+    #[serde(default)]
+    #[garde(skip)]
+    pub exclude_from_time_reports: Option<bool>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

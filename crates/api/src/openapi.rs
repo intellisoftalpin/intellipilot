@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.6.26",
+        version = "0.6.29",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -315,6 +315,7 @@ use crate::problem::{FieldErrorView, Problem};
         intellipilot_core::time_tracking::VacationYear,
         intellipilot_core::time_tracking::TimesheetSummary,
         intellipilot_core::time_tracking::TeamMemberMonth,
+        intellipilot_core::time_tracking::TeamMonth,
         intellipilot_core::time_tracking::DayMinutes,
         intellipilot_core::time_tracking::Availability,
         crate::issues_io::ImportPreview,

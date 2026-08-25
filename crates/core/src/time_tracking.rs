@@ -228,6 +228,19 @@ pub struct TeamMemberMonth {
     pub days: Vec<DayMinutes>,
 }
 
+/// One month of a team grid: the visible member rows plus how many members
+/// were withheld by [`crate::user::User::exclude_from_time_reports`].
+///
+/// `excluded_members` exists so a superadmin can tell a deliberately empty row
+/// from a bug. It is only surfaced to superadmins — the API drops it for
+/// ordinary project managers, so an exclusion cannot be inferred by anyone
+/// who did not set it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct TeamMonth {
+    pub members: Vec<TeamMemberMonth>,
+    pub excluded_members: i64,
+}
+
 /// Minutes logged on a single date (used inside [`TeamMemberMonth`]).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DayMinutes {

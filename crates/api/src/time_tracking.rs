@@ -827,7 +827,17 @@ pub async fn list_project_time(
     let Ok(client) = state.auth().db.pool.get().await else {
         return internal(&ctx.rid);
     };
-    match ttdb::list_for_project(&client, ctx.project.id, from, to, q.user_id).await {
+    match ttdb::list_for_project(
+        &client,
+        ctx.project.id,
+        from,
+        to,
+        q.user_id,
+        // A people view: excluded users are withheld.
+        ttdb::ReportScope::ProjectWide,
+    )
+    .await
+    {
         Ok(entries) => Json(json!({ "entries": entries })).into_response(),
         Err(_) => internal(&ctx.rid),
     }
@@ -853,8 +863,23 @@ pub async fn project_team_month(
         return internal(&ctx.rid);
     };
     match ttdb::team_month(&client, ctx.project.id, year, month).await {
-        Ok(members) => {
-            Json(json!({ "year": year, "month": month, "members": members })).into_response()
+        Ok(grid) => {
+            // The excluded-member count is a superadmin affordance: it tells
+            // whoever set the flag that the empty row is deliberate. Ordinary
+            // project managers must not be able to infer that a specific
+            // colleague is excluded, so the field is omitted for them
+            // entirely rather than sent as zero.
+            let mut body = json!({
+                "year": year,
+                "month": month,
+                "members": grid.members,
+            });
+            if ctx.is_superadmin
+                && let Some(obj) = body.as_object_mut()
+            {
+                obj.insert("excluded_members".to_owned(), json!(grid.excluded_members));
+            }
+            Json(body).into_response()
         }
         Err(_) => internal(&ctx.rid),
     }
@@ -1154,7 +1179,18 @@ pub async fn issue_time(
         || ctx.is_superadmin;
     let user_filter = if see_all { None } else { Some(ctx.actor_id) };
 
-    match ttdb::list_for_project(&client, ctx.project.id, from, to, user_filter).await {
+    match ttdb::list_for_project(
+        &client,
+        ctx.project.id,
+        from,
+        to,
+        user_filter,
+        // An issue's own time log must show every hour booked against it,
+        // so the report exclusion deliberately does not apply here.
+        ttdb::ReportScope::IssueLevel,
+    )
+    .await
+    {
         Ok(all) => {
             let entries: Vec<_> = all
                 .into_iter()
@@ -1195,7 +1231,17 @@ pub async fn export_project_time(
     let Ok(client) = state.auth().db.pool.get().await else {
         return internal(&ctx.rid);
     };
-    match ttdb::list_for_project(&client, ctx.project.id, from, to, q.user_id).await {
+    match ttdb::list_for_project(
+        &client,
+        ctx.project.id,
+        from,
+        to,
+        q.user_id,
+        // Export mirrors the on-screen list, silently omitting excluded users.
+        ttdb::ReportScope::ProjectWide,
+    )
+    .await
+    {
         Ok(entries) => export_response(&entries, q.format.as_deref(), true, &ctx.rid),
         Err(_) => internal(&ctx.rid),
     }
@@ -1329,9 +1375,14 @@ pub async fn global_team_month(
         return internal(&rid);
     };
     match ttdb::global_team_month(&client, year, month).await {
-        Ok(members) => {
-            Json(json!({ "year": year, "month": month, "members": members })).into_response()
-        }
+        // This endpoint is superadmin-only, so the count is always included.
+        Ok(grid) => Json(json!({
+            "year": year,
+            "month": month,
+            "members": grid.members,
+            "excluded_members": grid.excluded_members,
+        }))
+        .into_response(),
         Err(_) => internal(&rid),
     }
 }

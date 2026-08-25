@@ -131,6 +131,7 @@ fn row_to_user(row: &Row) -> User {
         is_superadmin: row.get("is_superadmin"),
         must_change_password: row.get("must_change_password"),
         auth_source: row.get("auth_source"),
+        exclude_from_time_reports: row.get("exclude_from_time_reports"),
         created_at: row.get("created_at"),
         card: card_from_row(row),
     }
@@ -138,7 +139,7 @@ fn row_to_user(row: &Row) -> User {
 
 const USER_COLS: &str = "id, email, username, full_name, lang, timezone, \
                          is_active, is_superadmin, must_change_password, \
-                         auth_source, created_at\
+                         auth_source, exclude_from_time_reports, created_at\
                          , avatar_kind, COALESCE(avatar_emoji, '') AS avatar_emoji, \
                          avatar_updated_at, motto, \
                          CASE WHEN mood_set_on = (now() AT TIME ZONE 'UTC')::date \
@@ -656,6 +657,44 @@ pub async fn set_active(
 
     tx.execute(
         "UPDATE users SET is_active = $2 WHERE id = $1",
+        &[&id, &value],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(AdminUpdateOutcome::Updated)
+}
+
+/// Set or clear the timesheet-report exclusion (V024).
+///
+/// A reporting-visibility flag only: it never touches the user's ability to
+/// track time, so unlike [`set_active`] there is no last-superadmin guard —
+/// excluding the last admin from a timesheet table locks nobody out. The
+/// deleted check still applies: a purged account is not addressable.
+pub async fn set_exclude_from_time_reports(
+    client: &mut deadpool_postgres::Client,
+    id: Uuid,
+    value: bool,
+) -> Result<AdminUpdateOutcome, DbError> {
+    let tx = client.transaction().await?;
+
+    let target = tx
+        .query_opt(
+            "SELECT deleted_at IS NOT NULL AS deleted \
+             FROM users WHERE id = $1 FOR UPDATE",
+            &[&id],
+        )
+        .await?;
+    let Some(target) = target else {
+        tx.rollback().await?;
+        return Ok(AdminUpdateOutcome::NotFound);
+    };
+    if target.get::<_, bool>("deleted") {
+        tx.rollback().await?;
+        return Ok(AdminUpdateOutcome::NotFound);
+    }
+
+    tx.execute(
+        "UPDATE users SET exclude_from_time_reports = $2 WHERE id = $1",
         &[&id, &value],
     )
     .await?;

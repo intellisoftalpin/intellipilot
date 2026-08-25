@@ -414,6 +414,16 @@ pub async fn update_user(
             Err(_) => return internal(&rid),
         }
     }
+    if let Some(value) = req.exclude_from_time_reports {
+        match users::set_exclude_from_time_reports(&mut client, id, value).await {
+            Ok(outcome) => {
+                if let Some(r) = outcome_to_response(&rid, outcome) {
+                    return r;
+                }
+            }
+            Err(_) => return internal(&rid),
+        }
+    }
     if let Some(full_name) = req.full_name.as_deref() {
         let upd = intellipilot_core::user::ProfileUpdate {
             full_name: Some(full_name.to_owned()),
@@ -445,6 +455,7 @@ pub async fn update_user(
             "target_user_id": id,
             "is_superadmin": req.is_superadmin,
             "is_active": req.is_active,
+            "exclude_from_time_reports": req.exclude_from_time_reports,
             "full_name_changed": req.full_name.is_some(),
         }),
     )

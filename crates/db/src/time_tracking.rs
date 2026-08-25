@@ -10,8 +10,8 @@
 #![allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
 
 use intellipilot_core::time_tracking::{
-    Availability, DayMinutes, EntryKind, MeetingType, PeriodLock, TeamMemberMonth, TimeEntry,
-    TimeEntryDetail, TimesheetSummary, VacationAllowance, VacationBalance, VacationYear,
+    Availability, DayMinutes, EntryKind, MeetingType, PeriodLock, TeamMemberMonth, TeamMonth,
+    TimeEntry, TimeEntryDetail, TimesheetSummary, VacationAllowance, VacationBalance, VacationYear,
 };
 use std::collections::BTreeMap;
 use time::{Date, Duration, Month, OffsetDateTime, Weekday};
@@ -255,6 +255,24 @@ const DETAIL_SELECT: &str = "SELECT te.id, te.user_id, te.kind, te.meeting_type,
      LEFT JOIN projects p ON p.id = te.project_id \
      LEFT JOIN users u ON u.id = te.user_id";
 
+/// Whether a project time query is a *people* view (which honours the
+/// timesheet-report exclusion) or an *accounting* view (which does not).
+///
+/// Deliberately an enum rather than a bool: three call sites share
+/// [`list_for_project`] and two of them must behave differently from the
+/// third. A bare bool at those sites would be silently invertible by a later
+/// refactor, with nothing to catch it but a test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportScope {
+    /// The project time-entry list and its CSV/XLSX export. Entries belonging
+    /// to excluded users are withheld.
+    ProjectWide,
+    /// A single issue's time log. Never filtered: hiding hours here would
+    /// understate the effort actually booked against the issue, which is what
+    /// estimates get reviewed against.
+    IssueLevel,
+}
+
 /// List one user's entries (work + absence) within a date range, optionally
 /// filtered to a project and/or a single issue.
 pub async fn list_for_user(
@@ -282,13 +300,22 @@ pub async fn list_for_user(
 
 /// List a project's work entries within a range (team view), optionally for a
 /// single member.
+///
+/// [`ReportScope`] decides whether users flagged
+/// `exclude_from_time_reports` are withheld. Three call sites share this
+/// query and they must NOT agree — see the enum's docs.
 pub async fn list_for_project(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
     from: Date,
     to: Date,
     user_id: Option<Uuid>,
+    scope: ReportScope,
 ) -> Result<Vec<TimeEntryDetail>, DbError> {
+    let exclusion = match scope {
+        ReportScope::ProjectWide => "AND NOT COALESCE(u.exclude_from_time_reports, false) ",
+        ReportScope::IssueLevel => "",
+    };
     let rows = client
         .query(
             &format!(
@@ -296,6 +323,7 @@ pub async fn list_for_project(
                  WHERE te.project_id = $1 AND te.kind IN ('work', 'meeting') \
                    AND te.entry_date BETWEEN $2 AND $3 \
                    AND ($4::uuid IS NULL OR te.user_id = $4) \
+                   {exclusion}\
                  ORDER BY u.full_name, te.entry_date, te.created_at"
             ),
             &[&project_id, &from, &to, &user_id],
@@ -609,8 +637,30 @@ async fn minutes_by_date(
     Ok(map)
 }
 
+/// Whether the user is withheld from timesheet reports (V024).
+async fn excluded_from_time_reports(
+    client: &deadpool_postgres::Client,
+    user_id: Uuid,
+) -> Result<bool, DbError> {
+    let row = client
+        .query_opt(
+            "SELECT exclude_from_time_reports FROM users WHERE id = $1",
+            &[&user_id],
+        )
+        .await?;
+    Ok(row.is_some_and(|r| r.get::<_, bool>("exclude_from_time_reports")))
+}
+
 /// Timesheet completeness for `user_id` in the given month. `today` bounds the
 /// "expected" range so future working days are not yet flagged as missing.
+///
+/// A user flagged `exclude_from_time_reports` has no fill obligation, so
+/// `missing_days` comes back empty for them. That single fact suppresses the
+/// unfilled-days warning in all three places that render it (the home
+/// dashboard, the project overview, and their own timesheet summary card),
+/// because all three read this one field. `working_days` and `complete_days`
+/// stay truthful — faking them would corrupt the numbers on the user's own
+/// timesheet page for no benefit.
 pub async fn timesheet_summary(
     client: &deadpool_postgres::Client,
     user_id: Uuid,
@@ -619,6 +669,7 @@ pub async fn timesheet_summary(
     today: Date,
 ) -> Result<TimesheetSummary, DbError> {
     let target = work_minutes_per_day(client, user_id).await?.unwrap_or(480);
+    let excluded = excluded_from_time_reports(client, user_id).await?;
     let start = month_start(year, month)?;
     let end = month_end(year, month)?;
     let by_date = minutes_by_date(client, user_id, start, end).await?;
@@ -638,7 +689,7 @@ pub async fn timesheet_summary(
                 let logged = by_date.get(&d).copied().unwrap_or(0);
                 if logged >= i64::from(target) {
                     complete_days += 1;
-                } else {
+                } else if !excluded {
                     missing_days.push(iso(d));
                 }
             }
@@ -665,7 +716,7 @@ pub async fn team_month(
     project_id: Uuid,
     year: i32,
     month: u8,
-) -> Result<Vec<TeamMemberMonth>, DbError> {
+) -> Result<TeamMonth, DbError> {
     let start = month_start(year, month)?;
     let end = month_end(year, month)?;
 
@@ -676,14 +727,27 @@ pub async fn team_month(
              FROM memberships m JOIN users u ON u.id = m.user_id \
              LEFT JOIN time_entries te ON te.user_id = m.user_id AND te.project_id = $1 \
                   AND te.kind IN ('work', 'meeting') AND te.entry_date BETWEEN $2 AND $3 \
-             WHERE m.project_id = $1 \
+             WHERE m.project_id = $1 AND NOT u.exclude_from_time_reports \
              GROUP BY m.user_id, u.username, u.full_name, te.entry_date \
              ORDER BY u.full_name",
             &[&project_id, &start, &end],
         )
         .await?;
 
-    Ok(rows_to_team(&rows))
+    let excluded: i64 = client
+        .query_one(
+            "SELECT count(*)::int8 AS n FROM memberships m JOIN users u ON u.id = m.user_id \
+             WHERE m.project_id = $1 AND u.exclude_from_time_reports \
+               AND u.deleted_at IS NULL",
+            &[&project_id],
+        )
+        .await?
+        .get("n");
+
+    Ok(TeamMonth {
+        members: rows_to_team(&rows),
+        excluded_members: excluded,
+    })
 }
 
 /// Fold `(user_id, username, full_name, entry_date, mins)` rows into per-member
@@ -722,7 +786,7 @@ pub async fn global_team_month(
     client: &deadpool_postgres::Client,
     year: i32,
     month: u8,
-) -> Result<Vec<TeamMemberMonth>, DbError> {
+) -> Result<TeamMonth, DbError> {
     let start = month_start(year, month)?;
     let end = month_end(year, month)?;
     let rows = client
@@ -732,13 +796,24 @@ pub async fn global_team_month(
              FROM users u \
              LEFT JOIN time_entries te ON te.user_id = u.id \
                   AND te.kind IN ('work', 'meeting') AND te.entry_date BETWEEN $1 AND $2 \
-             WHERE u.deleted_at IS NULL \
+             WHERE u.deleted_at IS NULL AND NOT u.exclude_from_time_reports \
              GROUP BY u.id, u.username, u.full_name, te.entry_date \
              ORDER BY u.full_name",
             &[&start, &end],
         )
         .await?;
-    Ok(rows_to_team(&rows))
+    let excluded: i64 = client
+        .query_one(
+            "SELECT count(*)::int8 AS n FROM users \
+             WHERE deleted_at IS NULL AND exclude_from_time_reports",
+            &[],
+        )
+        .await?
+        .get("n");
+    Ok(TeamMonth {
+        members: rows_to_team(&rows),
+        excluded_members: excluded,
+    })
 }
 
 /// Cross-project entry list (superadmin): all entries in a range, optionally

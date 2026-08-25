@@ -4,6 +4,43 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.29] - 2026-08-25
+
+Timesheet-report exclusion for users with no fill obligation (migration V024).
+Frontend companion release is also 0.6.29.
+
+### Added
+- **`users.exclude_from_time_reports`** — set from *admin → users*
+  ("Exclude from timesheet reports"). Built for top managers and freelance
+  consultants: people who are on the platform but are not expected to fill a
+  timesheet. It is a **reporting** exclusion, never a restriction — the user can
+  still log time, edit their entries and see their own timesheet exactly as
+  before. Defaulted to false, so every existing install behaves as it did.
+  - Hidden from: the per-project team grid, the cross-project superadmin grid,
+    the project time-entry list, and that list's CSV/XLSX export.
+  - Suppressed: their unfilled-days warning. `missing_days` comes back empty
+    for them, which removes the banner from the home dashboard, the project
+    overview *and* their own timesheet summary card in one change.
+    `working_days` / `complete_days` stay truthful.
+  - **Deliberately NOT hidden from**: an issue's own time log — hiding hours
+    there would understate the effort actually booked against the issue — and
+    the admin cross-project entry list, so a superadmin keeps one view that
+    shows every hour. Consequence worth knowing: a project time export will
+    not reconcile against per-issue time logs when an excluded user has
+    booked hours.
+  - Toggling the flag is recorded in the audit log.
+- Both team grids report `excluded_members`, surfaced **only to superadmins**
+  (the field is omitted, not zeroed, for ordinary project managers, so an
+  exclusion cannot be inferred by anyone who did not set it). The grid renders
+  it as a quiet, name-free footer note so a deliberately absent row does not
+  read as a bug.
+
+### Changed
+- `list_for_project` now takes a `ReportScope` (`ProjectWide` | `IssueLevel`).
+  Three call sites share that query and two must filter while the third must
+  not; an enum makes each site state which it is, where a bool could be
+  silently inverted by a later refactor.
+
 ## [0.6.26] - 2026-08-25
 
 The My Issues board and project rail count badges. No migration. Frontend
