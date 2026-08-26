@@ -33,7 +33,7 @@ use uuid::Uuid;
 use crate::auth::{client_ip, lockout_delay, request_id, sha256_hex, user_agent};
 use crate::dto::{
     AuthConfigResponse, LoginRequest, PasswordResetConfirmBody, PasswordResetRequestBody,
-    PasswordResetRequestResponse, RegisterRequest, TokenResponse,
+    PasswordResetRequestResponse, RefreshRequest, RegisterRequest, TokenResponse,
 };
 use crate::ldap::{LdapAuthenticator, LdapConfig, LdapError, RealLdap};
 use crate::problem::Problem;
@@ -752,17 +752,35 @@ pub(crate) async fn issue_session(
 // POST /api/v1/auth/refresh
 // --------------------------------------------------------------------------
 
-#[utoipa::path(post, path = "/api/v1/auth/refresh",
+/// Rotate a refresh token.
+///
+/// The token comes from the `refresh_token` cookie when present, and only
+/// otherwise from an optional JSON body. Cookie-first is deliberate: browsers
+/// always have the cookie, so the web client's behaviour is untouched and the
+/// body path exists purely for clients that cannot keep one cookie per
+/// account in a single jar (the desktop and mobile apps, which hold several
+/// accounts at once).
+#[utoipa::path(post, path = "/api/v1/auth/refresh", request_body = Option<RefreshRequest>,
     responses((status = 200, body = TokenResponse), (status = 401)))]
 pub async fn refresh(
     State(state): State<AppState>,
     headers: HeaderMap,
     jar: CookieJar,
+    body: Option<Json<RefreshRequest>>,
 ) -> Response {
     let rid = request_id(&headers);
     let auth = state.auth();
 
-    let Some(raw) = jar.get(REFRESH_COOKIE).map(|c| c.value().to_owned()) else {
+    // Cookie wins; the body is the fallback. `by_body` decides whether the
+    // rotated token is returned in the response, since a body caller has no
+    // cookie jar to receive it.
+    let from_cookie = jar.get(REFRESH_COOKIE).map(|c| c.value().to_owned());
+    let by_body = from_cookie.is_none();
+    let Some(raw) = from_cookie.or_else(|| {
+        body.and_then(|Json(b)| b.refresh_token)
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+    }) else {
         return problem(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -864,9 +882,12 @@ pub async fn refresh(
 
     stamp_session_activity(&state, &client, lk.family_id, &headers).await;
 
-    let dev_refresh = auth.config.env.is_dev().then(|| new_refresh.raw.clone());
+    // A body caller must be handed the rotated token — it has nowhere else to
+    // get it, and the previous one is now spent. Dev keeps its existing
+    // escape hatch for clients with no cookie jar.
+    let echo_refresh = (by_body || auth.config.env.is_dev()).then(|| new_refresh.raw.clone());
     let jar = set_refresh_cookie(jar, &new_refresh.raw, auth);
-    (jar, Json(token_response(access, dev_refresh))).into_response()
+    (jar, Json(token_response(access, echo_refresh))).into_response()
 }
 
 /// Record where and when a session was last used.
@@ -912,12 +933,28 @@ fn unauthorized_clear(rid: &str, jar: CookieJar) -> Response {
 // POST /api/v1/auth/logout
 // --------------------------------------------------------------------------
 
-#[utoipa::path(post, path = "/api/v1/auth/logout", responses((status = 204)))]
-pub async fn logout(State(state): State<AppState>, headers: HeaderMap, jar: CookieJar) -> Response {
+/// Revoke a session family. Token source mirrors [`refresh`]: cookie first,
+/// optional body second.
+#[utoipa::path(post, path = "/api/v1/auth/logout", request_body = Option<RefreshRequest>,
+    responses((status = 204)))]
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    body: Option<Json<RefreshRequest>>,
+) -> Response {
     let rid = request_id(&headers);
     let auth = state.auth();
 
-    if let Some(raw) = jar.get(REFRESH_COOKIE).map(|c| c.value().to_owned()) {
+    let token = jar
+        .get(REFRESH_COOKIE)
+        .map(|c| c.value().to_owned())
+        .or_else(|| {
+            body.and_then(|Json(b)| b.refresh_token)
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty())
+        });
+    if let Some(raw) = token {
         if let Ok(client) = auth.db.pool.get().await {
             let hash = refresh::hash_token(&raw);
             if let Ok(Some(lk)) = sessions::find_by_hash(&client, &hash).await {

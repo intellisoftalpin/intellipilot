@@ -37,13 +37,28 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+/// Optional body for `POST /auth/refresh` and `POST /auth/logout`.
+///
+/// Exists for clients with no cookie jar of their own to share — the desktop
+/// and mobile apps, which hold several accounts at once and therefore cannot
+/// keep one refresh cookie per account in a single jar. Browsers never send
+/// this: the cookie is read first and wins whenever it is present.
+#[derive(Debug, Default, Deserialize, Validate, ToSchema)]
+pub struct RefreshRequest {
+    #[garde(length(min = 1, max = 512))]
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TokenResponse {
     pub access_token: String,
     pub token_type: &'static str,
     pub expires_in: i64,
-    /// Present only in development when the refresh cookie can't be relied on
-    /// (e.g. non-browser clients). In production this is omitted.
+    /// The rotated refresh token, returned when the caller authenticated by
+    /// body rather than by cookie (and in development, where no cookie jar may
+    /// exist). Browser clients get it as an HttpOnly cookie instead and this
+    /// stays omitted — the token must not become readable to scripts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
 }

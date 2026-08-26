@@ -4,6 +4,28 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.6.31] - 2026-08-26
+
+Multi-account support for the desktop and mobile apps. Frontend companion
+release is also 0.6.31. No migration.
+
+### Added
+- `POST /auth/refresh` and `POST /auth/logout` accept an optional
+  `{ "refresh_token": ... }` body. **The cookie is read first**, so browser
+  clients are entirely unaffected; the body path exists for desktop and mobile,
+  which hold several accounts at once and therefore cannot keep one refresh
+  cookie per account in a single jar.
+  - A body-authenticated caller gets the rotated token back in the response —
+    it has no cookie jar to receive it, and the token it sent is now spent.
+  - Rotation, reuse detection and family revocation are untouched: a replayed
+    body token still revokes the whole family, exactly as over the cookie.
+
+### Notes
+- `TokenResponse.refresh_token` was previously populated only when
+  `env.is_dev()`. It is now also populated for body-authenticated callers. It
+  remains omitted for cookie callers, so the token never becomes readable to
+  scripts in a browser.
+
 ## [0.6.29] - 2026-08-25
 
 Timesheet-report exclusion for users with no fill obligation (migration V024).

@@ -7,8 +7,8 @@ use crate::dto::{
     ChangePasswordRequest, CreateProjectRequest, CreateRoleRequest, CreateTaxonomyItemRequest,
     InviteRequest, InviteResponse, LoginRequest, MoveTaxonomyItemRequest, PasskeyAuthStartRequest,
     PasskeyFinishRequest, PasswordResetConfirmBody, PasswordResetRequestBody,
-    PasswordResetRequestResponse, ProfileUpdateRequest, RecoveryCodesResponse, RegisterRequest,
-    TokenResponse, TotpConfirmRequest, TotpStartResponse, TwoFactorVerifyRequest,
+    PasswordResetRequestResponse, ProfileUpdateRequest, RecoveryCodesResponse, RefreshRequest,
+    RegisterRequest, TokenResponse, TotpConfirmRequest, TotpStartResponse, TwoFactorVerifyRequest,
     UpdateProjectRequest, UpdateRoleRequest, UpdateTaxonomyItemRequest,
 };
 use crate::health::{LiveResponse, ReadyResponse, VersionResponse};
@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.6.29",
+        version = "0.6.31",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -140,6 +140,7 @@ use crate::problem::{FieldErrorView, Problem};
         FieldErrorView,
         RegisterRequest,
         LoginRequest,
+        RefreshRequest,
         TokenResponse,
         ProfileUpdateRequest,
         ChangePasswordRequest,
