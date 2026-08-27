@@ -47,6 +47,18 @@ impl TestApp {
     }
 
     pub async fn spawn_with_attachment_limit(max_bytes: u64) -> Self {
+        Self::spawn_configured(max_bytes, Env::Development).await
+    }
+
+    /// A production-env app. Needed wherever a dev-only escape hatch would
+    /// otherwise mask the behaviour under test — the refresh token is echoed
+    /// into every response body in development, so anything about who receives
+    /// it can only be pinned here.
+    pub async fn spawn_in_production() -> Self {
+        Self::spawn_configured(25 * 1024 * 1024, Env::Production).await
+    }
+
+    pub async fn spawn_configured(max_bytes: u64, env: Env) -> Self {
         let db = TestDb::new().await;
         let app_db = Db {
             pool: db.pool.clone(),
@@ -68,7 +80,7 @@ impl TestApp {
             mailer: Arc::new(NoopMailer),
             webauthn,
             config: AuthConfig {
-                env: Env::Development,
+                env,
                 cookie_secure: false,
             },
             attachments: AttachmentConfig {

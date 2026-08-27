@@ -157,12 +157,62 @@ fn clear_refresh_cookie(jar: CookieJar) -> CookieJar {
     jar.remove(cookie)
 }
 
-fn token_response(access: String, dev_refresh: Option<String>) -> TokenResponse {
+/// Header a cookie-less client sends to ask for the refresh token in the
+/// response body.
+///
+/// Desktop and mobile hold several accounts at once and therefore cannot keep
+/// one refresh cookie per account in a single jar — they store each account's
+/// token in the OS keychain instead. `POST /auth/refresh` already honours this
+/// by echoing the rotated token to a caller that authenticated by body; the
+/// session-creating endpoints had no equivalent, so a native client could sign
+/// in and never receive a token it could persist.
+///
+/// Checked in [`issue_session`] rather than per endpoint on purpose: login, 2FA
+/// verify, passkey authentication and invitation acceptance all mint sessions,
+/// and gating this per handler is exactly how login came to be the one that
+/// was missed. Browsers never send it, so the cookie stays the only carrier
+/// there and remains HttpOnly.
+pub(crate) const REFRESH_IN_BODY_HEADER: &str = "x-intellipilot-refresh-in-body";
+
+/// The refresh token this request carries, and whether it came from the body.
+///
+/// Cookie wins; the body is the fallback. Which one it was decides whether the
+/// rotated token goes back in the response, since a body caller has no cookie
+/// jar to receive it — see [`should_echo_refresh`].
+fn refresh_token_from(
+    jar: &CookieJar,
+    body: Option<Json<RefreshRequest>>,
+) -> Option<(String, bool)> {
+    if let Some(c) = jar.get(REFRESH_COOKIE) {
+        return Some((c.value().to_owned(), false));
+    }
+    body.and_then(|Json(b)| b.refresh_token)
+        .map(|t| t.trim().to_owned())
+        .filter(|t| !t.is_empty())
+        .map(|t| (t, true))
+}
+
+/// Whether the refresh token belongs in this response's body.
+///
+/// One policy, three reasons: the caller authenticated by body and so has no
+/// cookie to read the rotation from (`by_body`), the caller asked via
+/// [`REFRESH_IN_BODY_HEADER`], or the server is in dev, which has always handed
+/// it over for clients with no cookie jar.
+fn should_echo_refresh(by_body: bool, headers: &HeaderMap, auth: &AuthContext) -> bool {
+    by_body
+        || auth.config.env.is_dev()
+        || headers
+            .get(REFRESH_IN_BODY_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+fn token_response(access: String, refresh_in_body: Option<String>) -> TokenResponse {
     TokenResponse {
         access_token: access,
         token_type: "Bearer",
         expires_in: ACCESS_TTL_SECS,
-        refresh_token: dev_refresh,
+        refresh_token: refresh_in_body,
     }
 }
 
@@ -743,9 +793,11 @@ pub(crate) async fn issue_session(
         tracing::warn!(error = %e, "failed to stamp last_login_at");
     }
 
-    let dev_refresh = auth.config.env.is_dev().then(|| new_refresh.raw.clone());
+    // A client with no cookie jar must be handed the token, or it has no way to
+    // stay signed in.
+    let echo_refresh = should_echo_refresh(false, headers, auth).then(|| new_refresh.raw.clone());
     let jar = set_refresh_cookie(jar, &new_refresh.raw, auth);
-    (jar, Json(token_response(access, dev_refresh))).into_response()
+    (jar, Json(token_response(access, echo_refresh))).into_response()
 }
 
 // --------------------------------------------------------------------------
@@ -771,16 +823,7 @@ pub async fn refresh(
     let rid = request_id(&headers);
     let auth = state.auth();
 
-    // Cookie wins; the body is the fallback. `by_body` decides whether the
-    // rotated token is returned in the response, since a body caller has no
-    // cookie jar to receive it.
-    let from_cookie = jar.get(REFRESH_COOKIE).map(|c| c.value().to_owned());
-    let by_body = from_cookie.is_none();
-    let Some(raw) = from_cookie.or_else(|| {
-        body.and_then(|Json(b)| b.refresh_token)
-            .map(|t| t.trim().to_owned())
-            .filter(|t| !t.is_empty())
-    }) else {
+    let Some((raw, by_body)) = refresh_token_from(&jar, body) else {
         return problem(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -883,9 +926,9 @@ pub async fn refresh(
     stamp_session_activity(&state, &client, lk.family_id, &headers).await;
 
     // A body caller must be handed the rotated token — it has nowhere else to
-    // get it, and the previous one is now spent. Dev keeps its existing
-    // escape hatch for clients with no cookie jar.
-    let echo_refresh = (by_body || auth.config.env.is_dev()).then(|| new_refresh.raw.clone());
+    // get it, and the previous one is now spent.
+    let echo_refresh =
+        should_echo_refresh(by_body, &headers, auth).then(|| new_refresh.raw.clone());
     let jar = set_refresh_cookie(jar, &new_refresh.raw, auth);
     (jar, Json(token_response(access, echo_refresh))).into_response()
 }
