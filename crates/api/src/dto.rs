@@ -104,6 +104,9 @@ pub struct ChangePasswordRequest {
 /// self-service signup is open, and whether email-based password reset is
 /// available (a mailer is configured). Invitation links work regardless of
 /// `open_registration`.
+// Independent facts about what the login screen may offer, not a state
+// machine; the wire shape is fixed by every client that reads it.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AuthConfigResponse {
     pub open_registration: bool,
@@ -118,6 +121,31 @@ pub struct AuthConfigResponse {
     /// When the custom icon was last changed — clients use it for cache-busting.
     #[serde(with = "time::serde::rfc3339::option")]
     pub app_icon_updated_at: Option<time::OffsetDateTime>,
+    /// Single sign-on buttons to render, in order (V025). Empty when no
+    /// provider is enabled, which is every install until a superadmin
+    /// configures one.
+    #[serde(default)]
+    pub sso_providers: Vec<SsoProviderSummary>,
+    /// Whether the password form should be hidden (V025). Purely a hint for
+    /// the UI — the login endpoint enforces it independently, and always lets
+    /// a superadmin holding a local password through.
+    #[serde(default)]
+    pub local_password_login_disabled: bool,
+}
+
+/// One sign-in button.
+///
+/// Deliberately says nothing about the provider beyond what an
+/// unauthenticated login screen must render: no issuer, no client id, nothing
+/// an attacker could use to map the deployment's identity provider.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SsoProviderSummary {
+    /// Route key, used to build `/api/v1/auth/oidc/{slug}/start`.
+    pub slug: String,
+    pub display_name: String,
+    /// Whether the desktop and mobile clients may offer this provider.
+    pub device_flow_enabled: bool,
+    pub sort_order: i32,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]

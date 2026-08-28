@@ -4,6 +4,93 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.0] - 2026-08-28
+
+OpenID Connect single sign-on (V025). Generic OIDC — Authentik is the reference
+configuration and test target, but the same code serves Keycloak, Entra, Okta
+and Google. Additive throughout: local password login, LDAP, MFA, passkeys and
+app tokens behave exactly as before until a superadmin configures a provider.
+Frontend companion release is 0.7.0.
+
+### Added
+- **Sign-in through an identity provider**, in two brokered flows. Neither ever
+  hands a client an IdP credential: the browser is redirected out and back to
+  `GET /auth/oidc/{slug}/callback`, which mints an IntelliPilot session of its
+  own; desktop and mobile use RFC 8628 device code, where the server holds the
+  IdP's `device_code` and the client polls with an unrelated opaque token. The
+  provider's client secret therefore never leaves the server, and the native
+  apps need no per-platform URL-scheme registration.
+- **Multiple providers.** Several may be configured and enabled at once; the
+  login screen renders one button per enabled provider, ordered by
+  `sort_order`. Managed at `/admin/oidc-providers`, with a `.../test` endpoint
+  that fetches the discovery document and reports what it publishes — including
+  whether the issuer it claims matches the one configured, which is the single
+  most common misconfiguration.
+- **Account linking, both ways round.** A user who already has an account
+  connects a provider themselves from Profile → Security, proving control of
+  both sides. `POST /admin/users/{id}/oidc-link-arm` is the rescue route for
+  someone who cannot sign in at all: a 24-hour, one-shot window in which the
+  next SSO attempt presenting that account's *verified* email links to it.
+- **Group → superadmin mapping**, synced in both directions on every sign-in,
+  mirroring the LDAP `superadmin_group`. Runs through the existing
+  last-superadmin guard, so a provider that stops emitting the claim — or an
+  administrator who mistypes its name — cannot empty the admin area. Refusals
+  are audited.
+- **Back-channel logout** at `POST /auth/oidc/{slug}/backchannel-logout`,
+  revoking the user's refresh families. Without it, disabling someone at the
+  identity provider would leave their IntelliPilot session alive for the full
+  refresh TTL — the one respect in which SSO would have been weaker than the
+  LDAP path it sits beside.
+- **`local_password_login_disabled`** on platform settings: hide the password
+  form and refuse password sign-in once an IdP is proven. Off by default. It
+  never applies to a superadmin holding a local password — that account is the
+  break-glass path back in, so enabling this cannot lock an operator out.
+- `GET /auth/config` now also reports `sso_providers` and
+  `local_password_login_disabled`. Purely additive, so older clients are
+  unaffected.
+
+### Security
+- **Identity is `(issuer, subject)`, never email.** An SSO sign-in whose subject
+  is unknown and whose email already belongs to an account is *refused*, not
+  linked: an identity provider can assert any address, and auto-linking on one
+  would be an account takeover. The user is told to sign in normally and connect
+  from Security.
+- ID-token verification (signature against the discovered JWKS, `iss`, `aud`,
+  expiry, `nonce`, and the access-token hash) is done by the `openidconnect`
+  crate rather than by hand. PKCE S256 is unconditional; `state` is single-use
+  with a ten-minute life and is consumed by the redeeming statement itself.
+- `redirect_to` accepts only app-relative paths. An open redirect on an
+  authentication endpoint is a phishing primitive.
+- Back-channel logout tokens are fully validated per §2.6 — `alg: none` and
+  encrypted tokens refused, `nonce` prohibited, the logout event required.
+- Unlike the LDAP path, an SSO sign-in never re-enables a deactivated account.
+- `client_secret` is write-only, exposed only as `client_secret_set`.
+- `RUSTSEC-2023-0071` (`rsa`, Marvin) is now reached through `openidconnect`,
+  which depends on it unconditionally. The justification in `audit.toml` was
+  rewritten to say what is actually true — the advisory concerns private-key
+  operations and this process holds no RSA private key, only verifying
+  signatures with the provider's public one — and a matching entry added to
+  `deny.toml`.
+
+### Fixed
+- `issue_session` counted only `login_success` and `login_success_ldap` when
+  detecting a first-ever login, so any new sign-in route would have emitted a
+  spurious `login_first` on *every* login. It now counts the OIDC action too.
+- A yanked `chacha20 0.10.0` (via `postgres-protocol`) was pinned in
+  `Cargo.lock`, failing `cargo deny`. Bumped to 0.10.2.
+
+### Migration
+- `V025__oidc.sql` — four new tables plus two defaulted columns
+  (`users.oidc_link_armed_until`, `platform_settings.local_password_login_disabled`).
+  Additive only; an install that never configures a provider is unaffected.
+
+### Configuration
+- `INTELLIPILOT_PUBLIC_URL` — the origin browsers reach this deployment on,
+  used to build the OIDC redirect URI. Falls back to `INTELLIPILOT_RP_ORIGIN`,
+  which a deployment using passkeys has already had to set to the same value.
+  The admin UI displays the resulting redirect URI so it can be copied into the
+  provider rather than guessed at.
+
 ## [0.6.31] - 2026-08-26
 
 Multi-account support for the desktop and mobile apps. Frontend companion

@@ -1211,3 +1211,143 @@ pub async fn list(
         .await?;
     Ok((users, total.get::<_, i64>("n")))
 }
+
+// --------------------------------------------------------------------------
+// OIDC single sign-on (V025)
+// --------------------------------------------------------------------------
+
+/// Look up a live account by email, for collision detection only.
+///
+/// Deliberately **not** an authenticating lookup. An OIDC sign-in resolves a
+/// user through `oidc_identities` on `(provider, subject)`; this exists so the
+/// flow can *refuse* to provision a second account over an address that is
+/// already taken, and tell the person to sign in normally and link instead.
+pub async fn find_by_email_basic(
+    client: &deadpool_postgres::Client,
+    email: &str,
+) -> Result<Option<User>, DbError> {
+    let email = normalize_email(email);
+    let row = client
+        .query_opt(
+            &format!("SELECT {USER_COLS} FROM users WHERE email = $1 AND deleted_at IS NULL"),
+            &[&email],
+        )
+        .await?;
+    Ok(row.as_ref().map(row_to_user))
+}
+
+/// Create an account for a subject nobody has seen before (JIT provisioning).
+///
+/// The row gets `auth_source = 'oidc'` and no password, which is what makes
+/// `me::change_password`'s existing `auth_source != "local"` gate refuse a
+/// password change for these users without that handler needing to learn about
+/// OIDC at all.
+///
+/// `must_change_password` is false: there is no local password to rotate.
+/// Unlike the LDAP path this never touches an existing row — a collision is
+/// the caller's problem to refuse, not this function's to overwrite.
+pub async fn provision_oidc_user(
+    client: &deadpool_postgres::Client,
+    email: &str,
+    username_hint: &str,
+    full_name: &str,
+    is_superadmin: bool,
+) -> Result<User, DbError> {
+    let email = normalize_email(email);
+    let username = free_username(client, username_hint).await?;
+    let row = client
+        .query_one(
+            &format!(
+                "INSERT INTO users \
+                   (email, username, full_name, password_hash, auth_source, \
+                    is_superadmin, must_change_password) \
+                 VALUES ($1, $2, $3, NULL, 'oidc', $4, false) \
+                 RETURNING {USER_COLS}"
+            ),
+            &[&email, &username, &full_name, &is_superadmin],
+        )
+        .await?;
+    Ok(row_to_user(&row))
+}
+
+/// Refresh the display name of an already-linked user from the IdP.
+///
+/// Only the cosmetic field. Email, username, `is_active` and `auth_source` are
+/// left alone on purpose: the LDAP path re-enables `is_active` on every login
+/// (see [`find_or_link_ldap_user`]), which silently undoes a deactivation, and
+/// that behaviour is not worth repeating here.
+pub async fn sync_oidc_display_name(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+    full_name: &str,
+) -> Result<(), DbError> {
+    if full_name.trim().is_empty() {
+        return Ok(());
+    }
+    client
+        .execute(
+            "UPDATE users SET full_name = $2, updated_at = now() \
+             WHERE id = $1 AND full_name <> $2",
+            &[&id, &full_name],
+        )
+        .await?;
+    Ok(())
+}
+
+/// Open (or, with `None`, close) the admin-armed OIDC linking window.
+///
+/// The rescue route for a user who cannot sign in any more and so cannot use
+/// the self-service link on the Security page. While the window is open, the
+/// next OIDC sign-in presenting this account's *verified* email binds its
+/// subject here instead of being refused.
+pub async fn set_oidc_link_arm(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+    until: Option<OffsetDateTime>,
+) -> Result<bool, DbError> {
+    let n = client
+        .execute(
+            "UPDATE users SET oidc_link_armed_until = $2, updated_at = now() \
+             WHERE id = $1 AND deleted_at IS NULL",
+            &[&id, &until],
+        )
+        .await?;
+    Ok(n > 0)
+}
+
+/// The account, if any, whose armed linking window is still open for this
+/// email. Expired windows are treated as closed.
+pub async fn find_armed_link_by_email(
+    client: &deadpool_postgres::Client,
+    email: &str,
+) -> Result<Option<User>, DbError> {
+    let email = normalize_email(email);
+    let row = client
+        .query_opt(
+            &format!(
+                "SELECT {USER_COLS} FROM users \
+                  WHERE email = $1 AND deleted_at IS NULL \
+                    AND oidc_link_armed_until IS NOT NULL \
+                    AND oidc_link_armed_until > now()"
+            ),
+            &[&email],
+        )
+        .await?;
+    Ok(row.as_ref().map(row_to_user))
+}
+
+/// Whether this account still holds a local password. Together with the
+/// identity count it decides whether unlinking would lock the user out.
+pub async fn has_local_password(
+    client: &deadpool_postgres::Client,
+    id: Uuid,
+) -> Result<bool, DbError> {
+    let row = client
+        .query_opt(
+            "SELECT password_hash IS NOT NULL AS present FROM users \
+              WHERE id = $1 AND deleted_at IS NULL",
+            &[&id],
+        )
+        .await?;
+    Ok(row.is_some_and(|r| r.get::<_, bool>("present")))
+}

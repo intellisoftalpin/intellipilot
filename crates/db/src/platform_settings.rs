@@ -6,6 +6,9 @@ use uuid::Uuid;
 
 use crate::DbError;
 
+// Independent operator switches, not a state machine: bundling them into a
+// sub-struct to satisfy the lint would obscure the one-field-per-column shape.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct PlatformSettings {
     pub open_registration: bool,
@@ -26,13 +29,20 @@ pub struct PlatformSettings {
     pub geoip_variant: String,
     /// Refresh the database monthly without an admin asking.
     pub geoip_auto_update: bool,
+    /// Hide the local password form and refuse password logins (V025).
+    ///
+    /// Off by default, so upgrading changes nothing. Deliberately never
+    /// applies to a superadmin who still holds a local password: that account
+    /// is the break-glass path back in when an identity provider is
+    /// misconfigured or unreachable.
+    pub local_password_login_disabled: bool,
     pub updated_at: OffsetDateTime,
     pub updated_by: Option<Uuid>,
 }
 
 const SELECT_COLS: &str = "open_registration, app_name, app_message, \
      app_icon_mime, app_icon_updated_at, geoip_enabled, geoip_variant, \
-     geoip_auto_update, updated_at, updated_by";
+     geoip_auto_update, local_password_login_disabled, updated_at, updated_by";
 
 fn row_to_settings(row: &tokio_postgres::Row) -> PlatformSettings {
     PlatformSettings {
@@ -44,6 +54,7 @@ fn row_to_settings(row: &tokio_postgres::Row) -> PlatformSettings {
         geoip_enabled: row.get("geoip_enabled"),
         geoip_variant: row.get("geoip_variant"),
         geoip_auto_update: row.get("geoip_auto_update"),
+        local_password_login_disabled: row.get("local_password_login_disabled"),
         updated_at: row.get("updated_at"),
         updated_by: row.get("updated_by"),
     }
@@ -76,6 +87,29 @@ pub async fn set_open_registration(
             &format!(
                 "UPDATE platform_settings \
                  SET open_registration = $1, updated_at = now(), updated_by = $2 \
+                 WHERE id = 1 RETURNING {SELECT_COLS}"
+            ),
+            &[&value, &updated_by],
+        )
+        .await?;
+    Ok(row_to_settings(&row))
+}
+
+/// Set the "local password login disabled" switch (V025).
+///
+/// The enforcement itself lives in the login handler, which always exempts a
+/// superadmin holding a local password — flipping this on can therefore never
+/// lock an operator out of their own deployment.
+pub async fn set_local_password_login_disabled(
+    client: &deadpool_postgres::Client,
+    value: bool,
+    updated_by: Uuid,
+) -> Result<PlatformSettings, DbError> {
+    let row = client
+        .query_one(
+            &format!(
+                "UPDATE platform_settings \
+                 SET local_password_login_disabled = $1, updated_at = now(), updated_by = $2 \
                  WHERE id = 1 RETURNING {SELECT_COLS}"
             ),
             &[&value, &updated_by],

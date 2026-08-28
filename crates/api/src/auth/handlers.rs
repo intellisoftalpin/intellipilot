@@ -33,7 +33,8 @@ use uuid::Uuid;
 use crate::auth::{client_ip, lockout_delay, request_id, sha256_hex, user_agent};
 use crate::dto::{
     AuthConfigResponse, LoginRequest, PasswordResetConfirmBody, PasswordResetRequestBody,
-    PasswordResetRequestResponse, RefreshRequest, RegisterRequest, TokenResponse,
+    PasswordResetRequestResponse, RefreshRequest, RegisterRequest, SsoProviderSummary,
+    TokenResponse,
 };
 use crate::ldap::{LdapAuthenticator, LdapConfig, LdapError, RealLdap};
 use crate::problem::Problem;
@@ -238,6 +239,21 @@ pub async fn config(State(state): State<AppState>, headers: HeaderMap) -> Respon
         .await
         .map(|s| crate::notify::mail_ready(&s))
         .unwrap_or(false);
+    // Enabled providers only; a half-configured one must not appear on a
+    // login screen. A failure here degrades to "no SSO buttons" rather than
+    // taking the login screen down with it.
+    let sso_providers = intellipilot_db::oidc_providers::list_enabled(&client)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| SsoProviderSummary {
+            slug: p.slug,
+            display_name: p.display_name,
+            device_flow_enabled: p.device_flow_enabled,
+            sort_order: p.sort_order,
+        })
+        .collect();
+
     Json(AuthConfigResponse {
         open_registration: settings.open_registration,
         password_reset_enabled,
@@ -245,6 +261,8 @@ pub async fn config(State(state): State<AppState>, headers: HeaderMap) -> Respon
         app_message: settings.app_message,
         has_custom_icon: settings.app_icon_mime.is_some(),
         app_icon_updated_at: settings.app_icon_updated_at,
+        sso_providers,
+        local_password_login_disabled: settings.local_password_login_disabled,
     })
     .into_response()
 }
@@ -464,6 +482,38 @@ pub async fn login(
     let is_local_superadmin = found
         .as_ref()
         .is_some_and(|u| u.user.is_superadmin && u.password_hash.is_some());
+
+    // SSO enforcement (V025). A deployment that has proven its identity
+    // provider can switch the password form off; this refuses the endpoint too,
+    // so hiding the form in the UI is not the only thing standing in the way.
+    //
+    // It covers the LDAP path as well as the local one, because both arrive
+    // through this same form — "password login is off" would be a lie if a
+    // directory password still worked. The break-glass carve-out is the same
+    // one LDAP already relies on, and is the reason enabling this can never
+    // lock an operator out of their own deployment.
+    if !is_local_superadmin
+        && platform_settings::get(&client)
+            .await
+            .is_ok_and(|s| s.local_password_login_disabled)
+    {
+        audit::record(
+            &client,
+            found.as_ref().map(|u| u.user.id),
+            "login_failure",
+            Some(ip),
+            Some(&user_agent(&headers)),
+            &json!({ "reason": "local_login_disabled", "identifier": req.email }),
+        )
+        .await;
+        return problem(
+            StatusCode::FORBIDDEN,
+            "local_login_disabled",
+            "Forbidden",
+            Some("password sign-in is disabled on this server; use single sign-on".to_owned()),
+            &rid,
+        );
+    }
     if let Ok(settings) = ldap_settings::get(&client).await
         && settings.enabled
         && !is_local_superadmin
@@ -727,12 +777,36 @@ pub(crate) async fn issue_session(
     jar: CookieJar,
     audit_action: &str,
 ) -> Response {
+    match establish_session(auth, geoip, client, user_id, headers, jar, audit_action).await {
+        Ok((jar, body)) => (jar, Json(body)).into_response(),
+        Err(response) => response,
+    }
+}
+
+/// The body of [`issue_session`], handing back the cookie jar and the token
+/// payload separately.
+///
+/// The OIDC browser callback needs exactly this: it must set the refresh
+/// cookie, but its response is a redirect back to the app rather than a JSON
+/// body. Splitting it here means both paths mint sessions through the same
+/// code — session family, geolocation, first-login detection and audit trail
+/// included — instead of the redirect path growing its own copy that would
+/// drift.
+pub(crate) async fn establish_session(
+    auth: &AuthContext,
+    geoip: &crate::geoip::GeoIp,
+    client: &deadpool_postgres::Client,
+    user_id: Uuid,
+    headers: &HeaderMap,
+    jar: CookieJar,
+    audit_action: &str,
+) -> Result<(CookieJar, TokenResponse), Response> {
     let rid = request_id(headers);
     let ip = client_ip(headers);
     let ua = user_agent(headers);
 
     let Ok(family_id) = sessions::create_family(client, user_id, &ua, Some(ip)).await else {
-        return internal(&rid);
+        return Err(internal(&rid));
     };
     // Resolve where this session started. Inert unless a superadmin enabled
     // geolocation and a database is installed; entirely local either way.
@@ -751,20 +825,27 @@ pub(crate) async fn issue_session(
         .await
         .is_err()
     {
-        return internal(&rid);
+        return Err(internal(&rid));
     }
     let Ok(access) = issue_access_token(&auth.access_key, user_id, ACCESS_TTL_SECS) else {
-        return internal(&rid);
+        return Err(internal(&rid));
     };
     // Detect the user's first-ever successful login (across password + LDAP)
     // BEFORE recording this success, then emit a one-time `login_first` event.
-    let is_first_login =
-        audit::count_for_actor_actions(client, user_id, &["login_success", "login_success_ldap"])
-            .await
-            .unwrap_or(1)
-            == 0;
+    let is_first_login = audit::count_for_actor_actions(
+        client,
+        user_id,
+        // Every action that establishes a session must be listed. Miss one and
+        // that route's users get a fresh `login_first` event on *every* login.
+        &["login_success", "login_success_ldap", "login_success_oidc"],
+    )
+    .await
+    .unwrap_or(1)
+        == 0;
     let via = if audit_action.contains("ldap") {
         "ldap"
+    } else if audit_action.contains("oidc") {
+        "oidc"
     } else {
         "password"
     };
@@ -797,7 +878,7 @@ pub(crate) async fn issue_session(
     // stay signed in.
     let echo_refresh = should_echo_refresh(false, headers, auth).then(|| new_refresh.raw.clone());
     let jar = set_refresh_cookie(jar, &new_refresh.raw, auth);
-    (jar, Json(token_response(access, echo_refresh))).into_response()
+    Ok((jar, token_response(access, echo_refresh)))
 }
 
 // --------------------------------------------------------------------------

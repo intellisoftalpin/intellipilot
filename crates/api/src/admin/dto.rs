@@ -281,6 +281,9 @@ pub struct UpdateAppTokenRequest {
 // Settings
 // ---------------------------------------------------------------------------
 
+// Independent operator switches, not a state machine; grouping them would
+// change the wire shape every client already consumes.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PlatformSettingsResponse {
     pub open_registration: bool,
@@ -295,6 +298,10 @@ pub struct PlatformSettingsResponse {
     pub app_icon_updated_at: Option<OffsetDateTime>,
     /// Whether IP geolocation is switched on (V018). Off by default.
     pub geoip_enabled: bool,
+    /// Whether the local password form is switched off in favour of single
+    /// sign-on (V025). Off by default. A superadmin holding a local password
+    /// can always sign in regardless — that is the break-glass account.
+    pub local_password_login_disabled: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
     pub updated_by: Option<Uuid>,
@@ -304,6 +311,11 @@ pub struct PlatformSettingsResponse {
 pub struct UpdateSettingsRequest {
     #[garde(skip)]
     pub open_registration: bool,
+    /// Omitted leaves the switch as it is, so a client written before V025
+    /// cannot turn password login off by accident.
+    #[serde(default)]
+    #[garde(skip)]
+    pub local_password_login_disabled: Option<bool>,
 }
 
 /// White-label branding update. An empty or absent string clears the field,

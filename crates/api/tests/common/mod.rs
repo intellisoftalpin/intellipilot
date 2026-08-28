@@ -82,6 +82,7 @@ impl TestApp {
             config: AuthConfig {
                 env,
                 cookie_secure: false,
+                public_origin: "http://localhost".to_owned(),
             },
             attachments: AttachmentConfig {
                 storage: storage.clone(),

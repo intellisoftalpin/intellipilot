@@ -102,6 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 config: AuthConfig {
                     env,
                     cookie_secure: env == Env::Production,
+                    public_origin: public_origin(),
                 },
                 attachments,
             };
@@ -484,6 +485,15 @@ fn build_attachments(
         max_bytes,
         signing_key: Arc::new(signing_key),
     })
+}
+
+/// The origin browsers reach this deployment on, used to build OIDC redirect
+/// URIs. Falls back to the WebAuthn RP origin, which any deployment using
+/// passkeys has already had to set to exactly this value.
+fn public_origin() -> String {
+    std::env::var("INTELLIPILOT_PUBLIC_URL")
+        .or_else(|_| std::env::var("INTELLIPILOT_RP_ORIGIN"))
+        .unwrap_or_else(|_| RpConfig::default().rp_origin)
 }
 
 /// WebAuthn relying-party config from env, defaulting to localhost for dev.

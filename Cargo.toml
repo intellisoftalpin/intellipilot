@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.32"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -24,7 +24,7 @@ publish = false
 
 [workspace.dependencies]
 # HTTP + async
-axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "tokio", "macros", "query", "tracing", "matched-path", "multipart"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "tokio", "macros", "query", "tracing", "matched-path", "multipart", "form"] }
 axum-extra = { version = "0.10", default-features = false, features = ["cookie"] }
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "fs", "net"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -121,6 +121,12 @@ mime = "0.3"
 infer = "0.16"
 url = { version = "2", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# OpenID Connect relying-party. Used for the security-critical parts only:
+# provider discovery, JWKS retrieval and ID-token verification (signature,
+# issuer, audience, expiry, nonce). Hand-rolling those checks is where OIDC
+# integrations acquire CVEs. Mechanical calls that this crate does not model
+# (the device authorization endpoint) go through `reqwest` directly.
+openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
 lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 percent-encoding = "2"
 regex = "1"

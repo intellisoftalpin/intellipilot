@@ -15,7 +15,19 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 version = 2
 yanked = "deny"
-ignore = []
+# Ignores are exceptional and must stay true. See audit.toml for the full
+# rationale; the two files are kept in step deliberately, because cargo-deny is
+# dependency-graph aware and cargo-audit is not, and a divergence between them
+# is exactly how a stale justification survives review.
+ignore = [
+    # RUSTSEC-2023-0071 — `rsa` Marvin timing side-channel.
+    #
+    # Reachable only as public-key signature *verification* of ID tokens, via
+    # `openidconnect`, which depends on `rsa` unconditionally. The advisory
+    # concerns private-key operations; this process holds no RSA private key.
+    # No fixed release exists. Re-evaluate at every dependency bump.
+    "RUSTSEC-2023-0071",
+]
 
 # --- Licenses ----------------------------------------------------------------
 

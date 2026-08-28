@@ -1337,6 +1337,7 @@ fn settings_response(s: platform_settings::PlatformSettings) -> PlatformSettings
         has_custom_icon: s.app_icon_mime.is_some(),
         app_icon_updated_at: s.app_icon_updated_at,
         geoip_enabled: s.geoip_enabled,
+        local_password_login_disabled: s.local_password_login_disabled,
         updated_at: s.updated_at,
         updated_by: s.updated_by,
     }
@@ -1390,6 +1391,17 @@ pub async fn update_settings(
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&rid);
     };
+    // Applied first so the response body reflects it. Absent means "leave it",
+    // which is what keeps a pre-V025 client from silently switching password
+    // login off by round-tripping a settings object it does not know about.
+    if let Some(disabled) = req.local_password_login_disabled
+        && let Err(e) =
+            platform_settings::set_local_password_login_disabled(&client, disabled, admin.user_id)
+                .await
+    {
+        tracing::error!(error = %e, "failed to set local password login switch");
+        return internal(&rid);
+    }
     match platform_settings::set_open_registration(&client, req.open_registration, admin.user_id)
         .await
     {

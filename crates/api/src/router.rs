@@ -17,8 +17,8 @@ use crate::state::AppState;
 use crate::{
     admin, attachments, auth, avatar, backlog, boards, branding, catalog, counts, customers,
     dashboard, docs, epic_cover, events, health, issue_relations, issues_io, me, me_token, mfa,
-    milestones, my_work, openapi, passkeys, project_icon, projects, releases, repositories, search,
-    taxonomy, time_tracking, wiki,
+    milestones, my_work, oidc, openapi, passkeys, project_icon, projects, releases, repositories,
+    search, taxonomy, time_tracking, wiki,
 };
 
 /// Knowledge-base routes: the internal wiki and external documentation
@@ -85,6 +85,29 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/auth/register", post(auth::handlers::register))
             .route("/api/v1/auth/login", post(auth::handlers::login))
             .route("/api/v1/auth/refresh", post(auth::handlers::refresh))
+            // Single sign-on (V025). Public because a person signing in has no
+            // session yet; each endpoint resolves the provider by slug and
+            // treats a disabled one as absent.
+            .route(
+                "/api/v1/auth/oidc/{slug}/start",
+                get(oidc::handlers::start),
+            )
+            .route(
+                "/api/v1/auth/oidc/{slug}/callback",
+                get(oidc::handlers::callback),
+            )
+            .route(
+                "/api/v1/auth/oidc/{slug}/device/start",
+                post(oidc::handlers::device_start),
+            )
+            .route(
+                "/api/v1/auth/oidc/device/poll",
+                post(oidc::handlers::device_poll),
+            )
+            .route(
+                "/api/v1/auth/oidc/{slug}/backchannel-logout",
+                post(oidc::handlers::backchannel_logout),
+            )
             .route("/api/v1/auth/logout", post(auth::handlers::logout))
             .route(
                 "/api/v1/auth/password/reset/request",
@@ -141,6 +164,24 @@ pub fn build_router(state: AppState) -> Router {
                 post(passkeys::register_finish),
             )
             .route("/api/v1/me/passkeys", get(passkeys::list))
+            // Self-service SSO linking (V025), beside the passkey enrolment it
+            // mirrors: the user proves control of both sides.
+            .route(
+                "/api/v1/me/oidc/identities",
+                get(oidc::handlers::list_identities),
+            )
+            .route(
+                "/api/v1/me/oidc/identities/{id}",
+                delete(oidc::handlers::unlink_identity),
+            )
+            .route(
+                "/api/v1/me/oidc/{slug}/link/start",
+                get(oidc::handlers::link_start),
+            )
+            .route(
+                "/api/v1/me/oidc/{slug}/device/link/start",
+                post(oidc::handlers::device_link_start),
+            )
             .route("/api/v1/me/passkeys/{id}", delete(passkeys::delete))
             .route(
                 "/api/v1/auth/passkeys/authenticate/start",
@@ -302,6 +343,22 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/admin/ldap-settings/test",
                 post(admin::handlers::test_ldap_settings),
+            )
+            .route(
+                "/api/v1/admin/oidc-providers",
+                get(admin::oidc::list_providers).post(admin::oidc::create_provider),
+            )
+            .route(
+                "/api/v1/admin/oidc-providers/{id}",
+                put(admin::oidc::update_provider).delete(admin::oidc::delete_provider),
+            )
+            .route(
+                "/api/v1/admin/oidc-providers/{id}/test",
+                post(admin::oidc::test_provider),
+            )
+            .route(
+                "/api/v1/admin/users/{id}/oidc-link-arm",
+                post(admin::oidc::arm_link).delete(admin::oidc::disarm_link),
             )
             .route(
                 "/api/v1/admin/notification-settings",

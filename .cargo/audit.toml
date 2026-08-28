@@ -1,19 +1,36 @@
 # cargo-audit configuration (auto-loaded from .cargo/audit.toml).
-# See ../audit.toml for the policy rationale.
+# Kept in step with ../audit.toml — see there for the full policy rationale.
 #
-# Policy: zero ignores. Any ignore MUST carry a written justification and an
-# upstream fix tracker, and be reviewed at every dependency bump.
+# Policy: ignores are exceptional. Each one MUST carry a written justification
+# that is checked against reality at every dependency bump — an ignore whose
+# stated reasoning has quietly stopped being true is worse than no ignore at
+# all, because it looks reviewed.
 
 [advisories]
 ignore = [
     # RUSTSEC-2023-0071 — `rsa` Marvin timing side-channel.
-    # `rsa` is an UNUSED, OPTIONAL dependency of `ssh-key` (only behind
-    # ssh-key's `rsa` feature, which we do NOT enable — ssh-key is used solely
-    # for Ed25519 keygen/encoding). It is never compiled into any binary
-    # (`cargo tree -i rsa --target all` is empty) and `cargo deny check`
-    # (dependency-graph aware) passes clean; cargo-audit flags it only because
-    # it scans Cargo.lock without feature resolution. No fixed rsa release
-    # exists. Re-evaluate when ssh-key drops the optional dep or rsa ships a fix.
+    #
+    # Reachability: the advisory is about RSA *private key* operations
+    # (decryption and signing), where a timing side-channel can leak the key.
+    # This process holds no RSA private key and performs no private-key
+    # operation. `rsa` is reached only through `openidconnect`, which uses it
+    # for `RsaPublicKey` signature *verification* of ID tokens and JWKS keys
+    # published by the identity provider. Verifying a signature with a public
+    # key exposes nothing the provider has not already published.
+    #
+    # Why the dependency is not simply removed: `rsa` is a mandatory (not
+    # feature-gated) dependency of `openidconnect` 4.x, and RS256 is the
+    # default ID-token signing algorithm of every mainstream provider,
+    # Authentik included. The alternative is to hand-roll OIDC discovery and
+    # ID-token verification, which trades an unreachable timing attack for the
+    # class of bug that OIDC integrations actually get wrong.
+    #
+    # A second, separate path exists: `ssh-key`'s optional `rsa` feature, which
+    # we do NOT enable — that copy is never compiled. cargo-audit reports it
+    # anyway because it scans Cargo.lock without feature resolution.
+    #
+    # No fixed `rsa` release exists. Re-evaluate when one ships, or when
+    # `openidconnect` gains a pluggable RSA backend.
     # Upstream: https://github.com/RustCrypto/RSA/issues/19
     "RUSTSEC-2023-0071",
 ]

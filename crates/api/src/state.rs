@@ -151,6 +151,17 @@ pub struct AuthConfig {
     /// Set the `Secure` attribute on the refresh cookie. Should be true in
     /// production (TLS); may be false for local http dev.
     pub cookie_secure: bool,
+    /// The origin browsers reach this deployment on, e.g.
+    /// `https://pilot.example.com` (V025).
+    ///
+    /// Only OIDC needs it, and it exists as configuration rather than being
+    /// read off the request because the redirect URI must match what is
+    /// registered at the identity provider byte for byte — and because a
+    /// `Host` header is attacker-controlled, so letting it shape the redirect
+    /// URI would be a way to steal authorization codes. Sourced from
+    /// `INTELLIPILOT_PUBLIC_URL`, falling back to `INTELLIPILOT_RP_ORIGIN`,
+    /// which a deployment using passkeys has already had to set correctly.
+    pub public_origin: String,
 }
 
 /// Everything the auth + identity endpoints need. Absent for Phase 0-only
@@ -207,6 +218,9 @@ pub struct AppState {
     pub geoip: Arc<crate::geoip::GeoIp>,
     /// External documentation caches, limits and per-source locks.
     pub docs: DocsConfig,
+    /// Cached OIDC provider discovery documents and JWKS (V025). Inert until a
+    /// superadmin configures a provider.
+    pub oidc: crate::oidc::OidcCache,
 }
 
 impl std::fmt::Debug for AppState {
@@ -308,6 +322,7 @@ impl AppStateBuilder {
             docs: self
                 .docs
                 .unwrap_or_else(|| DocsConfig::new(PathBuf::from("doc-cache-unconfigured"))),
+            oidc: crate::oidc::OidcCache::default(),
         }
     }
 }

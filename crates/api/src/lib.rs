@@ -36,6 +36,7 @@ pub mod milestones;
 pub mod my_role;
 pub mod my_work;
 pub mod notify;
+pub mod oidc;
 pub mod openapi;
 pub mod passkeys;
 pub mod presence;

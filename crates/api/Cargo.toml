@@ -59,6 +59,8 @@ dotenvy = { workspace = true }
 async-trait = { workspace = true }
 lettre = { workspace = true }
 reqwest = { workspace = true }
+openidconnect = { workspace = true }
+base64 = { workspace = true }
 bytes = { workspace = true }
 url = { workspace = true }
 sha2 = { workspace = true }
