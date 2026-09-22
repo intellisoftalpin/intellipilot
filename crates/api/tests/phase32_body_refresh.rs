@@ -115,7 +115,17 @@ async fn a_replayed_body_token_still_revokes_the_family() {
     let second = ok.json["refresh_token"].as_str().unwrap().to_owned();
 
     // Reuse of a spent token is treated as a compromise, exactly as over the
-    // cookie path: the whole family goes.
+    // cookie path: the whole family goes. (Once past the grace window — a
+    // replay within seconds is a benign race, see phase37_refresh_race.rs.)
+    let client = app.db.pool.get().await.unwrap();
+    client
+        .execute(
+            "UPDATE refresh_tokens SET used_at = now() - interval '10 minutes' \
+             WHERE used_at IS NOT NULL",
+            &[],
+        )
+        .await
+        .unwrap();
     let replay = app
         .send(post_with_body("/api/v1/auth/refresh", &first))
         .await;

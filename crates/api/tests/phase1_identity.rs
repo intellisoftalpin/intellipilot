@@ -162,7 +162,17 @@ async fn refresh_reuse_detected_revokes_family() {
     assert_eq!(r2.status, 200);
     let refresh2 = r2.dev_refresh().unwrap();
 
-    // Replaying the OLD token is reuse → 401.
+    // Replaying the OLD token long after it was rotated is reuse → 401. (A
+    // replay within seconds is a benign race — see phase37_refresh_race.rs.)
+    let client = app.db.pool.get().await.unwrap();
+    client
+        .execute(
+            "UPDATE refresh_tokens SET used_at = now() - interval '10 minutes' \
+             WHERE used_at IS NOT NULL",
+            &[],
+        )
+        .await
+        .unwrap();
     let reuse = app
         .send(post_with_cookie("/api/v1/auth/refresh", &refresh1))
         .await;

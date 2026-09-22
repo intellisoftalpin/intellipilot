@@ -4,6 +4,18 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.3] - 2026-09-22
+
+### Fixed
+- **A refresh race no longer signs the user out everywhere.** A refresh token
+  replayed within 30 seconds of its rotation — two browser tabs, or a refresh
+  timer meeting a 401, both holding the same cookie — used to count as reuse
+  and revoke the whole session family. It now gets `401 refresh_superseded`:
+  no tokens, the family and the cookie left alone (the jar already holds the
+  winner's successor), and an audit entry `refresh_superseded`. Losing the
+  atomic rotation race is treated the same way. A replay after the window is
+  still reuse and still revokes the family.
+
 ## [0.7.2] - 2026-09-22
 
 Project meetings, customers on any issue, working global search, and streamed

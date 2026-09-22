@@ -42,6 +42,18 @@ use crate::state::{AppState, AuthContext};
 
 const REFRESH_COOKIE: &str = "refresh_token";
 const REFRESH_PATH: &str = "/api/v1/auth";
+/// How long after a refresh token was rotated a replay of it is treated as a
+/// benign race rather than theft.
+///
+/// Two refreshes carrying the same cookie at once are routine in a browser:
+/// two tabs, or a proactive timer meeting a 401 after the laptop wakes. Both
+/// send the token the jar held a moment ago; one wins the rotation and the
+/// other presents a token that is now spent. Revoking the family for that
+/// signed everyone out of every tab. Inside this window the loser gets
+/// `refresh_superseded` instead — no tokens, the family untouched, the cookie
+/// left alone because the jar already holds the winner's successor — and
+/// simply retries. A replay after the window keeps the old verdict.
+const REFRESH_REUSE_GRACE_SECS: i64 = 30;
 const RESET_TTL_SECS: i64 = 60 * 60; // 1 hour
 const FAILURE_WINDOW_SECS: i64 = 60 * 60; // 1 hour
 
@@ -936,6 +948,15 @@ pub async fn refresh(
         return unauthorized_clear(&rid, jar);
     }
 
+    // A token spent moments ago is a race between two holders of the same
+    // cookie, not a replay by a thief: see [`REFRESH_REUSE_GRACE_SECS`].
+    if lk
+        .used_at
+        .is_some_and(|used| now() - used <= TimeDuration::seconds(REFRESH_REUSE_GRACE_SECS))
+    {
+        return refresh_superseded(&client, &lk, &headers, &rid).await;
+    }
+
     // Reuse detection: a token already used means the family is compromised.
     if lk.used_at.is_some() {
         sessions::revoke_family(&client, lk.family_id, "reuse_detected").await;
@@ -967,13 +988,12 @@ pub async fn refresh(
         Err(_) => return internal(&rid),
     }
 
-    // Atomic rotate: if we lose the race, treat as reuse.
+    // Atomic rotate. Losing here means a concurrent request with the same
+    // token rotated it between our lookup and now — the same benign race the
+    // grace check above handles, just closer together.
     match sessions::mark_used(&client, lk.token_id).await {
         Ok(true) => {}
-        Ok(false) => {
-            sessions::revoke_family(&client, lk.family_id, "reuse_detected").await;
-            return unauthorized_clear(&rid, jar);
-        }
+        Ok(false) => return refresh_superseded(&client, &lk, &headers, &rid).await,
         Err(_) => return internal(&rid),
     }
 
@@ -1036,6 +1056,36 @@ async fn stamp_session_activity(
         loc.as_ref().and_then(|l| l.city.as_deref()),
     )
     .await;
+}
+
+/// Answer a refresh that lost a rotation race.
+///
+/// 401 so no client mistakes it for success, with its own code so clients can
+/// tell "retry with the token your jar now holds" from "you are signed out".
+/// Deliberately does not touch the cookie: clearing it would delete the
+/// successor the winning request just set.
+async fn refresh_superseded(
+    client: &deadpool_postgres::Client,
+    lk: &sessions::RefreshLookup,
+    headers: &HeaderMap,
+    rid: &str,
+) -> Response {
+    audit::record(
+        client,
+        Some(lk.user_id),
+        "refresh_superseded",
+        Some(client_ip(headers)),
+        Some(&user_agent(headers)),
+        &json!({ "family_id": lk.family_id.to_string() }),
+    )
+    .await;
+    problem(
+        StatusCode::UNAUTHORIZED,
+        "refresh_superseded",
+        "Unauthorized",
+        Some("this refresh token was just rotated by a concurrent request; retry".to_owned()),
+        rid,
+    )
 }
 
 fn unauthorized_clear(rid: &str, jar: CookieJar) -> Response {
