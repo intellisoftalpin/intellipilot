@@ -5,7 +5,8 @@
 //! project's taxonomy) plus unmatched users and warnings — no writes; `commit`
 //! takes the file plus a mapping payload and creates the issues, comments and
 //! parent/epic links. Categorical values map to existing taxonomy items or are
-//! created when the mapping says so; components map to existing only.
+//! created when the mapping says so; components and customers map to existing
+//! only.
 #![allow(
     clippy::too_many_lines,
     clippy::result_large_err,
@@ -31,8 +32,8 @@ use intellipilot_core::perms::Permission;
 use intellipilot_core::taxonomy::TaxonomyKind;
 use intellipilot_db::backlog::IssueWrite;
 use intellipilot_db::{
-    audit, backlog as bdb, comments as cdb, components as compdb, labels as labeldb,
-    memberships as memdb, milestones as msdb, taxonomy as txdb,
+    audit, backlog as bdb, comments as cdb, components as compdb, customers as custdb,
+    labels as labeldb, memberships as memdb, milestones as msdb, taxonomy as txdb,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -97,6 +98,7 @@ struct ParsedRow {
     reporter: String,
     due_date: Option<Date>,
     components: Vec<String>,
+    customers: Vec<String>,
     comments: Vec<String>,
     parent_ref: String,
     epic_ref: String,
@@ -124,6 +126,15 @@ fn first(record: &csv::StringRecord, cols: &HashMap<String, Vec<usize>>, name: &
         .first()
         .map(|s| (*s).to_owned())
         .unwrap_or_default()
+}
+
+/// A comma-separated export cell (`Components`, `Customers`) as its values.
+fn split_list(cell: &str) -> Vec<String> {
+    cell.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn strip_hash(s: &str) -> String {
@@ -218,6 +229,8 @@ fn parse_csv(bytes: &[u8]) -> Result<Vec<ParsedRow>, String> {
                     .into_iter()
                     .map(str::to_owned)
                     .collect(),
+                // JIRA has no standard customer field.
+                customers: Vec::new(),
                 comments: values(&rec, &cols, "Comment")
                     .into_iter()
                     .map(format_comment)
@@ -237,12 +250,8 @@ fn parse_csv(bytes: &[u8]) -> Result<Vec<ParsedRow>, String> {
                 assignee: first(&rec, &cols, "Assignee"),
                 reporter: first(&rec, &cols, "Reporter"),
                 due_date: parse_date(&first(&rec, &cols, "Due date")),
-                components: first(&rec, &cols, "Components")
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .collect(),
+                components: split_list(&first(&rec, &cols, "Components")),
+                customers: split_list(&first(&rec, &cols, "Customers")),
                 comments: Vec::new(),
                 parent_ref: strip_hash(&first(&rec, &cols, "Parent")),
                 epic_ref: strip_hash(&first(&rec, &cols, "Epic")),
@@ -265,7 +274,7 @@ pub struct ExportQuery {
     pub format: Option<String>,
 }
 
-const EXPORT_HEADERS: [&str; 17] = [
+const EXPORT_HEADERS: [&str; 18] = [
     "Ref",
     "Subject",
     "Type",
@@ -279,6 +288,7 @@ const EXPORT_HEADERS: [&str; 17] = [
     "Milestone",
     "Labels",
     "Components",
+    "Customers",
     "Start date",
     "Due date",
     "Resolution",
@@ -350,6 +360,12 @@ pub async fn export_issues(
         .into_iter()
         .map(|c| (c.id, c.name))
         .collect();
+    let customers: HashMap<Uuid, String> = custdb::list(&client, pid)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| (c.id, c.name))
+        .collect();
 
     let issues = match bdb::list_issues(&client, pid).await {
         Ok(v) => v,
@@ -390,6 +406,7 @@ pub async fn export_issues(
             opt(&milestones, i.milestone_id),
             names(&labels, &i.labels),
             names(&components, &i.components),
+            names(&customers, &i.customer_ids),
             i.start_date.map(iso).unwrap_or_default(),
             i.due_date.map(iso).unwrap_or_default(),
             i.resolution
@@ -477,6 +494,7 @@ pub struct ImportPreview {
     pub statuses: Vec<ValueMatch>,
     pub priorities: Vec<ValueMatch>,
     pub components: Vec<ValueMatch>,
+    pub customers: Vec<ValueMatch>,
     pub unmatched_users: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -596,6 +614,12 @@ pub async fn import_preview(
         .into_iter()
         .map(|c| (c.name, c.id))
         .collect();
+    let custs: Vec<(String, Uuid)> = custdb::list(&client, pid)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| (c.name, c.id))
+        .collect();
     let users: Vec<(String, Uuid)> = memdb::list_for_project(&client, pid)
         .await
         .unwrap_or_default()
@@ -652,6 +676,10 @@ pub async fn import_preview(
             distinct(rows.iter().flat_map(|r| r.components.clone())),
             &comps,
         ),
+        customers: vm(
+            distinct(rows.iter().flat_map(|r| r.customers.clone())),
+            &custs,
+        ),
         unmatched_users,
         warnings,
     };
@@ -684,6 +712,10 @@ pub struct ImportMapping {
     /// Components map to existing only (`target`); `create` is ignored.
     #[serde(default)]
     pub components: Vec<ValueChoice>,
+    /// Customers map to existing only (`target`); `create` is ignored. An
+    /// unmapped customer is left off the issue, like an unmapped component.
+    #[serde(default)]
+    pub customers: Vec<ValueChoice>,
     /// Unmatched JIRA users map to an existing project member (`target`) or are
     /// skipped (left unassigned). `create` is ignored — users are never created.
     #[serde(default)]
@@ -812,6 +844,20 @@ pub async fn import_commit(
         .iter()
         .filter_map(|c| c.target.map(|t| (c.value.to_lowercase(), t)))
         .collect();
+    // Only this project's customers are accepted as targets; a foreign id in
+    // the mapping would otherwise link across projects.
+    let project_customers: std::collections::HashSet<Uuid> = custdb::list(&client, pid)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    let customer_map: HashMap<String, Uuid> = mapping
+        .customers
+        .iter()
+        .filter_map(|c| c.target.map(|t| (c.value.to_lowercase(), t)))
+        .filter(|(_, t)| project_customers.contains(t))
+        .collect();
 
     // Users: auto-match by username / email / full_name, then overlay the
     // explicit mapping (a chosen project member for each unmatched JIRA user).
@@ -921,7 +967,7 @@ pub async fn import_commit(
         }
     }
 
-    // Second pass: parent + epic links, components, comments.
+    // Second pass: parent + epic links, components, customers, comments.
     let mut created_comments = 0usize;
     for (idx, id, is_epic) in &created {
         let row = &rows[*idx];
@@ -951,6 +997,18 @@ pub async fn import_commit(
                 .collect();
             if !comp_ids.is_empty() {
                 bdb::set_issue_components(&mut client, *id, &comp_ids)
+                    .await
+                    .ok();
+            }
+            let mut cust_ids: Vec<Uuid> = row
+                .customers
+                .iter()
+                .filter_map(|c| customer_map.get(&c.to_lowercase()).copied())
+                .collect();
+            cust_ids.sort_unstable();
+            cust_ids.dedup();
+            if !cust_ids.is_empty() {
+                bdb::set_issue_customers(&mut client, *id, &cust_ids)
                     .await
                     .ok();
             }

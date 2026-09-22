@@ -4,6 +4,58 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.2] - 2026-09-22
+
+Project meetings, customers on any issue, working global search, and streamed
+file transfer. Migrations V026–V028; frontend companion release is 0.7.2.
+
+### Added
+- **Meetings (V028).** Per-project meetings with a required date, optional
+  start/end time and timezone, location and description. Artefacts: recordings
+  (audio/video, up to `INTELLIPILOT_MEETING_MEDIA_MAX_BYTES`, default 2 GiB),
+  transcript and markdown summary stored as text (paste, or import
+  .txt/.md/.vtt/.srt — subtitle timings are stripped and the original file is
+  kept), and any other files. Links to participants, issues, epics and
+  customers; issues and epics list their meetings. Calendar range endpoint with
+  per-day counts. Live events `meeting.created/updated/deleted` carry IDs only.
+- **Meeting permissions** `meeting.view/create/modify/delete`. Admin and product
+  owner roles get all, developers view/create/modify, stakeholders none by
+  default. Existing roles are backfilled by the migration on the same rule.
+- **Meetings in search**, gated by `meeting.view`; transcripts are indexed up
+  to 100k characters.
+- **Customer filter** on the issue list and board (`customer=none` or
+  `customer=<id>[,<id>…]`), and a Customers column in issue export/import.
+- **Search** gains `boost_project_id` (search everywhere, rank that project
+  first) and returns `key` (`PS-1262` / `PS-E-12`) and `key_match` per hit.
+
+### Fixed
+- **Search finds issues by key** — `PS-1262`, `ps-1262`, `PS1262`, `#1262`,
+  `1262`, `PS-E-12`, including prefixes from before a project rename. Exact
+  key hits rank first.
+- **Search text matching (V026):** partial words while typing, an unstemmed
+  vector for non-English text, and typo-tolerant title matching. Superadmins
+  now find everything; every hit requires the view permission of its type.
+- **Customers restored (V027)** on issues where the old client cleared them
+  together with a category change away from customer request, and nothing
+  touched customers afterwards. Each restored issue gets a history entry.
+
+### Changed
+- **Uploads stream to disk** while hashing, for all attachments, instead of
+  being held in memory.
+- **Downloads stream and support byte ranges** (206/416), so players can jump
+  around in a recording. Audio and video are served inline with 6-hour links; everything else
+  remains a 15-minute download with the same security headers.
+- **Deleted files are actually removed**: a periodic sweep
+  (`INTELLIPILOT_ATTACHMENT_GC_INTERVAL_SECS`, default 3600, `0` disables;
+  `INTELLIPILOT_ATTACHMENT_GC_GRACE_SECS`, default 7 days).
+- `docker/nginx-router.conf` adds meeting-upload (2100m, unbuffered, long
+  timeouts) and unbuffered download locations; reverse proxies in front of an
+  install need the same, or recordings over the proxy's body limit are refused.
+- OIDC provider issuer URLs are stored as entered, trailing slash included.
+
+### Security
+- `rustls` 0.23.45 / `rustls-webpki` 0.103.15 (RUSTSEC-2026-0285).
+
 ## [0.7.0] - 2026-08-28
 
 OpenID Connect single sign-on (V025). Generic OIDC — Authentik is the reference

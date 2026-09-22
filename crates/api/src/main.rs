@@ -92,6 +92,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let mailer = build_mailer(env);
             let webauthn = Arc::new(build_webauthn(&rp_config())?);
             let attachments = build_attachments(env)?;
+            if let Some(schedule) = gc_schedule() {
+                intellipilot_api::attachments::spawn_gc(
+                    db.pool.clone(),
+                    Arc::clone(&attachments.storage),
+                    schedule,
+                );
+            }
 
             let auth = AuthContext {
                 db: db.clone(),
@@ -472,6 +479,10 @@ fn build_attachments(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(25 * 1024 * 1024);
+    let media_max_bytes = std::env::var("INTELLIPILOT_MEETING_MEDIA_MAX_BYTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2 * 1024 * 1024 * 1024);
     let signing_key = match std::env::var("INTELLIPILOT_ATTACHMENT_SECRET") {
         Ok(secret) => Sha256::digest(secret.as_bytes()).into(),
         Err(_) if env == Env::Development => {
@@ -483,7 +494,27 @@ fn build_attachments(
     Ok(AttachmentConfig {
         storage: Arc::new(LocalStorage::new(dir)),
         max_bytes,
+        media_max_bytes,
         signing_key: Arc::new(signing_key),
+    })
+}
+
+/// Attachment GC schedule from env. `INTELLIPILOT_ATTACHMENT_GC_INTERVAL_SECS`
+/// (default 3600; `0` disables GC) and `INTELLIPILOT_ATTACHMENT_GC_GRACE_SECS`
+/// (default 7 days — how long a deleted file is kept before it is purged).
+fn gc_schedule() -> Option<intellipilot_api::attachments::GcSchedule> {
+    fn env_u64(key: &str) -> Option<u64> {
+        std::env::var(key).ok().and_then(|s| s.parse().ok())
+    }
+    let interval = env_u64("INTELLIPILOT_ATTACHMENT_GC_INTERVAL_SECS").unwrap_or(3600);
+    if interval == 0 {
+        tracing::info!("attachment GC disabled");
+        return None;
+    }
+    let grace = env_u64("INTELLIPILOT_ATTACHMENT_GC_GRACE_SECS").unwrap_or(7 * 24 * 60 * 60);
+    Some(intellipilot_api::attachments::GcSchedule {
+        interval: std::time::Duration::from_secs(interval.max(60)),
+        grace: std::time::Duration::from_secs(grace),
     })
 }
 

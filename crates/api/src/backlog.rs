@@ -1241,6 +1241,10 @@ pub struct IssueListQuery {
     pub component: Option<String>,
     #[serde(default)]
     pub category: Option<String>,
+    /// Customer filter: `none` for issues without customers, or one or more
+    /// comma-separated customer ids — matches issues linked to any of them.
+    #[serde(default)]
+    pub customer: Option<String>,
     #[serde(default)]
     pub overdue: Option<bool>,
     /// Restrict to issues the caller holds one role on — `watching`,
@@ -1287,6 +1291,7 @@ pub async fn list_issues(
     let (release_mode, release_id) = ref_filter(&q.release);
     let (epic_mode, epic_id) = ref_filter(&q.epic);
     let (milestone_mode, milestone_id) = ref_filter(&q.milestone);
+    let (customer_mode, customer_ids) = bl::customer_filter(q.customer.as_deref());
     let Ok((my_role, actor)) =
         crate::my_role::resolve(&client, ctx.actor_id, q.my_role.as_deref(), false).await
     else {
@@ -1320,6 +1325,8 @@ pub async fn list_issues(
         involved_id,
         release_mode,
         release_id,
+        customer_mode,
+        customer_ids,
         my_role,
         actor_id: actor.id,
         mention_like: actor.mention_like,

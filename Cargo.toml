@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.2"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -26,8 +26,8 @@ publish = false
 # HTTP + async
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "tokio", "macros", "query", "tracing", "matched-path", "multipart", "form"] }
 axum-extra = { version = "0.10", default-features = false, features = ["cookie"] }
-tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "fs", "net"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "fs", "net", "io-util"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
 tower = { version = "0.5", features = ["util", "limit", "timeout"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-br", "compression-gzip", "decompression-br", "decompression-gzip", "request-id", "sensitive-headers", "set-header", "timeout", "limit"] }
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }

@@ -30,6 +30,7 @@ pub mod ldap;
 pub mod markdown;
 pub mod me;
 pub mod me_token;
+pub mod meetings;
 pub mod mfa;
 pub mod middleware;
 pub mod milestones;

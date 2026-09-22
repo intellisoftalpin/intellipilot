@@ -20,6 +20,10 @@ pub struct AttachmentConfig {
     pub storage: Arc<dyn Storage>,
     /// Maximum upload size in bytes (default 25 MiB).
     pub max_bytes: u64,
+    /// Maximum size of one meeting file — recordings, above all — in bytes
+    /// (default 2 GiB). Meeting uploads stream to disk, so this bounds disk
+    /// use per file, not memory.
+    pub media_max_bytes: u64,
     /// HMAC key for signing short-lived download URLs.
     pub signing_key: Arc<[u8; 32]>,
 }
@@ -28,6 +32,7 @@ impl std::fmt::Debug for AttachmentConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AttachmentConfig")
             .field("max_bytes", &self.max_bytes)
+            .field("media_max_bytes", &self.media_max_bytes)
             .finish_non_exhaustive()
     }
 }

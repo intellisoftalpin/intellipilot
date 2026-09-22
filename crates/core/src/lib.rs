@@ -17,6 +17,7 @@ pub mod dashboard;
 pub mod docs;
 pub mod error;
 pub mod ids;
+pub mod meeting;
 pub mod milestone;
 pub mod my_work;
 pub mod ordering;

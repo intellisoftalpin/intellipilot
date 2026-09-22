@@ -26,6 +26,7 @@ pub mod issue_watchers;
 pub mod labels;
 pub mod ldap_settings;
 pub mod login_attempts;
+pub mod meetings;
 pub mod memberships;
 pub mod migrations;
 pub mod milestones;

@@ -95,6 +95,28 @@ impl CommentEventKind {
     }
 }
 
+/// What happened to a meeting.
+///
+/// The payload carries identifiers only: the feed is open to every holder of
+/// `issue.view`, and meetings are not — a subscriber re-reads the meeting
+/// through its permission-checked endpoint.
+#[derive(Debug, Clone, Copy)]
+pub enum MeetingEventKind {
+    Created,
+    Updated,
+    Deleted,
+}
+
+impl MeetingEventKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "meeting.created",
+            Self::Updated => "meeting.updated",
+            Self::Deleted => "meeting.deleted",
+        }
+    }
+}
+
 /// Lazily-created per-project broadcast channels. A project's channel is
 /// dropped when a publish finds it without subscribers.
 #[derive(Debug, Default)]
@@ -206,6 +228,26 @@ impl EventBus {
                 "target_type": target_type,
                 "target_id": target_id,
                 "comment_id": comment_id,
+            }),
+        );
+    }
+
+    /// A meeting was created, edited (fields, links, files) or deleted.
+    /// Identifiers only — see [`MeetingEventKind`].
+    pub fn publish_meeting(
+        &self,
+        kind: MeetingEventKind,
+        project_id: Uuid,
+        actor_id: Uuid,
+        meeting_id: Uuid,
+    ) {
+        self.publish(
+            project_id,
+            &json!({
+                "event": kind.as_str(),
+                "project_id": project_id,
+                "actor_id": actor_id,
+                "meeting_id": meeting_id,
             }),
         );
     }
@@ -356,6 +398,19 @@ mod tests {
             rx.try_recv(),
             Err(broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn meeting_events_carry_ids_only() {
+        let bus = EventBus::default();
+        let project = Uuid::now_v7();
+        let meeting = Uuid::now_v7();
+        let mut rx = bus.subscribe(project);
+        bus.publish_meeting(MeetingEventKind::Updated, project, Uuid::now_v7(), meeting);
+        let v: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap().0).unwrap();
+        assert_eq!(v["event"], "meeting.updated");
+        assert_eq!(v["meeting_id"], meeting.to_string());
+        assert_eq!(v.as_object().unwrap().len(), 4, "no meeting content: {v}");
     }
 
     #[tokio::test]

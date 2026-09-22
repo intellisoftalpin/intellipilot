@@ -910,6 +910,10 @@ pub struct IssueQuery {
     pub involved_id: Option<Uuid>,
     pub release_mode: Option<String>,
     pub release_id: Option<Uuid>,
+    /// Customer filter mode: `none` (no linked customer) or `any` (linked to
+    /// at least one of [`Self::customer_ids`]). Build with [`customer_filter`].
+    pub customer_mode: Option<String>,
+    pub customer_ids: Option<Vec<Uuid>>,
     /// "My role" filter: one of the [`MY_ROLE_PREDICATES`] keys, or `"any"`
     /// for "I hold at least one role". Needs `actor_id` (and, for
     /// `mentioned`/`any`, `mention_like`) to resolve to anything.
@@ -919,6 +923,30 @@ pub struct IssueQuery {
     /// LIKE pattern for the caller's `@handle`, e.g. `%@ada%`, already
     /// metacharacter-escaped. `None` makes the `mentioned` role false.
     pub mention_like: Option<String>,
+}
+
+/// Parse a `customer` query value into [`IssueQuery`]'s customer fields.
+///
+/// `none` → issues without customers; a comma-separated list of ids → issues
+/// linked to any of them. Unparsable ids are skipped; a value with no usable
+/// id applies no filter, like the other reference filters.
+#[must_use]
+pub fn customer_filter(s: Option<&str>) -> (Option<String>, Option<Vec<Uuid>>) {
+    match s.map(str::trim) {
+        None | Some("") => (None, None),
+        Some("none") => (Some("none".to_owned()), None),
+        Some(v) => {
+            let ids: Vec<Uuid> = v
+                .split(',')
+                .filter_map(|p| Uuid::parse_str(p.trim()).ok())
+                .collect();
+            if ids.is_empty() {
+                (None, None)
+            } else {
+                (Some("any".to_owned()), Some(ids))
+            }
+        }
+    }
 }
 
 /// SQL predicates for "the caller holds this role on `issues`", in the order
@@ -1020,10 +1048,16 @@ const ISSUE_FILTER_BASE: &str = "issues.project_id = $1 AND issues.deleted_at IS
      AND ($21::text IS NULL OR ($21 = 'none' AND issues.release_version_id IS NULL) \
                            OR ($21 = 'is' AND EXISTS \
                                  (SELECT 1 FROM release_versions rv \
-                                  WHERE rv.id = issues.release_version_id AND rv.release_id = $22::uuid)))";
+                                  WHERE rv.id = issues.release_version_id AND rv.release_id = $22::uuid))) \
+     AND ($26::text IS NULL OR ($26 = 'none' AND NOT EXISTS \
+                                 (SELECT 1 FROM issue_customers icu WHERE icu.issue_id = issues.id)) \
+                           OR ($26 = 'any' AND EXISTS \
+                                 (SELECT 1 FROM issue_customers icu WHERE icu.issue_id = issues.id \
+                                  AND icu.customer_id = ANY($27::uuid[]))))";
 
-/// The full issue-filter WHERE clause: the static dimensions ($1..$22) plus
-/// the `my_role` clause ($23 role, $24 actor, $25 mention pattern). Built once
+/// The full issue-filter WHERE clause: the static dimensions ($1..$22,
+/// $26..$27 customers) plus the `my_role` clause ($23 role, $24 actor, $25
+/// mention pattern). Built once
 /// because the role predicates are composed at runtime from
 /// [`MY_ROLE_PREDICATES`].
 fn issue_filter_where() -> &'static str {
@@ -1072,6 +1106,8 @@ pub async fn list_issues_paged(
         &q.my_role,          // $23
         &q.actor_id,         // $24
         &q.mention_like,     // $25
+        &q.customer_mode,    // $26
+        &q.customer_ids,     // $27
     ];
     let w = issue_filter_where();
 
@@ -1089,13 +1125,13 @@ pub async fn list_issues_paged(
         page_params.push(&off);
         format!(
             "SELECT {ISSUE_COLS} FROM issues WHERE {w} \
-             ORDER BY issues.\"order\", issues.id LIMIT $26 OFFSET $27"
+             ORDER BY issues.\"order\", issues.id LIMIT $28 OFFSET $29"
         )
     } else {
         page_params.push(&off);
         format!(
             "SELECT {ISSUE_COLS} FROM issues WHERE {w} \
-             ORDER BY issues.\"order\", issues.id OFFSET $26"
+             ORDER BY issues.\"order\", issues.id OFFSET $28"
         )
     };
     let rows = client.query(&page_sql, &page_params).await?;
@@ -1176,7 +1212,7 @@ pub async fn list_issues_delta(
     })
 }
 
-/// Base filter params (`$1..$18`) for the board-data queries.
+/// Base filter params (`$1..$27`) for the board-data queries.
 ///
 /// Same binding order as `list_issues_paged`; `search_like` must outlive the
 /// returned vec (hence the shared lifetime).
@@ -1212,6 +1248,8 @@ fn board_base_params<'a>(
         &q.my_role,          // $23
         &q.actor_id,         // $24
         &q.mention_like,     // $25
+        &q.customer_mode,    // $26
+        &q.customer_ids,     // $27
     ]
 }
 
@@ -1230,8 +1268,8 @@ pub async fn board_columns(
     let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
     let cols: Option<Vec<Uuid>> = columns.map(<[Uuid]>::to_vec);
     let mut params = board_base_params(&project_id, q, &search_like);
-    params.push(&column_limit); // $26
-    params.push(&cols); // $27
+    params.push(&column_limit); // $28
+    params.push(&cols); // $29
     let w = issue_filter_where();
     let sql = format!(
         "WITH ranked AS ( \
@@ -1240,9 +1278,9 @@ pub async fn board_columns(
              count(*)     OVER (PARTITION BY status_id)                        AS col_total \
            FROM issues \
            WHERE {w} AND parent_id IS NULL \
-             AND ($27::uuid[] IS NULL OR status_id = ANY($27)) \
+             AND ($29::uuid[] IS NULL OR status_id = ANY($29)) \
          ) \
-         SELECT * FROM ranked WHERE rn <= $26 ORDER BY status_id, \"order\", id"
+         SELECT * FROM ranked WHERE rn <= $28 ORDER BY status_id, \"order\", id"
     );
     let rows = client.query(&sql, &params).await?;
 
@@ -1342,8 +1380,8 @@ pub async fn board_lanes(
     let search_like = q.search.as_ref().map(|s| format!("%{s}%"));
     let cols: Option<Vec<Uuid>> = columns.map(<[Uuid]>::to_vec);
     let mut params = board_base_params(&project_id, q, &search_like);
-    params.push(&column_limit); // $26
-    params.push(&cols); // $27
+    params.push(&column_limit); // $28
+    params.push(&cols); // $29
     let w = issue_filter_where();
     let sql = format!(
         "WITH ranked AS ( \
@@ -1354,9 +1392,9 @@ pub async fn board_lanes(
              count(*) OVER (PARTITION BY {grp})                   AS lane_total \
            FROM {from} \
            WHERE {w} AND issues.parent_id IS NULL \
-             AND ($27::uuid[] IS NULL OR issues.status_id = ANY($27)) \
+             AND ($29::uuid[] IS NULL OR issues.status_id = ANY($29)) \
          ) \
-         SELECT * FROM ranked WHERE rn <= $26 ORDER BY grp, status_id, \"order\", id"
+         SELECT * FROM ranked WHERE rn <= $28 ORDER BY grp, status_id, \"order\", id"
     );
     let rows = client.query(&sql, &params).await?;
 

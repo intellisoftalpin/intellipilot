@@ -1,5 +1,5 @@
-//! Per-project customer registry — who requested a feature. Linked from issues
-//! whose category is `customer_request`.
+//! Per-project customer registry — who an issue concerns. Any issue may link
+//! any number of customers, whatever its category.
 
 use serde::Serialize;
 use time::OffsetDateTime;

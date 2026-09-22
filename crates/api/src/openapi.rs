@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.7.0",
+        version = "0.7.2",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",
@@ -28,6 +28,7 @@ use crate::problem::{FieldErrorView, Problem};
     ),
     paths(
         crate::health::live,
+        crate::search::search,
         crate::health::ready,
         crate::health::version,
         crate::auth::handlers::config,
@@ -147,6 +148,20 @@ use crate::problem::{FieldErrorView, Problem};
         crate::issues_io::import_commit,
         crate::dashboard::get_home,
         crate::dashboard::get_project,
+        crate::meetings::list,
+        crate::meetings::create,
+        crate::meetings::get,
+        crate::meetings::update,
+        crate::meetings::delete,
+        crate::meetings::add_link,
+        crate::meetings::remove_link,
+        crate::meetings::issue_meetings,
+        crate::meetings::epic_meetings,
+        crate::meetings::list_artifacts,
+        crate::meetings::upload_artifact,
+        crate::meetings::delete_artifact,
+        crate::meetings::import_transcript,
+        crate::meetings::import_summary,
     ),
     components(schemas(
         LiveResponse,
@@ -296,6 +311,7 @@ use crate::problem::{FieldErrorView, Problem};
         intellipilot_core::docs::DocSourceKind,
         crate::docs::DocSourceKindInput,
         intellipilot_core::search::SearchHit,
+        crate::search::SearchResponse,
         crate::admin::dto::UserListResponse,
         crate::admin::dto::ActivityListResponse,
         intellipilot_core::activity::ActivityEvent,
@@ -357,6 +373,15 @@ use crate::problem::{FieldErrorView, Problem};
         intellipilot_core::dashboard::AttentionItem,
         intellipilot_core::dashboard::EpicReadiness,
         intellipilot_core::dashboard::WeekCount,
+        intellipilot_core::meeting::Meeting,
+        intellipilot_core::meeting::MeetingListItem,
+        intellipilot_core::meeting::MeetingDayCount,
+        crate::meetings::MeetingDetail,
+        crate::meetings::MeetingRangeResponse,
+        crate::meetings::LinkedMeetingsResponse,
+        crate::meetings::MeetingArtifactsResponse,
+        crate::meetings::CreateMeetingRequest,
+        crate::meetings::UpdateMeetingRequest,
     ))
 )]
 pub struct ApiDoc;

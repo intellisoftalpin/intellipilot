@@ -18,6 +18,10 @@ pub struct Attachment {
     pub content_type: String,
     pub size_bytes: i64,
     pub sha256: String,
+    /// What the file is to a meeting (`recording`, `transcript`, `summary`,
+    /// `other`). Only meeting files carry it; absent everywhere else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }

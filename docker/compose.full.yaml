@@ -32,9 +32,11 @@ services:
     environment:
       DEFAULT_EMAIL: ${LE_EMAIL:?set LE_EMAIL in .env}
       ENABLE_IPV6: "true"
-      # Match the backend's INTELLIPILOT_ATTACHMENT_MAX_BYTES (25 MiB default)
-      # plus headroom for multipart overhead.
-      CLIENT_MAX_BODY_SIZE: ${PROXY_CLIENT_MAX_BODY_SIZE:-32m}
+      # Must cover the largest upload: meeting recordings are capped by the
+      # backend's INTELLIPILOT_MEETING_MEDIA_MAX_BYTES (2 GiB default), so
+      # the default here allows that plus multipart overhead. Lower both
+      # together if you want smaller recordings.
+      CLIENT_MAX_BODY_SIZE: ${PROXY_CLIENT_MAX_BODY_SIZE:-2100m}
       # Trust the proxy network — keeps the X-Forwarded-* headers honest.
       TRUST_DOWNSTREAM_PROXY: "false"
     volumes:
@@ -97,6 +99,11 @@ services:
       INTELLIPILOT_PASSWORD_PEPPER: ${INTELLIPILOT_PASSWORD_PEPPER:?set INTELLIPILOT_PASSWORD_PEPPER in .env}
       INTELLIPILOT_ATTACHMENT_SECRET: ${INTELLIPILOT_ATTACHMENT_SECRET:?set INTELLIPILOT_ATTACHMENT_SECRET in .env}
       INTELLIPILOT_ATTACHMENT_MAX_BYTES: ${INTELLIPILOT_ATTACHMENT_MAX_BYTES:-26214400}
+      # Meeting files (recordings above all) stream to disk; per-file cap.
+      INTELLIPILOT_MEETING_MEDIA_MAX_BYTES: ${INTELLIPILOT_MEETING_MEDIA_MAX_BYTES:-2147483648}
+      # Purge deleted files hourly, keeping them for 7 days first (0 = off).
+      INTELLIPILOT_ATTACHMENT_GC_INTERVAL_SECS: ${INTELLIPILOT_ATTACHMENT_GC_INTERVAL_SECS:-3600}
+      INTELLIPILOT_ATTACHMENT_GC_GRACE_SECS: ${INTELLIPILOT_ATTACHMENT_GC_GRACE_SECS:-604800}
       INTELLIPILOT_STORAGE_DIR: /var/lib/intellipilot/attachments
       INTELLIPILOT_RP_ID: ${DOMAIN:?set DOMAIN in .env}
       INTELLIPILOT_RP_ORIGIN: https://${DOMAIN}

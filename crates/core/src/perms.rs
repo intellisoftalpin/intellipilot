@@ -169,11 +169,21 @@ pub enum Permission {
     BoardSharedModify,
     #[serde(rename = "board.shared.delete")]
     BoardSharedDelete,
+    // Meetings (minutes, transcripts, recordings). Deliberately NOT part of
+    // the stakeholder `.view` baseline — see [`all_view`].
+    #[serde(rename = "meeting.view")]
+    MeetingView,
+    #[serde(rename = "meeting.create")]
+    MeetingCreate,
+    #[serde(rename = "meeting.modify")]
+    MeetingModify,
+    #[serde(rename = "meeting.delete")]
+    MeetingDelete,
 }
 
 impl Permission {
     /// Every permission in catalog order.
-    pub const ALL: [Self; 62] = [
+    pub const ALL: [Self; 66] = [
         Self::ProjectView,
         Self::ProjectModify,
         Self::ProjectDelete,
@@ -236,6 +246,10 @@ impl Permission {
         Self::BoardSharedCreate,
         Self::BoardSharedModify,
         Self::BoardSharedDelete,
+        Self::MeetingView,
+        Self::MeetingCreate,
+        Self::MeetingModify,
+        Self::MeetingDelete,
     ];
 
     /// Stable wire string for this permission.
@@ -306,6 +320,10 @@ impl Permission {
             Self::BoardSharedCreate => "board.shared.create",
             Self::BoardSharedModify => "board.shared.modify",
             Self::BoardSharedDelete => "board.shared.delete",
+            Self::MeetingView => "meeting.view",
+            Self::MeetingCreate => "meeting.create",
+            Self::MeetingModify => "meeting.modify",
+            Self::MeetingDelete => "meeting.delete",
         }
     }
 }
@@ -323,14 +341,22 @@ pub struct DefaultRole {
 
 /// All view permissions (the stakeholder baseline).
 ///
-/// `milestone.business_release.view` is deliberately excluded even though it
-/// ends in `.view`: the business release date is commercially sensitive and
-/// belongs to the product owner, not to every stakeholder.
+/// Two permissions are deliberately excluded even though they end in `.view`:
+///
+/// * `milestone.business_release.view` — the business release date is
+///   commercially sensitive and belongs to the product owner;
+/// * `meeting.view` — minutes, transcripts and recordings are internal to the
+///   team. Developers get it explicitly in [`developer_perms`].
 fn all_view() -> Vec<Permission> {
     Permission::ALL
         .into_iter()
         .filter(|p| p.as_str().rsplit('.').next() == Some("view"))
-        .filter(|p| *p != Permission::MilestoneBusinessReleaseView)
+        .filter(|p| {
+            !matches!(
+                p,
+                Permission::MilestoneBusinessReleaseView | Permission::MeetingView
+            )
+        })
         .collect()
 }
 
@@ -339,8 +365,8 @@ fn all_view() -> Vec<Permission> {
 fn developer_perms() -> Vec<Permission> {
     use Permission::{
         AttachmentCreate, AttachmentDelete, CommentCreate, DocSourceModify, EpicCreate, EpicModify,
-        IssueCreate, IssueModify, MilestoneCreate, MilestoneModify, TimeLog, WikiCreate,
-        WikiModify,
+        IssueCreate, IssueModify, MeetingCreate, MeetingModify, MeetingView, MilestoneCreate,
+        MilestoneModify, TimeLog, WikiCreate, WikiModify,
     };
     let mut perms = all_view();
     perms.extend([
@@ -359,6 +385,10 @@ fn developer_perms() -> Vec<Permission> {
         AttachmentCreate,
         AttachmentDelete,
         TimeLog,
+        // Meetings belong to the team: see, record and edit them.
+        MeetingView,
+        MeetingCreate,
+        MeetingModify,
     ]);
     perms.sort_unstable();
     perms.dedup();
@@ -372,7 +402,7 @@ fn product_owner_perms() -> Vec<Permission> {
         BoardSharedCreate, BoardSharedDelete, BoardSharedModify, CommentModerate, ComponentCreate,
         ComponentDelete, ComponentModify, CustomerCreate, CustomerDelete, CustomerModify,
         DocSourceCreate, DocSourceDelete, EpicDelete, IssueDelete, LabelCreate, LabelDelete,
-        LabelModify, MemberAdd, MemberModifyRole, MemberRemove, MemberView,
+        LabelModify, MeetingDelete, MemberAdd, MemberModifyRole, MemberRemove, MemberView,
         MilestoneBusinessReleaseModify, MilestoneBusinessReleaseView, MilestoneDelete,
         ProjectModify, ReleaseCreate, ReleaseDelete, ReleaseModify, RepositoryCreate,
         RepositoryDelete, RepositoryModify, RoleCreate, RoleDelete, RoleModify, RoleView,
@@ -424,6 +454,7 @@ fn product_owner_perms() -> Vec<Permission> {
         ReleaseCreate,
         ReleaseModify,
         ReleaseDelete,
+        MeetingDelete,
     ]);
     perms.sort_unstable();
     perms.dedup();
@@ -480,7 +511,7 @@ mod tests {
                 p.as_str()
             );
         }
-        assert_eq!(Permission::ALL.len(), 62);
+        assert_eq!(Permission::ALL.len(), 66);
     }
 
     /// The doc_source set must mirror the trust levels of the wiki set: a
@@ -533,6 +564,49 @@ mod tests {
             // The `.view` suffix must NOT sweep it into the stakeholder baseline.
             assert!(!by_slug("stakeholder").contains(&p));
         }
+    }
+
+    /// Meetings are internal to the team: stakeholders see none of it,
+    /// developers see and edit, only a product owner deletes.
+    #[test]
+    fn meetings_are_hidden_from_stakeholders() {
+        let roles = default_roles();
+        let by_slug = |slug: &str| -> std::collections::HashSet<Permission> {
+            roles
+                .iter()
+                .find(|r| r.slug == slug)
+                .map(|r| r.permissions.iter().copied().collect())
+                .unwrap()
+        };
+        let (po, dev, stake) = (
+            by_slug("product_owner"),
+            by_slug("dev"),
+            by_slug("stakeholder"),
+        );
+        for p in [
+            Permission::MeetingView,
+            Permission::MeetingCreate,
+            Permission::MeetingModify,
+            Permission::MeetingDelete,
+        ] {
+            assert!(
+                !stake.contains(&p),
+                "stakeholder must not hold {}",
+                p.as_str()
+            );
+            assert!(po.contains(&p), "product_owner should hold {}", p.as_str());
+        }
+        for p in [
+            Permission::MeetingView,
+            Permission::MeetingCreate,
+            Permission::MeetingModify,
+        ] {
+            assert!(dev.contains(&p), "dev should hold {}", p.as_str());
+        }
+        assert!(!dev.contains(&Permission::MeetingDelete));
+        // Every other `.view` permission is still in the stakeholder baseline.
+        assert!(stake.contains(&Permission::IssueView));
+        assert!(stake.contains(&Permission::WikiView));
     }
 
     #[test]

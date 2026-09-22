@@ -219,10 +219,12 @@ fn update_from(req: &UpsertOidcProviderRequest) -> OidcProviderUpdate {
         slug: req.slug.trim().to_lowercase(),
         display_name: req.display_name.trim().to_owned(),
         enabled: req.enabled,
-        // Trailing slashes matter: discovery joins a relative path onto this,
-        // and `Url::join` on a path without a trailing slash discards the last
-        // segment. Normalising here means an operator cannot get it wrong.
-        issuer_url: req.issuer_url.trim().trim_end_matches('/').to_owned(),
+        // Kept exactly as entered, trailing slash included: discovery requires
+        // the published `issuer` to match this byte for byte, and providers
+        // disagree on the slash (Authentik publishes one, Keycloak does not).
+        // `IssuerUrl::join` inserts the separator itself, so both forms
+        // discover correctly.
+        issuer_url: req.issuer_url.trim().to_owned(),
         client_id: req.client_id.trim().to_owned(),
         client_secret: keep_if_blank(req.client_secret.clone()),
         scopes: req.scopes.trim().to_owned(),

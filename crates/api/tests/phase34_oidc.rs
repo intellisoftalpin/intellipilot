@@ -135,22 +135,35 @@ struct FakeIdp {
 
 impl FakeIdp {
     async fn spawn() -> Self {
+        Self::spawn_at("").await
+    }
+
+    /// Publishes under `path` with the issuer set to `base + path`, verbatim —
+    /// `"/application/o/pilot/"` reproduces Authentik, trailing slash and all.
+    async fn spawn_at(path: &str) -> Self {
         use axum::Router;
         use axum::routing::get;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let base = format!("http://{addr}");
-        let discovery_base = base.clone();
+        let root = format!("http://{addr}");
+        let base = format!("{root}{path}");
+        let discovery_base = root;
+        let issuer = base.clone();
+        let discovery_path = format!(
+            "{}/.well-known/openid-configuration",
+            path.trim_end_matches('/')
+        );
 
         let app = Router::new()
             .route(
-                "/.well-known/openid-configuration",
+                &discovery_path,
                 get(move || {
                     let b = discovery_base.clone();
+                    let issuer = issuer.clone();
                     async move {
                         axum::Json(json!({
-                            "issuer": b,
+                            "issuer": issuer,
                             "authorization_endpoint": format!("{b}/authorize"),
                             "token_endpoint": format!("{b}/token"),
                             "userinfo_endpoint": format!("{b}/userinfo"),
@@ -367,6 +380,47 @@ async fn test_endpoint_reports_what_a_reachable_provider_publishes() {
         json!(true),
         "the fake publishes a device endpoint"
     );
+}
+
+#[tokio::test]
+async fn issuer_with_a_trailing_slash_is_stored_verbatim_and_discovers() {
+    // Authentik publishes `.../application/o/<app>/` with the slash, and
+    // discovery demands a byte-exact match — stripping it made every
+    // Authentik provider fail with "unexpected issuer URI".
+    let app = TestApp::spawn().await;
+    let idp = FakeIdp::spawn_at("/application/o/pilot/").await;
+    assert!(idp.base.ends_with('/'));
+    let r = app.register("boss@example.com", "boss", PW).await;
+    assert_eq!(r.status, 201);
+    promote_to_superadmin(&app, "boss@example.com").await;
+    let boss = app
+        .login("boss@example.com", PW)
+        .await
+        .access_token()
+        .unwrap();
+
+    let r = app
+        .send(req(
+            "POST",
+            "/api/v1/admin/oidc-providers",
+            Some(&boss),
+            &[],
+            Some(&provider_body("pilot", &idp.base, true)),
+        ))
+        .await;
+    assert_eq!(r.status, 201, "create: {:?}", r.json);
+    assert_eq!(r.json["issuer_url"], json!(idp.base));
+    let id = r.json["id"].as_str().unwrap().to_owned();
+
+    let r = app
+        .send(post_bearer(
+            &format!("/api/v1/admin/oidc-providers/{id}/test"),
+            &boss,
+        ))
+        .await;
+    assert_eq!(r.status, 200, "test: {:?}", r.json);
+    assert_eq!(r.json["ok"], json!(true), "test result: {:?}", r.json);
+    assert_eq!(r.json["issuer"], json!(idp.base));
 }
 
 // ---------------------------------------------------------------------------

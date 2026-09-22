@@ -16,9 +16,9 @@ use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
     admin, attachments, auth, avatar, backlog, boards, branding, catalog, counts, customers,
-    dashboard, docs, epic_cover, events, health, issue_relations, issues_io, me, me_token, mfa,
-    milestones, my_work, oidc, openapi, passkeys, project_icon, projects, releases, repositories,
-    search, taxonomy, time_tracking, wiki,
+    dashboard, docs, epic_cover, events, health, issue_relations, issues_io, me, me_token,
+    meetings, mfa, milestones, my_work, oidc, openapi, passkeys, project_icon, projects, releases,
+    repositories, search, taxonomy, time_tracking, wiki,
 };
 
 /// Knowledge-base routes: the internal wiki and external documentation
@@ -59,6 +59,51 @@ fn knowledge_routes() -> Router<AppState> {
         .route("/api/v1/projects/{project_id}/doc-keys/me", delete(docs::delete_my_key))
 }
 
+/// Meeting routes (V028), a sub-router for the same stack-depth reason as
+/// [`knowledge_routes`].
+///
+/// File uploads get `media_limit` as their body limit — the configured
+/// per-file maximum plus multipart overhead — and stream to disk, so the limit
+/// bounds disk, not memory. Meeting edits carry transcripts of up to a few MB,
+/// hence the raised JSON limit.
+#[rustfmt::skip]
+fn meeting_routes(media_limit: usize) -> Router<AppState> {
+    use axum::extract::DefaultBodyLimit;
+    const TEXT_LIMIT: usize = 24 * 1024 * 1024;
+    Router::new()
+        .route(
+            "/api/v1/projects/{project_id}/meetings",
+            get(meetings::list).merge(post(meetings::create).layer(DefaultBodyLimit::max(TEXT_LIMIT))),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/meetings/{meeting_id}",
+            get(meetings::get)
+                .merge(patch(meetings::update).layer(DefaultBodyLimit::max(TEXT_LIMIT)))
+                .merge(delete(meetings::delete)),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/meetings/{meeting_id}/links/{kind}/{target_id}",
+            post(meetings::add_link).delete(meetings::remove_link),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/meetings/{meeting_id}/artifacts",
+            get(meetings::list_artifacts)
+                .merge(post(meetings::upload_artifact).layer(DefaultBodyLimit::max(media_limit))),
+        )
+        .route("/api/v1/projects/{project_id}/meetings/{meeting_id}/artifacts/{attachment_id}", delete(meetings::delete_artifact))
+        .route(
+            "/api/v1/projects/{project_id}/meetings/{meeting_id}/transcript/import",
+            post(meetings::import_transcript).layer(DefaultBodyLimit::max(TEXT_LIMIT)),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/meetings/{meeting_id}/summary/import",
+            post(meetings::import_summary).layer(DefaultBodyLimit::max(TEXT_LIMIT)),
+        )
+        // Meetings seen from the linked work item
+        .route("/api/v1/projects/{project_id}/issues/{id}/meetings", get(meetings::issue_meetings))
+        .route("/api/v1/projects/{project_id}/epics/{id}/meetings", get(meetings::epic_meetings))
+}
+
 #[allow(clippy::too_many_lines)] // a flat, readable route table
 pub fn build_router(state: AppState) -> Router {
     let api_doc = openapi::document();
@@ -77,7 +122,11 @@ pub fn build_router(state: AppState) -> Router {
     // Identity & session routes are only mounted when an auth context (DB,
     // keys, mailer) is configured. These are rate-limited; health/docs are not
     // (so monitoring probes are never throttled).
-    if state.auth.is_some() {
+    if let Some(auth) = state.auth.as_ref() {
+        // Per-file maximum plus 1 MiB of multipart framing.
+        let media_limit = usize::try_from(auth.attachments.media_max_bytes)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1024 * 1024);
         let api_v1 = Router::new()
             .route("/api/v1/auth/config", get(auth::handlers::config))
             // Public white-label icon (login screen renders it pre-auth).
@@ -563,6 +612,8 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/attachments/{attachment_id}/download", get(attachments::download))
             // Wiki + external documentation sources (see `knowledge_routes`)
             .merge(knowledge_routes())
+            // Meetings (see `meeting_routes`)
+            .merge(meeting_routes(media_limit))
             // Unified search
             .route("/api/v1/search", get(search::search))
             // Time tracking — personal (own timesheet, absences, export)

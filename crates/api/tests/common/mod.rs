@@ -27,6 +27,9 @@ use intellipilot_testkit::TestDb;
 use serde_json::Value;
 use tower::ServiceExt;
 
+/// The meeting-file limit every test app runs with.
+pub const MEDIA_MAX_BYTES_FOR_TESTS: u64 = 4 * 1024 * 1024;
+
 pub struct TestApp {
     pub router: Router,
     // Held to keep the schema alive for the duration of the test.
@@ -87,6 +90,8 @@ impl TestApp {
             attachments: AttachmentConfig {
                 storage: storage.clone(),
                 max_bytes,
+                // Small enough that a test can cross it with a few MiB.
+                media_max_bytes: MEDIA_MAX_BYTES_FOR_TESTS,
                 signing_key: Arc::new([7u8; 32]),
             },
         };

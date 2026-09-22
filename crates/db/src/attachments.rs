@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::DbError;
 
 const COLS: &str = "id, project_id, target_type, target_id, uploader_id, filename, \
-     content_type, size_bytes, sha256, created_at";
+     content_type, size_bytes, sha256, kind, created_at";
 
 fn row_to_attachment(r: &Row) -> Attachment {
     Attachment {
@@ -22,6 +22,7 @@ fn row_to_attachment(r: &Row) -> Attachment {
         content_type: r.get("content_type"),
         size_bytes: r.get("size_bytes"),
         sha256: r.get("sha256"),
+        kind: r.get("kind"),
         created_at: r.get("created_at"),
     }
 }
@@ -37,13 +38,14 @@ pub async fn create(
     size_bytes: i64,
     sha256: &str,
     storage_key: &str,
+    kind: Option<&str>,
 ) -> Result<Attachment, DbError> {
     let row = client
         .query_one(
             &format!(
                 "INSERT INTO attachments (project_id, target_type, target_id, uploader_id, \
-                   filename, content_type, size_bytes, sha256, storage_key) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING {COLS}"
+                   filename, content_type, size_bytes, sha256, storage_key, kind) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING {COLS}"
             ),
             &[
                 &project_id,
@@ -55,6 +57,7 @@ pub async fn create(
                 &size_bytes,
                 &sha256,
                 &storage_key,
+                &kind,
             ],
         )
         .await?;
