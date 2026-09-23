@@ -40,6 +40,74 @@ fn post_with_body(uri: &str, refresh: &str) -> Request<Body> {
     json_post(uri, &json!({ "refresh_token": refresh }))
 }
 
+/// Exactly what a browser sends: the cookie, an empty body, and the JSON
+/// content type its HTTP client sets on every request.
+fn post_with_cookie_and_json_content_type(uri: &str, refresh: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("cookie", format!("refresh_token={refresh}"))
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// The regression that logged every browser user out: `Option<Json<T>>`
+/// rejected "JSON content type, empty body" with 400 before the handler ran,
+/// so no web session could ever be renewed — it died with its 15-minute
+/// access token and every page reload landed on the login screen. The other
+/// cookie tests here miss it because their requests carry no content type.
+#[tokio::test]
+async fn refresh_by_cookie_works_with_a_json_content_type_and_empty_body() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let first = login(&app, "browserrefresh").await;
+
+    let res = app
+        .send(post_with_cookie_and_json_content_type(
+            "/api/v1/auth/refresh",
+            &first,
+        ))
+        .await;
+
+    assert_eq!(res.status, 200, "browser-shaped refresh must be accepted");
+    assert!(res.dev_refresh().is_some(), "a rotated token comes back");
+}
+
+#[tokio::test]
+async fn logout_by_cookie_works_with_a_json_content_type_and_empty_body() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let first = login(&app, "browserlogout").await;
+
+    let res = app
+        .send(post_with_cookie_and_json_content_type(
+            "/api/v1/auth/logout",
+            &first,
+        ))
+        .await;
+
+    assert_eq!(res.status, 204, "browser-shaped logout must be accepted");
+}
+
+/// A body that is not valid JSON is "no body", not a 400: the cookie decides.
+#[tokio::test]
+async fn refresh_ignores_an_unparsable_body_and_uses_the_cookie() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let first = login(&app, "junkbodyrefresh").await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/refresh")
+        .header("cookie", format!("refresh_token={first}"))
+        .header("content-type", "application/json")
+        .body(Body::from("not json at all"))
+        .unwrap();
+
+    assert_eq!(app.send(req).await.status, 200);
+}
+
 #[tokio::test]
 async fn refresh_by_body_rotates_and_returns_the_new_token() {
     require_db!();

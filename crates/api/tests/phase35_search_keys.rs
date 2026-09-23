@@ -310,3 +310,30 @@ async fn superadmin_sees_all_and_non_members_see_nothing() {
     want.sort_unstable();
     assert_eq!(projects, want, "{hits:?}");
 }
+
+/// A project *prefix* where a project id is expected is rejected outright:
+/// `project_id`/`boost_project_id` are typed `Uuid`, so the query extractor
+/// refuses the whole request before the handler runs. The web client used to
+/// send the URL's short segment (`/projects/ps/...`) here, which blanked the
+/// command palette inside every project — hence this guard.
+#[tokio::test]
+async fn non_uuid_project_param_is_rejected() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let token = user_token(&app, "nu@example.com", "nuuser").await;
+    let (_pid, prefix) = make_project(&app, &token, "Prefixed", "private").await;
+
+    for param in ["project_id", "boost_project_id"] {
+        let r = app
+            .send(get_with_bearer(
+                &format!("/api/v1/search?q=anything&{param}={}", enc(&prefix)),
+                &token,
+            ))
+            .await;
+        assert_eq!(
+            r.status, 400,
+            "{param}={prefix} must not be taken for an id: {:?}",
+            r.json
+        );
+    }
+}

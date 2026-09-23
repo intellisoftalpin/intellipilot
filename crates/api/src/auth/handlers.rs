@@ -10,8 +10,9 @@
 use std::sync::LazyLock;
 
 use axum::Json;
-use axum::extract::State;
+use axum::body::Bytes;
 use axum::extract::rejection::JsonRejection;
+use axum::extract::{FromRequest, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
@@ -187,19 +188,46 @@ fn clear_refresh_cookie(jar: CookieJar) -> CookieJar {
 /// there and remains HttpOnly.
 pub(crate) const REFRESH_IN_BODY_HEADER: &str = "x-intellipilot-refresh-in-body";
 
+/// An optional [`RefreshRequest`] body that tolerates what browsers actually
+/// send.
+///
+/// `Option<Json<T>>` is not that: it rejects a request declaring
+/// `Content-Type: application/json` with an empty body — **400 before the
+/// handler ever runs**. The web client sends exactly that on every refresh and
+/// logout (its HTTP client sets the JSON content type globally; the body is
+/// empty because the cookie carries the token). The result was that no browser
+/// session could ever be renewed: it died the moment its 15-minute access
+/// token expired, and every page reload landed on the login screen. Shipped in
+/// 0.6.31 with the native multi-account body path, fixed in 0.7.4.
+///
+/// The body is only ever a fallback for cookie-less native clients, so
+/// anything missing or unparsable is simply "no body" and the cookie decides.
+#[derive(Debug)]
+pub struct OptionalRefreshBody(Option<RefreshRequest>);
+
+impl<S: Send + Sync> FromRequest<S> for OptionalRefreshBody {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = Bytes::from_request(req, state).await.unwrap_or_default();
+        if bytes.is_empty() {
+            return Ok(Self(None));
+        }
+        Ok(Self(serde_json::from_slice::<RefreshRequest>(&bytes).ok()))
+    }
+}
+
 /// The refresh token this request carries, and whether it came from the body.
 ///
 /// Cookie wins; the body is the fallback. Which one it was decides whether the
 /// rotated token goes back in the response, since a body caller has no cookie
 /// jar to receive it — see [`should_echo_refresh`].
-fn refresh_token_from(
-    jar: &CookieJar,
-    body: Option<Json<RefreshRequest>>,
-) -> Option<(String, bool)> {
+fn refresh_token_from(jar: &CookieJar, body: OptionalRefreshBody) -> Option<(String, bool)> {
     if let Some(c) = jar.get(REFRESH_COOKIE) {
         return Some((c.value().to_owned(), false));
     }
-    body.and_then(|Json(b)| b.refresh_token)
+    body.0
+        .and_then(|b| b.refresh_token)
         .map(|t| t.trim().to_owned())
         .filter(|t| !t.is_empty())
         .map(|t| (t, true))
@@ -911,7 +939,7 @@ pub async fn refresh(
     State(state): State<AppState>,
     headers: HeaderMap,
     jar: CookieJar,
-    body: Option<Json<RefreshRequest>>,
+    body: OptionalRefreshBody,
 ) -> Response {
     let rid = request_id(&headers);
     let auth = state.auth();
@@ -1115,7 +1143,7 @@ pub async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
     jar: CookieJar,
-    body: Option<Json<RefreshRequest>>,
+    body: OptionalRefreshBody,
 ) -> Response {
     let rid = request_id(&headers);
     let auth = state.auth();
@@ -1124,7 +1152,8 @@ pub async fn logout(
         .get(REFRESH_COOKIE)
         .map(|c| c.value().to_owned())
         .or_else(|| {
-            body.and_then(|Json(b)| b.refresh_token)
+            body.0
+                .and_then(|b| b.refresh_token)
                 .map(|t| t.trim().to_owned())
                 .filter(|t| !t.is_empty())
         });

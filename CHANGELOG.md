@@ -4,6 +4,21 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.4] - 2026-09-23
+
+### Fixed
+- **Browser sessions could never be renewed (critical).** `POST /auth/refresh`
+  and `/auth/logout` declared an optional JSON body, and axum rejects
+  "`Content-Type: application/json` with an empty body" with **400 before the
+  handler runs** — exactly what the web client sends, since it sets the JSON
+  content type globally and lets the cookie carry the token. Every renewal
+  failed, so a browser session died with its 15-minute access token and every
+  page reload landed on the login screen. Introduced in 0.6.31 with the native
+  multi-account body path. The body is now parsed leniently: empty or
+  unparsable means "no body" and the cookie decides. Regression tests send the
+  browser's exact request shape — the existing cookie tests missed this because
+  they send no content type at all.
+
 ## [0.7.3] - 2026-09-22
 
 ### Fixed
