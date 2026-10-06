@@ -23,13 +23,27 @@ pub struct NamedCount {
     pub count: i64,
 }
 
-/// Per-project tally of the current user's open assigned work (home cards).
+/// One of the current user's projects on the home dashboard.
+///
+/// Every project the user is a member of, ordered by how many of its tickets
+/// they are involved in (the My Issues roles, closed tickets included), so the
+/// projects they work in most come first. That count only orders the list.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ProjectBucket {
     pub project_id: Uuid,
     pub slug: String,
     pub name: String,
+    /// Open issues assigned to the user. Kept for clients before 0.7.8,
+    /// which print it on the project cards.
     pub open_count: i64,
+    pub issue_prefix: String,
+    /// Card color (hex).
+    pub color: String,
+    /// `none` (prefix-initials fallback) or `image` (uploaded icon).
+    pub icon_image_kind: String,
+    /// Cache-buster for the uploaded icon; `None` when no icon is set.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub icon_image_updated_at: Option<time::OffsetDateTime>,
 }
 
 /// An assigned issue that needs attention (overdue or due soon).

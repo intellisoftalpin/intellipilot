@@ -4,6 +4,32 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.8] - 2026-10-06
+
+### Changed
+- **Home dashboard: every project you are a member of.** `GET
+  /api/v1/me/dashboard` used to list only projects holding open issues
+  assigned to you. `by_project` now lists all your projects, ordered by how
+  many of their tickets you are involved in — the My Issues roles (assignee,
+  reporter, reviewer, QA, watcher, @mentioned) over top-level tickets, closed
+  ones included — then by name. Each entry also carries `issue_prefix`,
+  `color`, `icon_image_kind` and `icon_image_updated_at`, so clients can draw
+  the project icon without another request. `open_count` keeps its meaning
+  for older clients. Version in lockstep with frontend 0.7.8 (0.7.7 was a
+  frontend-only release).
+
+## [0.7.6] - 2026-09-23
+
+### Changed
+- Version kept in lockstep with the frontend's 0.7.6 fix for the Create user
+  dialog hanging on an expired session. No backend changes.
+
+## [0.7.5] - 2026-09-23
+
+### Changed
+- Version kept in lockstep with the frontend's 0.7.5 fix for tabs hanging on
+  the startup spinner. No backend changes.
+
 ## [0.7.4] - 2026-09-23
 
 ### Fixed

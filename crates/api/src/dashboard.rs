@@ -9,6 +9,7 @@ use intellipilot_core::perms::Permission;
 use intellipilot_db::{dashboard as dashdb, time_tracking};
 
 use crate::auth::{AuthUser, request_id};
+use crate::my_role;
 use crate::problem::Problem;
 use crate::projects::ProjectContext;
 use crate::state::AppState;
@@ -38,7 +39,8 @@ pub async fn get_home(
         return internal(&rid);
     };
     let today = time_tracking::today_utc();
-    dashdb::home(&client, user.user_id, today)
+    let actor = my_role::actor(&client, user.user_id).await;
+    dashdb::home(&client, user.user_id, actor.mention_like.as_deref(), today)
         .await
         .map_or_else(|_| internal(&rid), |d| Json(d).into_response())
 }

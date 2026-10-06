@@ -18,6 +18,7 @@ use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::DbError;
+use crate::backlog::my_role_any_sql;
 
 const ISO: &[time::format_description::FormatItem<'_>] =
     time::macros::format_description!("[year]-[month]-[day]");
@@ -39,11 +40,15 @@ fn status_bucket(r: &Row) -> StatusBucket {
 // global home dashboard
 // ---------------------------------------------------------------------------
 
-/// The current user's cross-project plate: KPI counts, work by status, open
-/// work per project, attention items, and current-year vacation remaining.
+/// The current user's cross-project plate: KPI counts, work by status, their
+/// projects, attention items, and current-year vacation remaining.
+///
+/// `mention_like` is the user's escaped `%@handle%` pattern for the
+/// `mentioned` role; `None` leaves that role out of the project ordering.
 pub async fn home(
     client: &deadpool_postgres::Client,
     user_id: Uuid,
+    mention_like: Option<&str>,
     today: Date,
 ) -> Result<HomeDashboard, DbError> {
     let due_soon_end = today + Duration::days(7);
@@ -74,26 +79,7 @@ pub async fn home(
         .await?;
     let by_status = status_rows.iter().map(status_bucket).collect();
 
-    let proj_rows = client
-        .query(
-            "SELECT p.id, p.slug, p.name, count(*)::int8 AS cnt \
-             FROM issues i JOIN projects p ON p.id = i.project_id \
-             LEFT JOIN taxonomy_items st ON st.id = i.status_id \
-             WHERE i.assigned_to = $1 AND i.deleted_at IS NULL AND st.is_closed IS NOT TRUE \
-             GROUP BY p.id, p.slug, p.name \
-             ORDER BY cnt DESC, p.name",
-            &[&user_id],
-        )
-        .await?;
-    let by_project = proj_rows
-        .iter()
-        .map(|r| ProjectBucket {
-            project_id: r.get("id"),
-            slug: r.get("slug"),
-            name: r.get("name"),
-            open_count: r.get("cnt"),
-        })
-        .collect();
+    let by_project = home_projects(client, user_id, mention_like).await?;
 
     let att_rows = client
         .query(
@@ -143,6 +129,49 @@ pub async fn home(
         by_project,
         attention,
     })
+}
+
+/// Every project the user is a member of, those they are involved in most
+/// first. Involvement is the My Issues roles over top-level tickets, like the
+/// My Issues board, but closed ones too: where someone has worked most is
+/// where they look first. The role predicates are written against a table
+/// named `issues`, so that subquery must not alias it.
+async fn home_projects(
+    client: &deadpool_postgres::Client,
+    user_id: Uuid,
+    mention_like: Option<&str>,
+) -> Result<Vec<ProjectBucket>, DbError> {
+    let proj_sql = format!(
+        "SELECT p.id, p.slug, p.name, p.issue_prefix, p.color, p.icon_image_kind, \
+                p.icon_image_updated_at, \
+                (SELECT count(*) FROM issues i \
+                   LEFT JOIN taxonomy_items st ON st.id = i.status_id \
+                  WHERE i.project_id = p.id AND i.assigned_to = $1 \
+                    AND i.deleted_at IS NULL AND st.is_closed IS NOT TRUE)::int8 AS open_cnt, \
+                (SELECT count(*) FROM issues \
+                  WHERE issues.project_id = p.id AND issues.deleted_at IS NULL \
+                    AND issues.parent_id IS NULL \
+                    AND ({}))::int8 AS mine_cnt \
+         FROM projects p JOIN memberships m ON m.project_id = p.id \
+         WHERE m.user_id = $1 AND p.deleted_at IS NULL \
+         ORDER BY mine_cnt DESC, lower(p.name), p.id",
+        my_role_any_sql("$1::uuid", "$2::text")
+    );
+    let pattern = mention_like.map(str::to_owned);
+    let proj_rows = client.query(&proj_sql, &[&user_id, &pattern]).await?;
+    Ok(proj_rows
+        .iter()
+        .map(|r| ProjectBucket {
+            project_id: r.get("id"),
+            slug: r.get("slug"),
+            name: r.get("name"),
+            open_count: r.get("open_cnt"),
+            issue_prefix: r.get("issue_prefix"),
+            color: r.get("color"),
+            icon_image_kind: r.get("icon_image_kind"),
+            icon_image_updated_at: r.get("icon_image_updated_at"),
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
