@@ -4,6 +4,12 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.9] - 2026-10-07
+
+### Changed
+- Version kept in lockstep with the frontend's 0.7.9, which adds an Arch Linux
+  desktop package. No backend changes.
+
 ## [0.7.8] - 2026-10-06
 
 ### Changed
