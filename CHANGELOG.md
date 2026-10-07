@@ -4,6 +4,13 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.11] - 2026-10-07
+
+### Fixed
+- OpenAPI `info.version` and the Docker example versions were left at 0.7.9
+  in 0.7.10, so the release's tag check failed and 0.7.10 was never
+  published. Its changes ship in this release.
+
 ## [0.7.10] - 2026-10-07
 
 ### Added
