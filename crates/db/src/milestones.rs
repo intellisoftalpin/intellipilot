@@ -8,8 +8,8 @@ use uuid::Uuid;
 use crate::DbError;
 use crate::backlog::UpdateOutcome;
 
-const COLS: &str = "id, project_id, name, slug, description, start_date, end_date, \
-     actual_end_date, \
+const COLS: &str = "id, project_id, name, slug, description, start_date, actual_start_date, \
+     end_date, actual_end_date, \
      business_release_date, closed, closed_at, \"order\", version, created_at, modified_at";
 
 fn row_to_milestone(r: &Row) -> Milestone {
@@ -20,6 +20,7 @@ fn row_to_milestone(r: &Row) -> Milestone {
         slug: r.get("slug"),
         description: r.get("description"),
         start_date: r.get("start_date"),
+        actual_start_date: r.get("actual_start_date"),
         end_date: r.get("end_date"),
         actual_end_date: r.get("actual_end_date"),
         business_release_date: r.get("business_release_date"),
@@ -40,6 +41,7 @@ pub struct MilestonePatch<'a> {
     pub name: Option<&'a str>,
     pub description: Option<&'a str>,
     pub start_date: Option<Option<Date>>,
+    pub actual_start_date: Option<Option<Date>>,
     pub end_date: Option<Option<Date>>,
     pub actual_end_date: Option<Option<Date>>,
     pub business_release_date: Option<Option<Date>>,
@@ -52,6 +54,7 @@ pub struct MilestoneNew<'a> {
     pub slug: &'a str,
     pub description: &'a str,
     pub start_date: Option<Date>,
+    pub actual_start_date: Option<Date>,
     pub end_date: Option<Date>,
     pub actual_end_date: Option<Date>,
     pub business_release_date: Option<Date>,
@@ -76,8 +79,9 @@ pub async fn create(
             &format!(
                 "INSERT INTO milestones \
                    (project_id, name, slug, description, start_date, end_date, \
-                    actual_end_date, business_release_date, \"order\") \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING {COLS}"
+                    actual_end_date, business_release_date, \"order\", \
+                    actual_start_date) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING {COLS}"
             ),
             &[
                 &project_id,
@@ -89,6 +93,7 @@ pub async fn create(
                 &new.actual_end_date,
                 &new.business_release_date,
                 &order,
+                &new.actual_start_date,
             ],
         )
         .await?;
@@ -115,13 +120,127 @@ pub async fn list(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
 ) -> Result<Vec<Milestone>, DbError> {
+    list_filtered(client, project_id, None).await
+}
+
+/// [`list`] narrowed to open (`Some(false)`) or completed (`Some(true)`)
+/// milestones; `None` returns both. Lets the milestones page skip the
+/// completed band until the user expands it.
+pub async fn list_filtered(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+    closed: Option<bool>,
+) -> Result<Vec<Milestone>, DbError> {
     let rows = client
         .query(
-            &format!("SELECT {COLS} FROM milestones WHERE project_id=$1 AND deleted_at IS NULL ORDER BY \"order\""),
-            &[&project_id],
+            &format!(
+                "SELECT {COLS} FROM milestones \
+                 WHERE project_id=$1 AND deleted_at IS NULL \
+                   AND ($2::bool IS NULL OR closed = $2::bool) \
+                 ORDER BY \"order\""
+            ),
+            &[&project_id, &closed],
         )
         .await?;
     Ok(rows.iter().map(row_to_milestone).collect())
+}
+
+/// How many live milestones in this project are completed — the number on the
+/// collapsed "Completed" band, without loading them.
+pub async fn completed_count(
+    client: &deadpool_postgres::Client,
+    project_id: Uuid,
+) -> Result<i64, DbError> {
+    let row = client
+        .query_one(
+            "SELECT count(*)::int8 AS n FROM milestones \
+             WHERE project_id=$1 AND deleted_at IS NULL AND closed",
+            &[&project_id],
+        )
+        .await?;
+    Ok(row.get("n"))
+}
+
+/// [`completed_count`] summed over several projects.
+pub async fn completed_count_across(
+    client: &deadpool_postgres::Client,
+    project_ids: &[Uuid],
+) -> Result<i64, DbError> {
+    if project_ids.is_empty() {
+        return Ok(0);
+    }
+    let row = client
+        .query_one(
+            "SELECT count(*)::int8 AS n FROM milestones \
+             WHERE project_id = ANY($1) AND deleted_at IS NULL AND closed",
+            &[&project_ids],
+        )
+        .await?;
+    Ok(row.get("n"))
+}
+
+/// A milestone plus the roll-ups a cross-project timeline needs to draw it
+/// without one epic fetch per project.
+#[derive(Debug, Clone)]
+pub struct MilestoneRollup {
+    pub milestone: Milestone,
+    /// Live issues in the milestone (epic-derived, see [`stats`]).
+    pub task_total: i64,
+    /// Of those, issues in a `counts_as_done` status — the same rule as the
+    /// per-epic readiness ring, so both pages show the same percentage.
+    pub task_closed: i64,
+    /// Live epics composing the milestone.
+    pub epic_count: i64,
+}
+
+/// Milestones across several projects, with task and epic roll-ups.
+///
+/// `closed` narrows like [`list_filtered`]. Callers pass only the projects the
+/// actor may see milestones in; this function does no access checks.
+pub async fn list_across(
+    client: &deadpool_postgres::Client,
+    project_ids: &[Uuid],
+    closed: Option<bool>,
+) -> Result<Vec<MilestoneRollup>, DbError> {
+    if project_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cols = COLS
+        .split(", ")
+        .map(|c| format!("m.{}", c.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rows = client
+        .query(
+            &format!(
+                "SELECT {cols}, \
+                   (SELECT count(*) FROM issues i \
+                      WHERE i.milestone_id = m.id AND i.deleted_at IS NULL)::int8 \
+                     AS task_total, \
+                   (SELECT count(*) FROM issues i \
+                      JOIN taxonomy_items t ON t.id = i.status_id \
+                      WHERE i.milestone_id = m.id AND i.deleted_at IS NULL \
+                        AND t.counts_as_done)::int8 AS task_closed, \
+                   (SELECT count(*) FROM epics e \
+                      WHERE e.milestone_id = m.id AND e.deleted_at IS NULL)::int8 \
+                     AS epic_count \
+                 FROM milestones m \
+                 WHERE m.project_id = ANY($1) AND m.deleted_at IS NULL \
+                   AND ($2::bool IS NULL OR m.closed = $2::bool) \
+                 ORDER BY m.project_id, m.\"order\""
+            ),
+            &[&project_ids, &closed],
+        )
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| MilestoneRollup {
+            milestone: row_to_milestone(r),
+            task_total: r.get("task_total"),
+            task_closed: r.get("task_closed"),
+            epic_count: r.get("epic_count"),
+        })
+        .collect())
 }
 
 /// Apply a partial edit under an optimistic-concurrency guard.
@@ -142,6 +261,10 @@ pub async fn update(
     let (desc_set, desc) = (patch.description.is_some(), patch.description);
     let (start_set, start) = (patch.start_date.is_some(), patch.start_date.flatten());
     let (end_set, end) = (patch.end_date.is_some(), patch.end_date.flatten());
+    let (astart_set, astart) = (
+        patch.actual_start_date.is_some(),
+        patch.actual_start_date.flatten(),
+    );
     let (actual_set, actual) = (
         patch.actual_end_date.is_some(),
         patch.actual_end_date.flatten(),
@@ -169,6 +292,8 @@ pub async fn update(
                                  ELSE end_date END \
                           ) IS NULL THEN NULL \
                      ELSE business_release_date END, \
+                   actual_start_date = CASE \
+                     WHEN $16::bool THEN $17::date ELSE actual_start_date END, \
                    version = version + 1 \
                  WHERE id=$1 AND project_id=$2 AND version=$3 AND deleted_at IS NULL \
                  RETURNING {COLS}"
@@ -189,6 +314,8 @@ pub async fn update(
                 &actual,
                 &biz_set,
                 &biz,
+                &astart_set,
+                &astart,
             ],
         )
         .await?;
@@ -202,6 +329,11 @@ pub async fn update(
 }
 
 /// Mark a milestone completed (idempotent). Returns the completed milestone.
+///
+/// The planned end is copied into a missing actual end, unless that would put
+/// the actual end before the actual start (work started after the planned
+/// end) — the actual end then stays unset rather than violating the V029
+/// CHECK.
 pub async fn close(
     client: &deadpool_postgres::Client,
     project_id: Uuid,
@@ -212,7 +344,11 @@ pub async fn close(
             &format!(
                 "UPDATE milestones SET closed=true, \
                    closed_at=COALESCE(closed_at, now()), \
-                   actual_end_date=COALESCE(actual_end_date, end_date), \
+                   actual_end_date=CASE \
+                     WHEN actual_end_date IS NOT NULL THEN actual_end_date \
+                     WHEN actual_start_date IS NULL OR end_date >= actual_start_date \
+                       THEN end_date \
+                     ELSE NULL END, \
                    version=version+1 \
                  WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL RETURNING {COLS}"
             ),

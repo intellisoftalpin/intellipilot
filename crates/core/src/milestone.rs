@@ -13,10 +13,16 @@ pub struct Milestone {
     pub slug: String,
     /// Free-form markdown notes. Empty string when unset.
     pub description: String,
-    /// ISO `YYYY-MM-DD`.
+    /// The *planned* start. ISO `YYYY-MM-DD`.
     #[schema(value_type = Option<String>)]
     #[serde(with = "crate::serde_date::option")]
     pub start_date: Option<Date>,
+    /// When work actually began. Set by hand only; `None` until recorded.
+    /// The gap against [`Self::start_date`] is the late (or early) start.
+    /// ISO `YYYY-MM-DD`.
+    #[schema(value_type = Option<String>)]
+    #[serde(with = "crate::serde_date::option")]
+    pub actual_start_date: Option<Date>,
     /// The *planned* technical release date. ISO `YYYY-MM-DD`.
     #[schema(value_type = Option<String>)]
     #[serde(with = "crate::serde_date::option")]

@@ -587,6 +587,7 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/projects/{project_id}/issues/{id}/watchers", post(issue_relations::add_watcher))
             .route("/api/v1/projects/{project_id}/issues/{id}/watchers/{user_id}", delete(issue_relations::remove_watcher))
             // Milestones / sprints
+            .route("/api/v1/milestones", get(milestones::list_all))
             .route("/api/v1/projects/{project_id}/milestones", get(milestones::list))
             .route("/api/v1/projects/{project_id}/milestones", post(milestones::create))
             .route("/api/v1/projects/{project_id}/milestones/{milestone_id}", get(milestones::get))

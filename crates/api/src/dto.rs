@@ -716,6 +716,11 @@ pub struct CreateMilestoneRequest {
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::option")]
     pub start_date: Option<time::Date>,
+    /// When work actually began. Usually left unset at creation.
+    #[garde(skip)]
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::option")]
+    pub actual_start_date: Option<time::Date>,
     /// Planned technical release date.
     #[garde(skip)]
     #[schema(value_type = Option<String>)]
@@ -750,6 +755,11 @@ pub struct UpdateMilestoneRequest {
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::double_option")]
     pub start_date: Option<Option<time::Date>>,
+    /// When work actually began; `null` clears it.
+    #[garde(skip)]
+    #[schema(value_type = Option<String>)]
+    #[serde(default, with = "intellipilot_core::serde_date::double_option")]
+    pub actual_start_date: Option<Option<time::Date>>,
     #[garde(skip)]
     #[schema(value_type = Option<String>)]
     #[serde(default, with = "intellipilot_core::serde_date::double_option")]

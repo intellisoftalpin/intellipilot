@@ -1173,3 +1173,327 @@ async fn completing_records_the_actual_end_from_the_plan() {
         .await;
     assert!(closed_c.json["actual_end_date"].is_null());
 }
+
+// ---------------------------------------------------------------------------
+// V029: planned vs actual start
+// ---------------------------------------------------------------------------
+
+/// The planned start stays the plan; the actual start is recorded by hand and
+/// can be set, changed and cleared independently of it.
+#[tokio::test]
+async fn actual_start_date_is_separate_from_the_planned_one() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+
+    let created = milestone(
+        &app,
+        &token,
+        &pid,
+        &json!({
+            "name": "Kickoff",
+            "start_date": "2026-05-01",
+            "actual_start_date": "2026-05-04",
+            "end_date": "2026-05-20"
+        }),
+    )
+    .await;
+    assert_eq!(created["start_date"], "2026-05-01");
+    assert_eq!(created["actual_start_date"], "2026-05-04");
+    let id = created["id"].as_str().unwrap().to_owned();
+
+    let early = patch_milestone(
+        &app,
+        &token,
+        &pid,
+        &id,
+        &json!({ "actual_start_date": "2026-04-28" }),
+    )
+    .await;
+    assert_eq!(early.status, 200, "{:?}", early.json);
+    assert_eq!(early.json["start_date"], "2026-05-01");
+    assert_eq!(early.json["actual_start_date"], "2026-04-28");
+
+    let cleared = patch_milestone(
+        &app,
+        &token,
+        &pid,
+        &id,
+        &json!({ "actual_start_date": null }),
+    )
+    .await;
+    assert_eq!(cleared.status, 200, "{:?}", cleared.json);
+    assert!(cleared.json["actual_start_date"].is_null());
+    assert_eq!(cleared.json["start_date"], "2026-05-01");
+}
+
+/// A milestone cannot really end before it really started — refused with a
+/// 422 on create and on update, never a 500 from the CHECK.
+#[tokio::test]
+async fn actual_end_before_actual_start_is_rejected() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+
+    let bad = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/milestones"),
+            &token,
+            &json!({
+                "name": "Backwards",
+                "actual_start_date": "2026-05-10",
+                "actual_end_date": "2026-05-09"
+            }),
+        ))
+        .await;
+    assert_eq!(bad.status, 422, "{:?}", bad.json);
+    assert_eq!(bad.json["code"], "invalid_dates");
+
+    let m = milestone(
+        &app,
+        &token,
+        &pid,
+        &json!({ "name": "Fine", "actual_end_date": "2026-05-09" }),
+    )
+    .await;
+    let id = m["id"].as_str().unwrap().to_owned();
+    let refused = patch_milestone(
+        &app,
+        &token,
+        &pid,
+        &id,
+        &json!({ "actual_start_date": "2026-05-10" }),
+    )
+    .await;
+    assert_eq!(refused.status, 422, "{:?}", refused.json);
+    assert_eq!(refused.json["code"], "invalid_dates");
+}
+
+/// Completing copies the planned end into a missing actual end — unless work
+/// started after the planned end, where that copy would run backwards. The
+/// actual end then stays unset instead of failing the completion.
+#[tokio::test]
+async fn completing_a_late_started_milestone_leaves_actual_end_unset() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+
+    let m = milestone(
+        &app,
+        &token,
+        &pid,
+        &json!({
+            "name": "Very late",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-10",
+            "actual_start_date": "2026-05-15"
+        }),
+    )
+    .await;
+    let id = m["id"].as_str().unwrap();
+    let closed = app
+        .send(post_bearer(
+            &format!("/api/v1/projects/{pid}/milestones/{id}/close"),
+            &token,
+        ))
+        .await;
+    assert_eq!(closed.status, 200, "{:?}", closed.json);
+    assert_eq!(closed.json["closed"], true);
+    assert!(closed.json["actual_end_date"].is_null());
+}
+
+// ---------------------------------------------------------------------------
+// lazy completed band: ?state= and completed_count
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_filters_by_state_and_counts_completed() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (token, pid) = owner_project(&app).await;
+
+    let open = milestone(&app, &token, &pid, &json!({ "name": "Open one" })).await;
+    let done = milestone(&app, &token, &pid, &json!({ "name": "Done one" })).await;
+    let done_id = done["id"].as_str().unwrap();
+    let c = app
+        .send(post_bearer(
+            &format!("/api/v1/projects/{pid}/milestones/{done_id}/close"),
+            &token,
+        ))
+        .await;
+    assert_eq!(c.status, 200);
+
+    let names = |v: &Value| -> Vec<String> {
+        v["milestones"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let base = format!("/api/v1/projects/{pid}/milestones");
+
+    let all = app.send(get_with_bearer(&base, &token)).await;
+    assert_eq!(all.status, 200);
+    assert_eq!(names(&all.json).len(), 2, "no filter keeps old behaviour");
+    assert_eq!(all.json["completed_count"], 1);
+
+    let o = app
+        .send(get_with_bearer(&format!("{base}?state=open"), &token))
+        .await;
+    assert_eq!(names(&o.json), vec![open["name"].as_str().unwrap()]);
+    // Counted even though filtered out — the collapsed band needs it.
+    assert_eq!(o.json["completed_count"], 1);
+
+    let d = app
+        .send(get_with_bearer(&format!("{base}?state=completed"), &token))
+        .await;
+    assert_eq!(names(&d.json), vec!["Done one"]);
+
+    let bad = app
+        .send(get_with_bearer(&format!("{base}?state=nope"), &token))
+        .await;
+    assert_eq!(bad.status, 422);
+    assert_eq!(bad.json["code"], "invalid_state");
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/milestones — every project the caller may see milestones in
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cross_project_list_respects_milestone_view_per_project() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (owner, p_seen) = owner_project(&app).await;
+    let hidden = app
+        .send(post_json_bearer(
+            "/api/v1/projects",
+            &owner,
+            &json!({ "name": "Hidden" }),
+        ))
+        .await;
+    assert_eq!(hidden.status, 201);
+    let p_hidden = hidden.json["id"].as_str().unwrap().to_owned();
+
+    let seen = milestone(
+        &app,
+        &owner,
+        &p_seen,
+        &json!({
+            "name": "Visible",
+            "end_date": "2026-06-01",
+            "business_release_date": "2026-06-10"
+        }),
+    )
+    .await;
+    let _ = milestone(&app, &owner, &p_hidden, &json!({ "name": "Secret" })).await;
+
+    // Progress roll-up: one done issue of two, through one epic.
+    let eid = epic(&app, &owner, &p_seen, "E", seen["id"].as_str()).await;
+    let st_done = tax_id(&app, &owner, &p_seen, "issue_status", "Done").await;
+    let st_new = tax_id(&app, &owner, &p_seen, "issue_status", "New").await;
+    let _ = issue(
+        &app,
+        &owner,
+        &p_seen,
+        &json!({ "subject": "a", "epic_id": eid, "status_id": st_done }),
+    )
+    .await;
+    let _ = issue(
+        &app,
+        &owner,
+        &p_seen,
+        &json!({ "subject": "b", "epic_id": eid, "status_id": st_new }),
+    )
+    .await;
+
+    // A viewer of the first project only, without business-release rights.
+    let viewer = member_with_role(
+        &app,
+        &owner,
+        &p_seen,
+        "viewer",
+        &["project.view", "milestone.view"],
+        "viewer@example.com",
+        "viewer",
+    )
+    .await;
+    // Member of the second project, but without milestone.view there.
+    let _ = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{p_hidden}/roles"),
+            &owner,
+            &json!({ "name": "blind", "slug": "blind", "permissions": ["project.view"] }),
+        ))
+        .await;
+    let inv = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{p_hidden}/invitations"),
+            &owner,
+            &json!({ "email": "viewer@example.com", "role": "blind" }),
+        ))
+        .await;
+    let accept = app
+        .send(post_json_bearer(
+            "/api/v1/invitations/accept",
+            &viewer,
+            &json!({ "token": inv.json["invite_token"] }),
+        ))
+        .await;
+    assert_eq!(accept.status, 200, "{:?}", accept.json);
+
+    let list = app
+        .send(get_with_bearer("/api/v1/milestones", &viewer))
+        .await;
+    assert_eq!(list.status, 200, "{:?}", list.json);
+    let rows = list.json["milestones"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!(row["name"], "Visible");
+    assert_eq!(row["project"]["id"], p_seen.as_str());
+    assert!(row["project"]["color"].as_str().is_some());
+    assert!(row["project"]["prefix"].as_str().is_some());
+    assert_eq!(row["task_total"], 2);
+    assert_eq!(row["task_closed"], 1);
+    assert_eq!(row["epic_count"], 1);
+    // Need-to-know, per project, exactly like the project endpoints.
+    assert!(row.get("business_release_date").is_none());
+
+    // The owner sees both projects and the business release date.
+    let mine = app
+        .send(get_with_bearer("/api/v1/milestones", &owner))
+        .await;
+    let rows = mine.json["milestones"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    let visible = rows.iter().find(|r| r["name"] == "Visible").unwrap();
+    assert_eq!(visible["business_release_date"], "2026-06-10");
+
+    assert_eq!(mine.json["completed_count"], 0);
+
+    // State filter applies here too; the count ignores it.
+    let sid = visible["id"].as_str().unwrap();
+    let c = app
+        .send(post_bearer(
+            &format!("/api/v1/projects/{p_seen}/milestones/{sid}/close"),
+            &owner,
+        ))
+        .await;
+    assert_eq!(c.status, 200);
+    let open = app
+        .send(get_with_bearer("/api/v1/milestones?state=open", &owner))
+        .await;
+    let rows = open.json["milestones"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "Secret");
+    assert_eq!(open.json["completed_count"], 1);
+    let done = app
+        .send(get_with_bearer(
+            "/api/v1/milestones?state=completed",
+            &owner,
+        ))
+        .await;
+    let rows = done.json["milestones"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "Visible");
+}

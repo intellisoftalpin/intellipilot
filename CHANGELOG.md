@@ -4,6 +4,26 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.10] - 2026-10-07
+
+### Added
+- **Planned vs actual start (V029).** Milestones gain `actual_start_date`,
+  set by hand only; `start_date` keeps its name and is now the *planned*
+  start. An actual end before the actual start is refused with 422
+  (`invalid_dates`) and by a table CHECK. Completing a milestone whose work
+  started after its planned end no longer copies that planned end into the
+  actual end, which would run backwards — it stays unset.
+- **Cross-project milestones: `GET /api/v1/milestones`.** Every milestone in
+  the projects where the caller holds `milestone.view` (superadmins: all;
+  app tokens: their scoped projects), each with its project's id, name,
+  prefix and colour plus `task_total`, `task_closed` and `epic_count`. The
+  business release date is stripped per project, as on the project
+  endpoints.
+- **`?state=open|completed|all`** on both milestone listings (default `all`,
+  so existing clients are unaffected), and a `completed_count` that ignores
+  the filter — so a collapsed "Completed" band can show its size without
+  loading it.
+
 ## [0.7.9] - 2026-10-07
 
 ### Changed

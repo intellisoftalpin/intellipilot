@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use garde::Validate;
@@ -29,9 +29,11 @@ use intellipilot_core::taxonomy::TaxonomyKind;
 use intellipilot_db::backlog::UpdateOutcome;
 use intellipilot_db::milestones::MilestonePatch;
 use intellipilot_db::{backlog as bl, milestones as msdb, taxonomy as taxdb};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::auth::{Caller, request_id};
 use crate::backlog::{check_if_match, with_etag};
 use crate::dto::{CreateMilestoneRequest, SetMilestoneEpicsRequest, UpdateMilestoneRequest};
 use crate::problem::Problem;
@@ -94,6 +96,37 @@ fn parse_body<T: serde::de::DeserializeOwned + Validate<Context = ()>>(
     Ok(v)
 }
 
+/// `?state=` on the milestone listings: `open`, `completed`, or `all`
+/// (default — what clients predating the filter expect).
+#[derive(Debug, Default, Deserialize)]
+pub struct StateQuery {
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
+impl StateQuery {
+    /// The `closed` filter this query asks for: `Ok(None)` for every
+    /// milestone, `Err(())` for an unknown value.
+    fn closed(&self) -> Result<Option<bool>, ()> {
+        match self.state.as_deref() {
+            None | Some("all") => Ok(None),
+            Some("open") => Ok(Some(false)),
+            Some("completed") => Ok(Some(true)),
+            Some(_) => Err(()),
+        }
+    }
+}
+
+fn invalid_state(rid: &str) -> Response {
+    problem(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_state",
+        "Invalid state filter",
+        Some("state must be one of: open, completed, all".to_owned()),
+        rid,
+    )
+}
+
 fn mid_param(params: &HashMap<String, String>) -> Option<Uuid> {
     params
         .get("milestone_id")
@@ -129,6 +162,10 @@ fn dates_ok(start: Option<time::Date>, end: Option<time::Date>) -> bool {
 
 /// Explanation returned when the business release does not trail a technical
 /// one. Shared so create and update cannot drift apart.
+/// Explanation returned when the actual end precedes the actual start. Mirrors
+/// the V029 CHECK.
+const ACTUAL_RANGE_RULE: &str = "actual_end_date must be on or after actual_start_date";
+
 const BUSINESS_RELEASE_RULE: &str = "business_release_date must be after the technical end date \
      (actual_end_date when set, otherwise end_date)";
 
@@ -173,6 +210,9 @@ pub async fn create(
     if !dates_ok(req.start_date, req.end_date) {
         return invalid_dates(&ctx.rid, "end_date must be on or after start_date");
     }
+    if !dates_ok(req.actual_start_date, req.actual_end_date) {
+        return invalid_dates(&ctx.rid, ACTUAL_RANGE_RULE);
+    }
     if !business_release_ok(
         effective_end(req.end_date, req.actual_end_date),
         req.business_release_date,
@@ -189,6 +229,7 @@ pub async fn create(
         slug: &slug,
         description: &req.description,
         start_date: req.start_date,
+        actual_start_date: req.actual_start_date,
         end_date: req.end_date,
         actual_end_date: req.actual_end_date,
         business_release_date: req.business_release_date,
@@ -209,23 +250,143 @@ pub async fn create(
     }
 }
 
-/// `GET /api/v1/projects/{project_id}/milestones`
-pub async fn list(State(state): State<AppState>, ctx: ProjectContext) -> Response {
+/// `GET /api/v1/projects/{project_id}/milestones?state=open|completed|all`
+///
+/// `completed_count` always counts every completed milestone, whatever
+/// `state` filtered out, so a collapsed "Completed" band can show its size
+/// before it is loaded.
+pub async fn list(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    Query(q): Query<StateQuery>,
+) -> Response {
     if let Err(r) = ctx.require(Permission::MilestoneView) {
         return r;
     }
+    let Ok(closed) = q.closed() else {
+        return invalid_state(&ctx.rid);
+    };
     let auth = state.auth();
     let Ok(client) = auth.db.pool.get().await else {
         return internal(&ctx.rid);
     };
-    match msdb::list(&client, ctx.project.id).await {
+    let Ok(completed_count) = msdb::completed_count(&client, ctx.project.id).await else {
+        return internal(&ctx.rid);
+    };
+    match msdb::list_filtered(&client, ctx.project.id, closed).await {
         Ok(items) => {
             let may = ctx.has(Permission::MilestoneBusinessReleaseView);
             let out: Vec<Value> = items.iter().map(|m| view(m, may)).collect();
-            Json(json!({ "milestones": out })).into_response()
+            Json(json!({ "milestones": out, "completed_count": completed_count })).into_response()
         }
         Err(_) => internal(&ctx.rid),
     }
+}
+
+/// `GET /api/v1/milestones?state=open|completed|all`
+///
+/// Every milestone the caller may see, across all of their projects: those
+/// where they hold `milestone.view` (superadmins: every project; app tokens:
+/// their scoped projects with a granted `milestone.view`). Each row carries
+/// its project's id, name, prefix and colour plus task/epic roll-ups, so the
+/// global timeline needs no per-project fetches. The business release date is
+/// stripped per project, exactly as on the project endpoints.
+/// `completed_count` counts completed milestones across those same projects,
+/// whatever `state` filtered out.
+pub async fn list_all(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    caller: Caller,
+    Query(q): Query<StateQuery>,
+) -> Response {
+    let rid = request_id(&headers);
+    let Ok(closed) = q.closed() else {
+        return invalid_state(&rid);
+    };
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&rid);
+    };
+
+    // (project, may it see business release dates)
+    let mut visible: Vec<(intellipilot_core::project::Project, bool)> = Vec::new();
+    match caller {
+        Caller::User(user_id) => {
+            let is_superadmin = intellipilot_db::users::is_active_superadmin(&client, user_id)
+                .await
+                .unwrap_or(false);
+            let listing = if is_superadmin {
+                intellipilot_db::projects::list_all(&client).await
+            } else {
+                intellipilot_db::projects::list_for_member(&client, user_id).await
+            };
+            let Ok(projects) = listing else {
+                return internal(&rid);
+            };
+            for p in projects {
+                if is_superadmin {
+                    visible.push((p, true));
+                    continue;
+                }
+                let Ok(access) = intellipilot_db::memberships::access(&client, p.id, user_id).await
+                else {
+                    return internal(&rid);
+                };
+                if let Some(a) = access
+                    && a.has(Permission::MilestoneView)
+                {
+                    let may = a.has(Permission::MilestoneBusinessReleaseView);
+                    visible.push((p, may));
+                }
+            }
+        }
+        Caller::AppToken(tok) => {
+            if tok.permissions.contains(&Permission::MilestoneView) {
+                let Ok(projects) =
+                    intellipilot_db::projects::list_by_ids(&client, &tok.project_ids).await
+                else {
+                    return internal(&rid);
+                };
+                let may = tok
+                    .permissions
+                    .contains(&Permission::MilestoneBusinessReleaseView);
+                visible.extend(projects.into_iter().map(|p| (p, may)));
+            }
+        }
+    }
+
+    let ids: Vec<Uuid> = visible.iter().map(|(p, _)| p.id).collect();
+    let Ok(rows) = msdb::list_across(&client, &ids, closed).await else {
+        return internal(&rid);
+    };
+    let Ok(completed_count) = msdb::completed_count_across(&client, &ids).await else {
+        return internal(&rid);
+    };
+    let by_id: HashMap<Uuid, &(intellipilot_core::project::Project, bool)> =
+        visible.iter().map(|v| (v.0.id, v)).collect();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let Some((project, may)) = by_id.get(&r.milestone.project_id).copied() else {
+            continue;
+        };
+        let mut v = view(&r.milestone, *may);
+        if let Value::Object(ref mut map) = v {
+            map.insert(
+                "project".to_owned(),
+                json!({
+                    "id": project.id,
+                    "name": project.name,
+                    "prefix": project.issue_prefix,
+                    "color": project.color,
+                }),
+            );
+            map.insert("task_total".to_owned(), json!(r.task_total));
+            map.insert("task_closed".to_owned(), json!(r.task_closed));
+            map.insert("epic_count".to_owned(), json!(r.epic_count));
+        }
+        out.push(v);
+    }
+    Json(json!({ "milestones": out, "completed_count": completed_count })).into_response()
 }
 
 /// `GET /api/v1/projects/{project_id}/milestones/{milestone_id}`
@@ -294,6 +455,7 @@ pub async fn update(
     // Resolve the effective row the patch would produce, then validate it as a
     // whole — a rule that spans fields cannot be checked field by field.
     let start = req.start_date.unwrap_or(existing.start_date);
+    let actual_start = req.actual_start_date.unwrap_or(existing.actual_start_date);
     let end = req.end_date.unwrap_or(existing.end_date);
     let actual = req.actual_end_date.unwrap_or(existing.actual_end_date);
     let effective = effective_end(end, actual);
@@ -312,6 +474,9 @@ pub async fn update(
     if !dates_ok(start, actual) {
         return invalid_dates(&ctx.rid, "actual_end_date must be on or after start_date");
     }
+    if !dates_ok(actual_start, actual) {
+        return invalid_dates(&ctx.rid, ACTUAL_RANGE_RULE);
+    }
     if !business_release_ok(effective, business) {
         return invalid_dates(&ctx.rid, BUSINESS_RELEASE_RULE);
     }
@@ -320,6 +485,7 @@ pub async fn update(
         name: req.name.as_deref(),
         description: req.description.as_deref(),
         start_date: req.start_date,
+        actual_start_date: req.actual_start_date,
         end_date: req.end_date,
         actual_end_date: req.actual_end_date,
         business_release_date: req.business_release_date,
