@@ -282,6 +282,10 @@ pub fn build_router(state: AppState) -> Router {
                 get(projects::list_members).post(projects::add_member),
             )
             .route(
+                "/api/v1/projects/{project_id}/join",
+                post(projects::join_project),
+            )
+            .route(
                 "/api/v1/projects/{project_id}/members/{user_id}",
                 patch(projects::change_member_role),
             )

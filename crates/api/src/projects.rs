@@ -37,7 +37,8 @@ use uuid::Uuid;
 use crate::auth::{AuthUser, Caller, client_ip, request_id, user_agent};
 use crate::dto::{
     AcceptInviteRequest, AddMemberRequest, ChangeMemberRoleRequest, CreateProjectRequest,
-    CreateRoleRequest, InviteRequest, InviteResponse, UpdateProjectRequest, UpdateRoleRequest,
+    CreateRoleRequest, InviteRequest, InviteResponse, JoinProjectRequest, UpdateProjectRequest,
+    UpdateRoleRequest,
 };
 use crate::problem::Problem;
 use crate::state::AppState;
@@ -212,17 +213,17 @@ pub struct ProjectContext {
     pub project: intellipilot_core::project::Project,
     pub actor_id: Uuid,
     pub access: Option<MemberAccess>,
-    /// Platform superadmin: full access to every project regardless of
-    /// membership (and visibility into private projects).
+    /// Platform superadmin: reads every project regardless of membership
+    /// (private ones included). Writes still come from his membership role.
     pub is_superadmin: bool,
     pub rid: String,
 }
 
 impl ProjectContext {
-    /// Require a specific permission; 403 if the member lacks it. Superadmins
-    /// bypass all per-project permission checks.
+    /// Require a specific permission; 403 if the member lacks it. A superadmin
+    /// holds every read permission on top of his role; writes need the role.
     pub fn require(&self, perm: Permission) -> Result<(), Response> {
-        if self.is_superadmin || self.access.as_ref().is_some_and(|a| a.has(perm)) {
+        if self.has(perm) {
             Ok(())
         } else {
             Err(forbidden(&self.rid))
@@ -231,10 +232,9 @@ impl ProjectContext {
 
     /// Non-failing form of [`Self::require`], for shaping a response rather
     /// than refusing it — e.g. deciding whether a field is included at all.
-    /// Superadmins hold everything, matching `require`.
     #[must_use]
     pub fn has(&self, perm: Permission) -> bool {
-        self.is_superadmin || self.access.as_ref().is_some_and(|a| a.has(perm))
+        (self.is_superadmin && perm.is_read()) || self.access.as_ref().is_some_and(|a| a.has(perm))
     }
 
     /// Whether the actor may view the project (superadmin, member with view, or
@@ -877,6 +877,75 @@ pub async fn add_member(
             (
                 StatusCode::CREATED,
                 Json(json!({ "user_id": user.id, "role": req.role })),
+            )
+                .into_response()
+        }
+        Err(_) => internal(&ctx.rid),
+    }
+}
+
+/// `POST /api/v1/projects/{project_id}/join` — a superadmin adds himself.
+///
+/// A superadmin reads every project but writes only where his membership
+/// allows; this is how he becomes a member of a project he is not in yet.
+/// Anyone else is refused (403), as is a superadmin who already belongs (409).
+pub async fn join_project(
+    State(state): State<AppState>,
+    ctx: ProjectContext,
+    headers: axum::http::HeaderMap,
+    body: Result<Json<JoinProjectRequest>, JsonRejection>,
+) -> Response {
+    if !ctx.is_superadmin {
+        return forbidden(&ctx.rid);
+    }
+    if ctx.access.is_some() {
+        return conflict(&ctx.rid, "user is already a member");
+    }
+    let req = match parse_body(body, &ctx.rid) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let auth = state.auth();
+    let Ok(client) = auth.db.pool.get().await else {
+        return internal(&ctx.rid);
+    };
+
+    let Ok(Some(role)) = roledb::find_by_slug(&client, ctx.project.id, &req.role).await else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unknown_role",
+            "Unknown role",
+            None,
+            &ctx.rid,
+        );
+    };
+
+    match memdb::upsert(
+        &client,
+        ctx.project.id,
+        ctx.actor_id,
+        role.id,
+        Some(ctx.actor_id),
+    )
+    .await
+    {
+        Ok(_) => {
+            audit::record(
+                &client,
+                Some(ctx.actor_id),
+                "member_added",
+                Some(client_ip(&headers)),
+                Some(&user_agent(&headers)),
+                &json!({
+                    "user_id": ctx.actor_id.to_string(),
+                    "role": req.role,
+                    "self_join": true,
+                }),
+            )
+            .await;
+            (
+                StatusCode::CREATED,
+                Json(json!({ "user_id": ctx.actor_id, "role": req.role })),
             )
                 .into_response()
         }

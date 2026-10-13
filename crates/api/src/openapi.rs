@@ -18,7 +18,7 @@ use crate::problem::{FieldErrorView, Problem};
 #[openapi(
     info(
         title = "IntelliPilot API",
-        version = "0.7.11",
+        version = "0.7.12",
         description = "Lightweight project management API.",
         contact(
             name = "IntelliSoftAlpin eG",

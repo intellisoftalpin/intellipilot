@@ -4,6 +4,26 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.12] - 2026-10-13
+
+### Changed
+- **A superadmin is read-only in projects he is not a member of.** He still
+  sees every project, private ones included, and holds every read permission
+  there (each `*.view` plus `time.view_all`) on top of his role; but anything
+  that writes now needs a membership role that grants it, like for any other
+  user. Previously a superadmin bypassed every project permission check.
+
+### Added
+- **`POST /api/v1/projects/{project_id}/join`** with `{ "role": "<slug>" }`:
+  a superadmin adds himself to a project with the chosen role. Refused with
+  403 for anyone else (404 on a private project), 409 for an existing member,
+  422 (`unknown_role`) for an unknown role. Audited as `member_added` with
+  `self_join: true`.
+
+### Security
+- `ammonia` 4.1.4 → 4.2.3 (RUSTSEC-2021-0157, RUSTSEC-2021-0158) and
+  `quinn-proto` 0.11.15 → 0.11.19 (RUSTSEC-2026-0338 … 0342).
+
 ## [0.7.11] - 2026-10-07
 
 ### Fixed

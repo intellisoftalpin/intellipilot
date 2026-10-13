@@ -252,6 +252,14 @@ impl Permission {
         Self::MeetingDelete,
     ];
 
+    /// Whether this permission only reads. These are what a platform
+    /// superadmin holds in a project he is not (or not enough of) a member
+    /// of: every `.view`, plus the team-wide timesheet read `time.view_all`.
+    #[must_use]
+    pub fn is_read(self) -> bool {
+        matches!(self, Self::TimeViewAll) || self.as_str().rsplit('.').next() == Some("view")
+    }
+
     /// Stable wire string for this permission.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -512,6 +520,33 @@ mod tests {
             );
         }
         assert_eq!(Permission::ALL.len(), 66);
+    }
+
+    /// The read set a superadmin gets everywhere: every view, nothing that
+    /// writes.
+    #[test]
+    fn read_permissions_are_views_only() {
+        let read: Vec<&str> = Permission::ALL
+            .into_iter()
+            .filter(|p| p.is_read())
+            .map(Permission::as_str)
+            .collect();
+        assert_eq!(
+            read,
+            [
+                "project.view",
+                "member.view",
+                "role.view",
+                "epic.view",
+                "issue.view",
+                "milestone.view",
+                "milestone.business_release.view",
+                "wiki.view",
+                "doc_source.view",
+                "time.view_all",
+                "meeting.view",
+            ]
+        );
     }
 
     /// The doc_source set must mirror the trust levels of the wiki set: a

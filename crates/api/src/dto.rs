@@ -358,6 +358,14 @@ pub struct AddMemberRequest {
     pub role: String,
 }
 
+/// A superadmin adds himself to a project he can read but is not a member
+/// of. `role` is a role slug.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct JoinProjectRequest {
+    #[garde(length(min = 1, max = 64))]
+    pub role: String,
+}
+
 // --- Phase 4: taxonomy ----------------------------------------------------
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
