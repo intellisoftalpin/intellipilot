@@ -4,6 +4,17 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.13] - 2026-10-13
+
+### Fixed
+- **Uploads failed with `Permission denied` on a fresh install.** The image
+  had no `/var/lib/intellipilot/attachments`, so Docker created the mounted
+  named volume `root:root` and the API (uid 65532, `nonroot`) could not write
+  attachments, avatars or project icons. The image now ships that directory
+  owned by `nonroot`, which a new volume inherits. An existing root-owned
+  volume needs a one-time fix:
+  `docker run --rm -v <volume>:/d alpine chown 65532:65532 /d`.
+
 ## [0.7.12] - 2026-10-13
 
 ### Changed

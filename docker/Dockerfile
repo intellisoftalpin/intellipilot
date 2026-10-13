@@ -34,12 +34,17 @@ ARG IP_BUILD_VERSION=""
 ENV IP_BUILD_VERSION=$IP_BUILD_VERSION
 RUN cargo build --release --locked --bin intellipilot \
     && strip target/release/intellipilot
+# Empty storage dir for the runtime stage (distroless has no shell to mkdir).
+RUN mkdir -p /work/storage/attachments
 
 # ---------- Stage 3: runtime (distroless) --------------------------------
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 USER nonroot:nonroot
 WORKDIR /app
 COPY --from=builder /work/target/release/intellipilot /app/intellipilot
+# Owned by nonroot so a fresh named volume mounted here inherits a writable
+# root; otherwise Docker creates it root:root and every upload fails (EACCES).
+COPY --from=builder --chown=nonroot:nonroot /work/storage /var/lib/intellipilot
 
 EXPOSE 8080
 ENV INTELLIPILOT_BIND=0.0.0.0:8080 \
