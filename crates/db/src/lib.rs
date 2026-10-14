@@ -39,6 +39,7 @@ pub mod password_reset;
 pub mod personal_tokens;
 pub mod platform_invitations;
 pub mod platform_settings;
+pub mod project_favorites;
 pub mod projects;
 pub mod recovery;
 pub mod release_versions;

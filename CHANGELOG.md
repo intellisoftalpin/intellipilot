@@ -4,6 +4,17 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.14] - 2026-10-14
+
+### Added
+- **Favorite projects.** `GET` and `PUT /api/v1/me/project-favorites`
+  (`{ "project_ids": [...] }`) read and replace the caller's starred projects,
+  in the order they were starred. At most 4; `PUT` answers 422
+  `too_many_favorites`, `duplicate_favorite` or `unknown_project` (one the
+  caller cannot see). Stored server-side (migration V030), so the set follows
+  the user across devices; deleted projects and lost memberships drop out on
+  read.
+
 ## [0.7.13] - 2026-10-13
 
 ### Fixed

@@ -29,6 +29,7 @@ pub mod issues_io;
 pub mod ldap;
 pub mod markdown;
 pub mod me;
+pub mod me_favorites;
 pub mod me_token;
 pub mod meetings;
 pub mod mfa;

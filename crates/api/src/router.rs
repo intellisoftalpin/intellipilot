@@ -16,9 +16,9 @@ use crate::problem::problem_from_domain;
 use crate::state::AppState;
 use crate::{
     admin, attachments, auth, avatar, backlog, boards, branding, catalog, counts, customers,
-    dashboard, docs, epic_cover, events, health, issue_relations, issues_io, me, me_token,
-    meetings, mfa, milestones, my_work, oidc, openapi, passkeys, project_icon, projects, releases,
-    repositories, search, taxonomy, time_tracking, wiki,
+    dashboard, docs, epic_cover, events, health, issue_relations, issues_io, me, me_favorites,
+    me_token, meetings, mfa, milestones, my_work, oidc, openapi, passkeys, project_icon, projects,
+    releases, repositories, search, taxonomy, time_tracking, wiki,
 };
 
 /// Knowledge-base routes: the internal wiki and external documentation
@@ -182,6 +182,11 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/me/app-token/reset", post(me_token::reset_token))
             .route("/api/v1/me/app-token/disable", post(me_token::disable_token))
             .route("/api/v1/me/app-token/enable", post(me_token::enable_token))
+            // Favorite projects, listed first by the clients
+            .route(
+                "/api/v1/me/project-favorites",
+                get(me_favorites::get_favorites).put(me_favorites::put_favorites),
+            )
             // Cross-project personal work feed
             .route("/api/v1/me/issues", get(my_work::list_my_issues))
             // Avatars: upload (raised body limit) / delete / emoji / serve.
