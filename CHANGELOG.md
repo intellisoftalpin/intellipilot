@@ -4,6 +4,18 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.15] - 2026-10-14
+
+### Security
+- **rustls 0.23.45 → 0.23.46** for RUSTSEC-2026-0346, -0347, -0348 and
+  -0349 (TLS secrets in `Debug` output, data sent after an ECH rejection,
+  unbounded Brotli certificate decompression, key-exchange downgrade). rustls
+  is used by the HTTP client, mailer and LDAP connections.
+
+### Fixed
+- 0.7.14 was never published: the release stopped on these advisories. Its
+  changes (favorite projects) ship in this release.
+
 ## [0.7.14] - 2026-10-14
 
 ### Added
