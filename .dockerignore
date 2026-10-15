@@ -1,0 +1,37 @@
+# Build context for docker/Dockerfile (context = repo root).
+# Keep .git: crates/api/build.rs runs `git describe` when IP_BUILD_VERSION
+# is not passed.
+
+# Cargo output: can be ~100 GB locally and is rebuilt inside the image anyway.
+target/
+**/target/
+
+# Local secrets must never reach a build context or an image layer.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+
+# Local artifacts and coverage.
+dist/
+release/
+coverage/
+*.profraw
+*.profdata
+lcov.info
+**/mutants.out*/
+
+# Editor / OS noise.
+.idea/
+.vscode/
+.zed/
+.helix/
+.fleet/
+.DS_Store
+*.swp
+*~

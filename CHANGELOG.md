@@ -4,6 +4,16 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.16] - 2026-10-15
+
+### Fixed
+- **Local image builds no longer copy `target/` into the build.** A new
+  `.dockerignore` keeps Cargo output, local secrets (`.env*`, keys,
+  certificates; `.env.example` stays), local artifacts and editor files out of
+  the Docker build context. A local `docker build` had been baking a ~100 GB
+  `target/` into two image layers. `.git` stays in the context so the binary
+  keeps its `git describe` version stamp. CI builds are unchanged.
+
 ## [0.7.15] - 2026-10-14
 
 ### Security
