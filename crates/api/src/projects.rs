@@ -214,14 +214,16 @@ pub struct ProjectContext {
     pub actor_id: Uuid,
     pub access: Option<MemberAccess>,
     /// Platform superadmin: reads every project regardless of membership
-    /// (private ones included). Writes still come from his membership role.
+    /// (private ones included) and manages its members. Other writes still
+    /// come from his membership role.
     pub is_superadmin: bool,
     pub rid: String,
 }
 
 impl ProjectContext {
     /// Require a specific permission; 403 if the member lacks it. A superadmin
-    /// holds every read permission on top of his role; writes need the role.
+    /// holds every read and member-management permission on top of his role;
+    /// other writes need the role.
     pub fn require(&self, perm: Permission) -> Result<(), Response> {
         if self.has(perm) {
             Ok(())
@@ -234,7 +236,8 @@ impl ProjectContext {
     /// than refusing it — e.g. deciding whether a field is included at all.
     #[must_use]
     pub fn has(&self, perm: Permission) -> bool {
-        (self.is_superadmin && perm.is_read()) || self.access.as_ref().is_some_and(|a| a.has(perm))
+        (self.is_superadmin && perm.is_superadmin_grant())
+            || self.access.as_ref().is_some_and(|a| a.has(perm))
     }
 
     /// Whether the actor may view the project (superadmin, member with view, or

@@ -260,6 +260,20 @@ impl Permission {
         matches!(self, Self::TimeViewAll) || self.as_str().rsplit('.').next() == Some("view")
     }
 
+    /// What a platform superadmin holds in every project on top of his
+    /// membership role: every read ([`Self::is_read`]) plus managing the
+    /// project's members (add or invite, change a role, remove), so he can
+    /// staff any project without joining it. Everything else still needs a
+    /// role that grants it.
+    #[must_use]
+    pub fn is_superadmin_grant(self) -> bool {
+        self.is_read()
+            || matches!(
+                self,
+                Self::MemberAdd | Self::MemberModifyRole | Self::MemberRemove
+            )
+    }
+
     /// Stable wire string for this permission.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -536,6 +550,36 @@ mod tests {
             [
                 "project.view",
                 "member.view",
+                "role.view",
+                "epic.view",
+                "issue.view",
+                "milestone.view",
+                "milestone.business_release.view",
+                "wiki.view",
+                "doc_source.view",
+                "time.view_all",
+                "meeting.view",
+            ]
+        );
+    }
+
+    /// The superadmin set: every read plus member management, nothing else
+    /// that writes.
+    #[test]
+    fn superadmin_grant_is_reads_plus_member_management() {
+        let granted: Vec<&str> = Permission::ALL
+            .into_iter()
+            .filter(|p| p.is_superadmin_grant())
+            .map(Permission::as_str)
+            .collect();
+        assert_eq!(
+            granted,
+            [
+                "project.view",
+                "member.view",
+                "member.add",
+                "member.modify_role",
+                "member.remove",
                 "role.view",
                 "epic.view",
                 "issue.view",

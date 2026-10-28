@@ -1,7 +1,11 @@
-//! Phase 39 — a superadmin reads every project but writes only as a member.
+//! Phase 39 — a superadmin reads every project and manages its members, but
+//! otherwise writes only as a member.
 //!
 //! Covers:
-//!   * Non-member superadmin: every read works, every write is 403.
+//!   * Non-member superadmin: every read works, every write outside member
+//!     management is 403.
+//!   * Non-member superadmin manages members: add, invite, change role,
+//!     remove; the last-admin guard still holds.
 //!   * `POST /projects/{id}/join`: superadmin adds himself with a chosen role;
 //!     refused for non-superadmins, members, and unknown roles.
 //!   * Superadmin member with a limited role: role decides writes, reads stay
@@ -82,7 +86,7 @@ async fn setup(app: &TestApp) -> (String, String, String) {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn non_member_superadmin_reads_but_cannot_write() {
+async fn non_member_superadmin_reads_but_cannot_write_outside_members() {
     require_db!();
     let app = TestApp::spawn().await;
     let (owner, sa, pid) = setup(&app).await;
@@ -123,16 +127,14 @@ async fn non_member_superadmin_reads_but_cannot_write() {
         .await;
     assert_eq!(r.status, 403, "create issue: {:?}", r.json);
 
-    // Adding a member through the regular path is a write too — even himself.
-    let sa_id = user_id(&app, &sa).await;
     let r = app
         .send(post_json_bearer(
-            &format!("/api/v1/projects/{pid}/members"),
+            &format!("/api/v1/projects/{pid}/roles"),
             &sa,
-            &json!({ "user_id": sa_id, "role": "admin" }),
+            &json!({ "slug": "extra", "name": "Extra", "permissions": [] }),
         ))
         .await;
-    assert_eq!(r.status, 403, "add member: {:?}", r.json);
+    assert_eq!(r.status, 403, "create role: {:?}", r.json);
 
     let r = app
         .send(common::delete_bearer(
@@ -147,6 +149,80 @@ async fn non_member_superadmin_reads_but_cannot_write() {
         .send(get_with_bearer(&format!("/api/v1/projects/{pid}"), &owner))
         .await;
     assert_eq!(r.json["name"], "Alpha");
+}
+
+// ---------------------------------------------------------------------------
+// member management without membership
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn non_member_superadmin_manages_members() {
+    require_db!();
+    let app = TestApp::spawn().await;
+    let (owner, sa, pid) = setup(&app).await;
+    let alice = register_and_login(&app, "alice@example.com", "alice").await;
+    let alice_id = user_id(&app, &alice).await;
+    let owner_id = user_id(&app, &owner).await;
+    let members = format!("/api/v1/projects/{pid}/members");
+
+    let r = app
+        .send(post_json_bearer(
+            &members,
+            &sa,
+            &json!({ "user_id": alice_id, "role": "dev" }),
+        ))
+        .await;
+    assert_eq!(r.status, 201, "add member: {:?}", r.json);
+
+    let r = app
+        .send(patch_json_bearer(
+            &format!("{members}/{alice_id}"),
+            &sa,
+            &json!({ "role": "product_owner" }),
+        ))
+        .await;
+    assert_eq!(r.status, 204, "change role: {:?}", r.json);
+
+    let r = app
+        .send(post_json_bearer(
+            &format!("/api/v1/projects/{pid}/invitations"),
+            &sa,
+            &json!({ "email": "bob@example.com", "role": "dev" }),
+        ))
+        .await;
+    assert_eq!(r.status, 201, "invite: {:?}", r.json);
+
+    // The owner is the only admin: neither demoted nor removed.
+    let r = app
+        .send(patch_json_bearer(
+            &format!("{members}/{owner_id}"),
+            &sa,
+            &json!({ "role": "dev" }),
+        ))
+        .await;
+    assert_eq!(r.status, 409, "demote last admin: {:?}", r.json);
+    let r = app
+        .send(common::delete_bearer(&format!("{members}/{owner_id}"), &sa))
+        .await;
+    assert_eq!(r.status, 409, "remove last admin: {:?}", r.json);
+
+    let r = app
+        .send(common::delete_bearer(&format!("{members}/{alice_id}"), &sa))
+        .await;
+    assert_eq!(r.status, 204, "remove member: {:?}", r.json);
+
+    // Managing members did not make him one.
+    let sa_id = user_id(&app, &sa).await;
+    let r = app.send(get_with_bearer(&members, &owner)).await;
+    assert!(
+        r.json["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["user_id"] != sa_id.as_str()),
+        "{:?}",
+        r.json
+    );
 }
 
 // ---------------------------------------------------------------------------

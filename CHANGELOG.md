@@ -4,6 +4,18 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.17] - 2026-10-28
+
+### Changed
+- **A superadmin manages the members of every project without joining it.**
+  On top of every read, he now holds `member.add`, `member.modify_role` and
+  `member.remove` in each project: he adds or invites anyone, changes a
+  member's role and removes members, and the last admin still can neither
+  be demoted nor removed. Every other write still needs a membership role
+  that grants it; `POST /projects/{id}/join` is unchanged.
+- Version aligned with the frontend and the MCP server: all three release
+  as 0.7.17. `docker/.env.example` pins the frontend to 0.7.17.
+
 ## [0.7.16] - 2026-10-15
 
 ### Fixed
