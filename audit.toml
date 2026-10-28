@@ -33,4 +33,22 @@ ignore = [
     # `openidconnect` gains a pluggable RSA backend.
     # Upstream: https://github.com/RustCrypto/RSA/issues/19
     "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0387 — `crypto-bigint` 0.5 timing variability in
+    # operations meant to be constant-time.
+    #
+    # Reachability: `crypto-bigint` 0.5 is reached only through `openidconnect`
+    # 4.0.1, via `p256`/`p384` (`elliptic-curve` 0.13), which it uses for
+    # ES256/ES384 signature *verification* of ID tokens against the identity
+    # provider's published public keys. Every input to that verification —
+    # public key, signature, signed token — is public, so a timing difference
+    # leaks nothing secret. This process holds no EC private key and performs
+    # no EC signing or key agreement through these crates.
+    #
+    # Why the dependency is not simply upgraded: the fix is `crypto-bigint`
+    # 0.7.6, which needs the `elliptic-curve` 0.14 line; `openidconnect` 4.0.1
+    # is its latest release and still pins `p256`/`p384` 0.13.
+    #
+    # Re-evaluate when `openidconnect` moves to `elliptic-curve` 0.14.
+    "RUSTSEC-2026-0387",
 ]

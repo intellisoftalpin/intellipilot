@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.17"
+version = "0.7.18"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -42,9 +42,9 @@ thiserror = "2"
 garde = { version = "0.20", features = ["derive", "serde", "email", "url", "regex"] }
 
 # OpenAPI
-utoipa = { version = "5", features = ["axum_extras", "uuid", "time", "preserve_order", "non_strict_integers"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
-utoipa-scalar = { version = "0.3", features = ["axum"] }
+utoipa = { version = "6", features = ["axum_extras", "uuid", "time", "preserve_order", "non_strict_integers"] }
+utoipa-swagger-ui = { version = "10", features = ["axum"] }
+utoipa-scalar = { version = "0.4", features = ["axum"] }
 
 # DB — tokio-postgres + deadpool-postgres.
 #
@@ -108,7 +108,7 @@ similar = "2"
 
 # Spreadsheet export (native .xlsx; CSV is hand-built). Pure-Rust deflate
 # (miniz_oxide) — no C zlib dependency.
-rust_xlsxwriter = { version = "0.79", default-features = false }
+rust_xlsxwriter = { version = "0.101", default-features = false }
 # CSV read/write (issue import/export): robust quoting + repeated-header parsing.
 csv = "1"
 

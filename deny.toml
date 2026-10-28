@@ -27,6 +27,14 @@ ignore = [
     # concerns private-key operations; this process holds no RSA private key.
     # No fixed release exists. Re-evaluate at every dependency bump.
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0387 — `crypto-bigint` 0.5 timing variability.
+    #
+    # Reachable only through `openidconnect` 4.0.1 (latest) via `p256`/`p384`
+    # 0.13, for ES256/ES384 *verification* of ID tokens with the provider's
+    # public keys; every input is public, no EC private key exists here. The
+    # fix (0.7.6) needs `elliptic-curve` 0.14, which `openidconnect` does not
+    # use yet. Re-evaluate at every dependency bump.
+    "RUSTSEC-2026-0387",
 ]
 
 # --- Licenses ----------------------------------------------------------------

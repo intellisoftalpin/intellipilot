@@ -4,6 +4,30 @@ All notable changes to the IntelliPilot backend are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to Semantic Versioning.
 
+## [0.7.18] - 2026-10-28
+
+### Security
+- **New RustSec advisories fixed:** `ammonia` 4.2.3 → 4.2.4
+  (RUSTSEC-2026-0373), `ctutils` 0.4.2 → 0.4.6 (RUSTSEC-2026-0385),
+  `rustls-webpki` 0.103.15 → 0.103.16 (RUSTSEC-2026-0382), `webpki-roots`
+  1.0.7 → 1.0.11 (RUSTSEC-2026-0381), `tokio` 1.52.3 → 1.54.1
+  (RUSTSEC-2026-0386).
+- **`zip` 2.4.2 and 3.0.0 replaced by 9.1.3** (RUSTSEC-2026-0367, -0368,
+  -0369): `rust_xlsxwriter` 0.79 → 0.101, and `utoipa` 5 → 6 with
+  `utoipa-swagger-ui` 9 → 10 and `utoipa-scalar` 0.3 → 0.4. No API changes.
+- **RUSTSEC-2026-0387 (`crypto-bigint` 0.5) ignored with a written
+  justification** in `audit.toml`, `.cargo/audit.toml` and `deny.toml`: it is
+  reached only through `openidconnect` 4.0.1 (its latest release) for
+  ID-token signature verification with public keys, and the fix needs
+  `elliptic-curve` 0.14, which `openidconnect` does not use yet.
+
+### Fixed
+- 0.7.17 was never published: a new permissions unit test listed member
+  permissions in the wrong order, and the advisories above failed
+  cargo-audit/cargo-deny. Its changes (a superadmin manages the members of
+  every project) ship in this release.
+- Version aligned with the frontend and the MCP server at 0.7.18.
+
 ## [0.7.17] - 2026-10-28
 
 ### Changed
